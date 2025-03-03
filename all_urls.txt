@@ -32,7 +32,6 @@ https://raw.githubusercontent.com/MrMohebi/xray-proxy-grabber-telegram/master/co
 https://raw.githubusercontent.com/MrMohebi/xray-proxy-grabber-telegram/master/collected-proxies/row-url/actives.txt
 https://raw.githubusercontent.com/Surfboardv2ray/TGParse/main/python/hy2
 https://raw.githubusercontent.com/Surfboardv2ray/TGParse/main/python/hysteria2
-https://raw.githubusercontent.com/V2RAYCONFIGSPOOL/V2RAY_SUB/main/V2RAY_SUB.txt
 https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt
 https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/server.txt
 https://raw.githubusercontent.com/MhdiTaheri/V2rayCollector/main/sub/vless
