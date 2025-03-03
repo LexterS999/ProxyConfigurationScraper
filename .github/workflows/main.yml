@@ -1,0 +1,48 @@
+name: Update Proxy Configs
+
+on:
+  schedule:
+    - cron: '0 */7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-configs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create directories
+      run: |
+        mkdir -p assets
+        mkdir -p configs
+    
+    - name: Run config fetcher
+      run: python src/config.py
+      continue-on-error: true
+    
+    - name: Setup Git
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+    
+    - name: Commit and push changes
+      run: |
+        git add configs/proxy_configs.txt
+        git commit --allow-empty -m "Update proxy configs, stats and reports"
+        git push
