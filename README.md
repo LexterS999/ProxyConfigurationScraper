@@ -79,4 +79,4 @@
 
 ---
 
-**Лицензия:** [MIT License]
+**Лицензия:** [[MIT License](https://rem.mit-license.org/)]
