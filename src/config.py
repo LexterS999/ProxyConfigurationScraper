@@ -14,6 +14,9 @@ from collections import defaultdict
 import logging
 from enum import Enum
 import shutil
+import uuid
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 
 # Настройка logging на DEBUG для более подробных сообщений
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(process)s - %(message)s')
@@ -94,6 +97,9 @@ HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
+VLESS_VERSION = b"\x00"
+CLIENT_ID = uuid.uuid4()
+VLESS_CHECK_TIMEOUT = 5 # Timeout for VLESS handshake check in seconds
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -629,9 +635,59 @@ DUPLICATE_PROFILE_REGEX = re.compile(
     r"^(vless|tuic|hy2)://(?:.*?@)?([^@/:]+):(\d+)"
 )
 
+def generate_vless_header(client_id: uuid.UUID) -> bytes:
+    """Генерирует VLESS header."""
+    header = b""
+    header += VLESS_VERSION  # Version
+    header += client_id.bytes  # UUID
+    header += b"\x00"  # Options (none)
+    return header
 
-async def check_profile_availability(hostname: str, port: int, semaphore: asyncio.Semaphore) -> bool:
-    return True
+async def check_profile_availability(config: str, timeout: int = VLESS_CHECK_TIMEOUT) -> bool:
+    """Проверяет VLESS прокси, выполняя handshake."""
+    writer = None
+    try:
+        parsed_url = urlparse(config)
+        if parsed_url.scheme != 'vless':
+            return True  # Skip VLESS check for non-VLESS protocols
+
+        host = parsed_url.hostname
+        port = parsed_url.port
+        if not host or not port:
+            logger.warning(f"Invalid proxy URL, missing host or port for VLESS check: {config}")
+            return False
+
+        reader, writer = await asyncio.open_connection(host, port)
+
+        # VLESS Handshake
+        vless_header = generate_vless_header(CLIENT_ID)
+        writer.write(vless_header)
+
+        # Dummy request (HTTP GET) - for basic connectivity check
+        http_request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
+        writer.write(http_request)
+        await writer.drain()
+
+        try:
+            response = await asyncio.wait_for(reader.read(1024), timeout=timeout) # Читаем до 1024 байт
+            if response:
+                logger.debug(f"VLESS Proxy {config} is reachable.")
+                return True
+            else:
+                logger.debug(f"VLESS Proxy {config} - No response received.")
+                return False
+        except asyncio.TimeoutError:
+            logger.debug(f"VLESS Proxy {config} - Timeout waiting for response.")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error checking VLESS proxy {config}: {e}")
+        return False
+    finally:
+        if writer:
+            writer.close()
+            await writer.wait_closed()
+
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
     proxies = []
@@ -700,6 +756,13 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             else:
                 logger.warning(f"Не удалось создать ключ для фильтрации дубликатов по REGEX для: {line}")
                 continue # Если не удалось создать ключ, пропускаем для безопасности, или можно рассмотреть добавление как уникального
+
+            # Проверка доступности VLESS профиля перед подсчетом очков
+            if protocol == 'vless://':
+                is_available = await check_profile_availability(line)
+                if not is_available:
+                    logger.debug(f"VLESS Proxy {line} is not available, skipping scoring.")
+                    continue # Пропускаем scoring, если прокси не доступен
 
             score = compute_profile_score(line, response_time=channel.metrics.avg_response_time)
 
