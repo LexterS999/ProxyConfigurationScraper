@@ -12,7 +12,7 @@ from urllib.parse import urlparse, parse_qs, quote
 from dataclasses import dataclass
 from collections import defaultdict
 import logging
-import socket # Import socket for catching socket.gaierror
+import socket # Import socket for catching socket.gaierror # import socket
 from enum import Enum
 import shutil
 import uuid
@@ -661,13 +661,13 @@ async def check_profile_availability(config: str, timeout: int = VLESS_CHECK_TIM
         try:
             reader, writer = await asyncio.open_connection(host, port)
         except ConnectionRefusedError as e:
-            logger.error(f"Error checking VLESS proxy {config}: Connection refused - {e}")
+            logger.debug(f"VLESS Proxy {config}: Connection refused - {e}") # Log as DEBUG
             return False
         except socket.gaierror as e:
-            logger.error(f"Error checking VLESS proxy {config}: DNS resolution failed - {e}")
+            logger.debug(f"VLESS Proxy {config}: DNS resolution failed - {e}") # Log as DEBUG
             return False
         except TimeoutError as e:
-            logger.error(f"Error checking VLESS proxy {config}: Connection timeout - {e}")
+            logger.debug(f"VLESS Proxy {config}: Connection timeout - {e}") # Log as DEBUG
             return False
         except Exception as e:
             logger.error(f"Error checking VLESS proxy {config}: Connection error - {e}")
@@ -717,7 +717,7 @@ async def check_profile_availability(config: str, timeout: int = VLESS_CHECK_TIM
                 writer.close()
                 await writer.wait_closed()
             except ConnectionResetError as e: # Catch ConnectionResetError during wait_closed
-                logger.error(f"ConnectionResetError while closing writer for {config}: {e}")
+                logger.debug(f"ConnectionResetError while closing writer for {config}: {e}") # Log as DEBUG
             except Exception as e:
                 logger.error(f"Error closing writer for {config}: {e}")
 
