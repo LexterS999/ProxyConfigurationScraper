@@ -92,16 +92,16 @@ CHECK_USERNAME = True
 CHECK_TLS_REALITY = True
 CHECK_SNI = True
 CHECK_CONNECTION_TYPE = True
-MAX_CONCURRENT_CHANNELS = 200
-REQUEST_TIMEOUT = 60 # Общий таймаут для запросов к каналам
+MAX_CONCURRENT_CHANNELS = 500
+REQUEST_TIMEOUT = 30 # Общий таймаут для запросов к каналам
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 VLESS_VERSION = b"\x00"
 CLIENT_ID = uuid.uuid4()
-VLESS_CHECK_TIMEOUT = 5 # Timeout for VLESS handshake check in seconds
-MAX_VLESS_CHECK_CONCURRENCY = 40  # Максимальное количество параллельных проверок VLESS
+VLESS_CHECK_TIMEOUT = 2 # Timeout for VLESS handshake check in seconds
+MAX_VLESS_CHECK_CONCURRENCY = 500  # Максимальное количество параллельных проверок VLESS
 vless_check_semaphore = asyncio.Semaphore(MAX_VLESS_CHECK_CONCURRENCY) # Семафор для ограничения параллелизма VLESS проверок
 
 
