@@ -12,6 +12,7 @@ from urllib.parse import urlparse, parse_qs, quote
 from dataclasses import dataclass
 from collections import defaultdict
 import logging
+import socket # Import socket for catching socket.gaierror
 from enum import Enum
 import shutil
 import uuid
@@ -657,16 +658,39 @@ async def check_profile_availability(config: str, timeout: int = VLESS_CHECK_TIM
             logger.warning(f"Invalid proxy URL, missing host or port for VLESS check: {config}")
             return False
 
-        reader, writer = await asyncio.open_connection(host, port)
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+        except ConnectionRefusedError as e:
+            logger.error(f"Error checking VLESS proxy {config}: Connection refused - {e}")
+            return False
+        except socket.gaierror as e:
+            logger.error(f"Error checking VLESS proxy {config}: DNS resolution failed - {e}")
+            return False
+        except TimeoutError as e:
+            logger.error(f"Error checking VLESS proxy {config}: Connection timeout - {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error checking VLESS proxy {config}: Connection error - {e}")
+            return False
+
 
         # VLESS Handshake
         vless_header = generate_vless_header(CLIENT_ID)
-        writer.write(vless_header)
+        try:
+            writer.write(vless_header)
+        except Exception as e:
+            logger.error(f"Error sending VLESS header to {config}: {e}")
+            return False
 
         # Dummy request (HTTP GET) - for basic connectivity check
         http_request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
-        writer.write(http_request)
-        await writer.drain()
+        try:
+            writer.write(http_request)
+            await writer.drain()
+        except Exception as e:
+            logger.error(f"Error sending HTTP request to {config}: {e}")
+            return False
+
 
         try:
             response = await asyncio.wait_for(reader.read(1024), timeout=timeout) # Читаем до 1024 байт
@@ -679,14 +703,23 @@ async def check_profile_availability(config: str, timeout: int = VLESS_CHECK_TIM
         except asyncio.TimeoutError:
             logger.debug(f"VLESS Proxy {config} - Timeout waiting for response.")
             return False
+        except Exception as e:
+            logger.error(f"Error reading response from {config}: {e}")
+            return False
+
 
     except Exception as e:
-        logger.error(f"Error checking VLESS proxy {config}: {e}")
+        logger.error(f"Unexpected error during VLESS proxy check for {config}: {e}")
         return False
     finally:
         if writer:
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except ConnectionResetError as e: # Catch ConnectionResetError during wait_closed
+                logger.error(f"ConnectionResetError while closing writer for {config}: {e}")
+            except Exception as e:
+                logger.error(f"Error closing writer for {config}: {e}")
 
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
