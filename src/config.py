@@ -92,17 +92,18 @@ CHECK_USERNAME = True
 CHECK_TLS_REALITY = True
 CHECK_SNI = True
 CHECK_CONNECTION_TYPE = True
-MAX_CONCURRENT_CHANNELS = 500
-REQUEST_TIMEOUT = 30 # Общий таймаут для запросов к каналам
+MAX_CONCURRENT_CHANNELS = 200
+REQUEST_TIMEOUT = 60 # Общий таймаут для запросов к каналам
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 VLESS_VERSION = b"\x00"
 CLIENT_ID = uuid.uuid4()
-VLESS_CHECK_TIMEOUT = 2 # Timeout for VLESS handshake check in seconds
-MAX_VLESS_CHECK_CONCURRENCY = 500  # Максимальное количество параллельных проверок VLESS
+VLESS_CHECK_TIMEOUT = 5 # Timeout for VLESS handshake check in seconds
+MAX_VLESS_CHECK_CONCURRENCY = 40  # Максимальное количество параллельных проверок VLESS
 vless_check_semaphore = asyncio.Semaphore(MAX_VLESS_CHECK_CONCURRENCY) # Семафор для ограничения параллелизма VLESS проверок
+FAST_CHECK_TIMEOUT = 0.5  # Очень короткий таймаут для быстрой проверки IP/порта (в секундах)
 
 
 HEADERS = {
@@ -798,10 +799,17 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
 
             # Проверка доступности VLESS профиля перед подсчетом очков
             if protocol == 'vless://':
-                is_available = await check_profile_availability(line)
-                if not is_available:
-                    logger.debug(f"VLESS Proxy {line} is not available, skipping scoring.")
-                    continue # Пропускаем scoring, если прокси не доступен
+                parsed = urlparse(line) # Парсим URL здесь, чтобы получить hostname и port
+                hostname = parsed.hostname
+                port = parsed.port
+                if hostname and port: # Проверяем, что hostname и port существуют
+                    is_available = await check_ip_port_availability(hostname, port) # Используем новую функцию
+                    if not is_available:
+                        logger.debug(f"VLESS Proxy IP: {hostname}, Port: {port} is not available, skipping scoring.")
+                        continue # Пропускаем scoring, если прокси не доступен по IP и порту
+                else:
+                    logger.warning(f"Невозможно проверить IP/порт для VLESS proxy {line}: hostname или port не найдены.")
+                    continue # Пропускаем, если не удалось извлечь hostname или port
 
             score = compute_profile_score(line, response_time=channel.metrics.avg_response_time)
 
