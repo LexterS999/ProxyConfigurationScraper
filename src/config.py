@@ -648,6 +648,28 @@ def generate_vless_header(client_id: uuid.UUID) -> bytes:
     header += b"\x00"  # Options (none)
     return header
 
+async def check_ip_port_availability(host: str, port: int, timeout: float = FAST_CHECK_TIMEOUT) -> bool:
+    """Выполняет быструю проверку доступности IP и порта, только TCP соединение."""
+    try:
+        async with vless_check_semaphore: # Используем семафор для ограничения параллелизма
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+            writer.close()
+            await writer.wait_closed()
+            logger.debug(f"IP: {host}, Port: {port} - TCP доступен.")
+            return True
+    except ConnectionRefusedError:
+        logger.debug(f"IP: {host}, Port: {port} - Connection refused.")
+        return False
+    except socket.gaierror:
+        logger.debug(f"IP: {host}, Port: {port} - DNS resolution failed.")
+        return False
+    except asyncio.TimeoutError:
+        logger.debug(f"IP: {host}, Port: {port} - Timeout.")
+        return False
+    except Exception as e:
+        logger.error(f"Error checking IP: {host}, Port: {port}: {e}") # Логируем общие ошибки на уровне ERROR
+        return False
+
 async def check_profile_availability(config: str, timeout: int = VLESS_CHECK_TIMEOUT) -> bool:
     """Проверяет VLESS прокси, выполняя handshake, с ограничением параллелизма."""
     writer = None
