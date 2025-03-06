@@ -101,6 +101,9 @@ ALL_URLS_FILE = "all_urls.txt"
 VLESS_VERSION = b"\x00"
 CLIENT_ID = uuid.uuid4()
 VLESS_CHECK_TIMEOUT = 5 # Timeout for VLESS handshake check in seconds
+MAX_VLESS_CHECK_CONCURRENCY = 40  # Максимальное количество параллельных проверок VLESS
+vless_check_semaphore = asyncio.Semaphore(MAX_VLESS_CHECK_CONCURRENCY) # Семафор для ограничения параллелизма VLESS проверок
+
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -645,69 +648,72 @@ def generate_vless_header(client_id: uuid.UUID) -> bytes:
     return header
 
 async def check_profile_availability(config: str, timeout: int = VLESS_CHECK_TIMEOUT) -> bool:
-    """Проверяет VLESS прокси, выполняя handshake."""
+    """Проверяет VLESS прокси, выполняя handshake, с ограничением параллелизма."""
     writer = None
     try:
-        parsed_url = urlparse(config)
-        if parsed_url.scheme != 'vless':
-            return True  # Skip VLESS check for non-VLESS protocols
+        async with vless_check_semaphore: # Используем асинхронный контекстный менеджер семафора
+            parsed_url = urlparse(config)
+            if parsed_url.scheme != 'vless':
+                return True  # Skip VLESS check for non-VLESS protocols
 
-        host = parsed_url.hostname
-        port = parsed_url.port
-        if not host or not port:
-            logger.warning(f"Invalid proxy URL, missing host or port for VLESS check: {config}")
-            return False
-
-        try:
-            reader, writer = await asyncio.open_connection(host, port)
-        except ConnectionRefusedError as e:
-            logger.debug(f"VLESS Proxy {config}: Connection refused - {e}") # Log as DEBUG
-            return False
-        except socket.gaierror as e:
-            logger.debug(f"VLESS Proxy {config}: DNS resolution failed - {e}") # Log as DEBUG
-            return False
-        except TimeoutError as e:
-            logger.debug(f"VLESS Proxy {config}: Connection timeout - {e}") # Log as DEBUG
-            return False
-        except Exception as e:
-            logger.error(f"Error checking VLESS proxy {config}: Connection error - {e}")
-            return False
-
-
-        # VLESS Handshake
-        vless_header = generate_vless_header(CLIENT_ID)
-        try:
-            writer.write(vless_header)
-        except Exception as e:
-            logger.error(f"Error sending VLESS header to {config}: {e}")
-            return False
-
-        # Dummy request (HTTP GET) - for basic connectivity check
-        http_request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
-        try:
-            writer.write(http_request)
-            await writer.drain()
-        except Exception as e:
-            logger.error(f"Error sending HTTP request to {config}: {e}")
-            return False
-
-
-        try:
-            response = await asyncio.wait_for(reader.read(1024), timeout=timeout) # Читаем до 1024 байт
-            if response:
-                logger.debug(f"VLESS Proxy {config} is reachable.")
-                return True
-            else:
-                logger.debug(f"VLESS Proxy {config} - No response received.")
+            host = parsed_url.hostname
+            port = parsed_url.port
+            if not host or not port:
+                logger.warning(f"Invalid proxy URL, missing host or port for VLESS check: {config}")
                 return False
-        except asyncio.TimeoutError:
-            logger.debug(f"VLESS Proxy {config} - Timeout waiting for response.")
-            return False
-        except Exception as e:
-            logger.error(f"Error reading response from {config}: {e}")
-            return False
+
+            try:
+                reader, writer = await asyncio.open_connection(host, port)
+            except ConnectionRefusedError as e:
+                logger.debug(f"VLESS Proxy {config}: Connection refused - {e}") # Log as DEBUG
+                return False
+            except socket.gaierror as e:
+                logger.debug(f"VLESS Proxy {config}: DNS resolution failed - {e}") # Log as DEBUG
+                return False
+            except TimeoutError as e:
+                logger.debug(f"VLESS Proxy {config}: Connection timeout - {e}") # Log as DEBUG
+                return False
+            except Exception as e:
+                logger.error(f"Error checking VLESS proxy {config}: Connection error - {e}")
+                return False
 
 
+            # VLESS Handshake
+            vless_header = generate_vless_header(CLIENT_ID)
+            try:
+                writer.write(vless_header)
+            except Exception as e:
+                logger.error(f"Error sending VLESS header to {config}: {e}")
+                return False
+
+            # Dummy request (HTTP GET) - for basic connectivity check
+            http_request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
+            try:
+                writer.write(http_request)
+                await writer.drain()
+            except Exception as e:
+                logger.error(f"Error sending HTTP request to {config}: {e}")
+                return False
+
+
+            try:
+                response = await asyncio.wait_for(reader.read(1024), timeout=timeout) # Читаем до 1024 байт
+                if response:
+                    logger.debug(f"VLESS Proxy {config} is reachable.")
+                    return True
+                else:
+                    logger.debug(f"VLESS Proxy {config} - No response received.")
+                    return False
+            except asyncio.TimeoutError:
+                logger.debug(f"VLESS Proxy {config} - Timeout waiting for response.")
+                return False
+            except Exception as e:
+                logger.error(f"Error reading response from {config}: {e}")
+                return False
+
+    except asyncio.CancelledError: # Обработка отмены задачи, если необходимо
+        logger.debug(f"VLESS proxy check for {config} cancelled.")
+        return False
     except Exception as e:
         logger.error(f"Unexpected error during VLESS proxy check for {config}: {e}")
         return False
