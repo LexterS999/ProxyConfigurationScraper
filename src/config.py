@@ -675,26 +675,26 @@ async def check_ip_port_availability(host: str, port: int, timeout: float = FAST
         logger.error(f"Error checking IP: {host}, Port: {port}: {e}") # Логируем общие ошибки на уровне ERROR
         return False
 
-async def check_vless_handshake_and_response(host: str, port: int, sni: Optional[str] = None, timeout: int = VLESS_CHECK_TIMEOUT, verify_ssl: bool = DEFAULT_VERIFY_SSL) -> bool:
+async def check_vless_handshake_and_response(host: str, port: int, sni: Optional[str] = None, timeout: int = VLESS_CHECK_TIMEOUT, verify_ssl: bool = DEFAULT_VERIFY_SSL, verify_hostname: bool = True) -> bool:
     """
     Проверяет VLESS прокси, выполняя handshake и анализируя ответ сервера.
     Учитывает SNI для TLS handshake, если предоставлен.
-    Настраиваемая верификация SSL сертификата.
+    Настраиваемая верификация SSL сертификата и hostname.
     Возвращает True, если handshake успешен и получен ожидаемый ответ, иначе False.
     """
     writer = None
+    ssl_context_desc = "verify_ssl={}, verify_hostname={}".format(verify_ssl, verify_hostname) # Описание режима верификации для логов
     try:
         async with vless_check_semaphore:
             transport = "TCP" # По умолчанию TCP, может быть расширено для QUIC и WS в будущем
 
             ssl_context = None
-            if sni: # Если SNI указан, предполагаем TLS
-                if verify_ssl:
-                    ssl_context = ssl.create_default_context() # Стандартная верификация
-                else:
-                    ssl_context = ssl.create_default_context()
-                    ssl_context.check_hostname = False # Отключаем проверку hostname
-                    ssl_context.verify_mode = ssl.CERT_NONE # Отключаем верификацию сертификата вообще
+            if sni and verify_ssl: # SSL контекст только если SNI и verify_ssl=True
+                ssl_context = ssl.create_default_context()
+                if not verify_hostname:
+                    ssl_context.check_hostname = False # Отключаем проверку hostname, если verify_hostname=False
+                # Если verify_hostname=True (по умолчанию), то проверка hostname включена (по умолчанию в create_default_context)
+
 
             extra_kwargs = {}
             if ssl_context:
@@ -705,25 +705,30 @@ async def check_vless_handshake_and_response(host: str, port: int, sni: Optional
             try:
                 reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port, **extra_kwargs), timeout=timeout)
             except ConnectionRefusedError as e:
-                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): Connection refused - {e}")
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): Connection refused - {e}")
                 return False
             except socket.gaierror as e:
-                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): DNS resolution failed - {e}")
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): DNS resolution failed - {e}")
                 return False
             except TimeoutError as e:
-                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): Connection timeout - {e}")
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): Connection timeout - {e}")
                 return False
             except ssl.SSLCertVerificationError as e: # Ловим ошибки верификации сертификата
-                logger.error(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): SSL Certificate Verification Error - {e}")
+                logger.error(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): SSL Certificate Verification Error - {e}")
                 return False
             except ssl.SSLWantReadError as e: # Ловим SSLWantReadError
-                logger.error(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): SSL Want Read Error - {e}")
+                logger.error(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): SSL Want Read Error - {e}")
                 return False
             except ssl.SSLError as e: # Общие ошибки SSL
-                logger.error(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): General SSL Error - {e}")
+                if "WRONG_VERSION_NUMBER" in str(e):
+                    logger.warning(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): SSL WRONG_VERSION_NUMBER - {e}") # Лог как WARNING
+                elif "SSLV3_ALERT_HANDSHAKE_FAILURE" in str(e):
+                    logger.warning(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): SSL Handshake Failure - {e}") # Лог как WARNING
+                else:
+                    logger.error(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): General SSL Error - {e}") # Остальные SSL ошибки как ERROR
                 return False
             except Exception as e:
-                logger.error(f"Error connecting to VLESS proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): Connection error - {e}")
+                logger.error(f"Error connecting to VLESS proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): Connection error - {e}")
                 return False
 
 
@@ -732,7 +737,7 @@ async def check_vless_handshake_and_response(host: str, port: int, sni: Optional
                 writer.write(vless_header)
                 await writer.drain()
             except Exception as e:
-                logger.error(f"Error sending VLESS header to {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): {e}")
+                logger.error(f"Error sending VLESS header to {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
                 return False
 
             http_request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n" # Стандартный HTTP запрос для проверки ответа
@@ -740,39 +745,39 @@ async def check_vless_handshake_and_response(host: str, port: int, sni: Optional
                 writer.write(http_request)
                 await writer.drain()
             except Exception as e:
-                logger.error(f"Error sending HTTP request after VLESS handshake to {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): {e}")
+                logger.error(f"Error sending HTTP request after VLESS handshake to {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
                 return False
 
             try:
                 response_data = await asyncio.wait_for(reader.read(VLESS_RESPONSE_BYTES_LIMIT), timeout=timeout)
                 if not response_data:
-                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): No response received.")
+                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): No response received.")
                     return False
 
                 if VLESS_HANDSHAKE_SUCCESS_MARKER in response_data:
-                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}) - Handshake successful, server active. Response: {response_data[:100]!r}") # Логируем начало ответа для отладки
+                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}) - Handshake successful, server active. Response: {response_data[:100]!r}") # Логируем начало ответа для отладки
                     return True
                 else:
                     for failure_marker in VLESS_HANDSHAKE_FAILURE_MARKERS:
                         if failure_marker in response_data:
-                            logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}) - Handshake failure detected by marker '{failure_marker.decode(errors='ignore')}', response: {response_data[:100]!r}")
+                            logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}) - Handshake failure detected by marker '{failure_marker.decode(errors='ignore')}', response: {response_data[:100]!r}")
                             return False
-                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}) - Handshake response without success marker, response: {response_data[:100]!r}") # Логируем ответ для анализа
+                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}) - Handshake response without success marker, response: {response_data[:100]!r}") # Логируем ответ для анализа
                     return False
 
 
             except asyncio.TimeoutError:
-                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): Timeout waiting for handshake response.")
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): Timeout waiting for handshake response.")
                 return False
             except Exception as e:
-                logger.error(f"Error reading VLESS handshake response from {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): {e}")
+                logger.error(f"Error reading VLESS handshake response from {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
                 return False
 
     except asyncio.CancelledError:
-        logger.debug(f"VLESS proxy check for {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}) cancelled.")
+        logger.debug(f"VLESS proxy check for {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}) cancelled.")
         return False
     except Exception as e:
-        logger.error(f"Unexpected error during VLESS proxy check for {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): {e}")
+        logger.error(f"Unexpected error during VLESS proxy check for {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
         return False
     finally:
         if writer:
@@ -780,9 +785,9 @@ async def check_vless_handshake_and_response(host: str, port: int, sni: Optional
                 writer.close()
                 await writer.wait_closed()
             except ConnectionResetError as e:
-                logger.debug(f"ConnectionResetError while closing writer for {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): {e}")
+                logger.debug(f"ConnectionResetError while closing writer for {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
             except Exception as e:
-                logger.error(f"Error closing writer for {host}:{port} ({transport}, SNI: {sni}, verify_ssl: {verify_ssl}): {e}")
+                logger.error(f"Error closing writer for {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
 
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
@@ -862,6 +867,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                 sni = query.get('sni', [None])[0] # Извлекаем SNI из параметров URL
                 security_param = query.get('security', ['tls'])[0].lower() # Получаем параметр security, по умолчанию 'tls'
                 verify_ssl_profile = DEFAULT_VERIFY_SSL # По умолчанию используем глобальную настройку верификации
+                verify_hostname_profile = True # По умолчанию верификация hostname включена
 
                 if security_param == 'none': # Если security=none, не используем SSL, даже если есть SNI
                     ssl_needed = False
@@ -869,7 +875,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                     ssl_needed = bool(sni) or security_param == 'tls' or security_param == 'reality' # Определяем, нужен ли SSL на основе SNI или security параметра
 
                 if hostname and port:
-                    is_active = await check_vless_handshake_and_response(hostname, port, sni=sni if ssl_needed else None, verify_ssl=verify_ssl_profile and ssl_needed) # Передаем verify_ssl и SNI только если нужен SSL
+                    is_active = await check_vless_handshake_and_response(hostname, port, sni=sni if ssl_needed else None, verify_ssl=verify_ssl_profile and ssl_needed, verify_hostname=verify_hostname_profile) # Передаем verify_ssl, verify_hostname и SNI только если нужен SSL
                     if not is_active:
                         logger.debug(f"VLESS Proxy {line} не прошел проверку активности.")
                         continue # Пропускаем scoring, если прокси не активен
