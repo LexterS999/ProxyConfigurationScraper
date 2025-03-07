@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from collections import defaultdict
 import logging
 import socket # Import socket for catching socket.gaierror # import socket
-import ssl # Import ssl module
+import ssl # Import ssl module - но больше не используется для верификации
 from enum import Enum
 import shutil
 import uuid
@@ -41,8 +41,8 @@ class ScoringWeights(Enum):
     ENCRYPTION_TYPE_AES_128_GCM = 7
     ENCRYPTION_TYPE_CHACHA20_POLY1305 = 7
     ENCRYPTION_TYPE_ZERO = 2
-    SNI_PRESENT = 7
-    COMMON_SNI_BONUS = 3
+    SNI_PRESENT = 7 # Removed SNI related scoring
+    COMMON_SNI_BONUS = 3 # Removed SNI related scoring
     ALPN_PRESENT = 5
     NUM_ALPN_PROTOCOLS = 2
     PATH_PRESENT = 3
@@ -50,8 +50,8 @@ class ScoringWeights(Enum):
     HEADERS_PRESENT = 4
     NUM_HEADERS = 1
     HOST_HEADER = 5
-    HOST_SNI_MATCH = 10
-    UTLS_PRESENT = 4 # Relevant for TLS-based protocols
+    HOST_SNI_MATCH = 10 # Removed SNI related scoring
+    UTLS_PRESENT = 4 # Relevant for TLS-based protocols - could be removed if TLS is fully ignored
     UTLS_VALUE_CHROME = 5
     UTLS_VALUE_FIREFOX = 4
     UTLS_VALUE_IOS = 2
@@ -64,7 +64,7 @@ class ScoringWeights(Enum):
     PORT_OTHER = 2
     UUID_PRESENT = 5 # Relevant for vless
     UUID_LENGTH = 3    # Relevant for vless
-    EARLY_DATA_SUPPORT = 5 # TLS related, potentially relevant
+    EARLY_DATA_SUPPORT = 5 # TLS related, potentially relevant - could be removed if TLS is fully ignored
     PARAMETER_CONSISTENCY = 12 # General config quality
     IPV6_ADDRESS = -9 # General network characteristic - Keep for IPv6 detection in config
     RARITY_BONUS = 4 # General parameter score - Keep for hidden parameter scoring
@@ -79,7 +79,7 @@ class ScoringWeights(Enum):
     TCP_OPTIMIZATION = 5 # TCP related, might be relevant for some transports - Keep if tcpFastOpen is part of profile
     QUIC_PARAM = 3 # QUIC related, relevant for tuic and hy2 - Keep for QUIC params
     STREAM_ENCRYPTION = 6 # General security parameter - Keep if streamEncryption is part of profile
-    CDN_USAGE = 8       # Network characteristic - Keep if CDN usage can be inferred from SNI
+    CDN_USAGE = 8       # Network characteristic - Keep if CDN usage can be inferred from SNI - could be removed
     OBFS = 4            # General obfuscation - Keep if obfs is part of profile
     DEBUG_PARAM = -3    # General - bad parameter - Keep for debug parameters
     COMMENT = 1         # General informational - Keep for comment parameters
@@ -90,8 +90,8 @@ MIN_CONFIG_LENGTH = 40
 ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://"] # Allowed protocols updated
 PREFERRED_PROTOCOLS = ["vless://"]
 CHECK_USERNAME = True
-CHECK_TLS_REALITY = True
-CHECK_SNI = True
+CHECK_TLS_REALITY = True # Could be removed if TLS is fully ignored
+CHECK_SNI = False # SNI check is disabled
 CHECK_CONNECTION_TYPE = True
 MAX_CONCURRENT_CHANNELS = 200
 REQUEST_TIMEOUT = 60 # Общий таймаут для запросов к каналам
@@ -108,7 +108,7 @@ FAST_CHECK_TIMEOUT = 0.5  # Очень короткий таймаут для б
 VLESS_RESPONSE_BYTES_LIMIT = 2048 # Лимит чтения ответа VLESS handshake
 VLESS_HANDSHAKE_SUCCESS_MARKER = b'HTTP/1.1 200 OK' # Маркер успешного ответа HTTP после VLESS handshake (пример)
 VLESS_HANDSHAKE_FAILURE_MARKERS = [b'VLESS', b'error', b'fail'] # Маркеры неудачного ответа VLESS handshake (примеры)
-DEFAULT_VERIFY_SSL = True # По умолчанию верификация SSL включена, можно сделать настраиваемым
+DEFAULT_VERIFY_SSL = True # Removed - не используется
 
 
 HEADERS = {
@@ -291,14 +291,8 @@ def _calculate_encryption_score(query: Dict) -> float:
         "zero": ScoringWeights.ENCRYPTION_TYPE_ZERO.value # Maybe remove ZERO encryption? But keep for now.
     }.get(encryption_type, 0)
 
-def _calculate_sni_score(query: Dict) -> float:
-    score = 0
-    sni = query.get('sni', [None])[0]
-    if sni:
-        score += ScoringWeights.SNI_PRESENT.value
-        if sni.endswith(('.com', '.net', '.org', '.info', '.xyz')):
-            score += ScoringWeights.COMMON_SNI_BONUS.value
-    return score
+def _calculate_sni_score(query: Dict) -> float: # Removed SNI scoring - function remains but always returns 0
+    return 0.0
 
 def _calculate_alpn_score(query: Dict) -> float:
     score = 0
@@ -318,7 +312,7 @@ def _calculate_path_score(query: Dict) -> float:
         score += min(ScoringWeights.PATH_COMPLEXITY.value, complexity * (ScoringWeights.PATH_COMPLEXITY.value / 5))
     return score
 
-def _calculate_headers_score(query: Dict, sni: Optional[str]) -> float:
+def _calculate_headers_score(query: Dict, sni: Optional[str]) -> float: # SNI is optional now
     score = 0
     headers = query.get('headers', [None])[0]
     if headers:
@@ -329,14 +323,13 @@ def _calculate_headers_score(query: Dict, sni: Optional[str]) -> float:
             host_header = headers_dict.get('Host', None)
             if host_header:
                 score += ScoringWeights.HOST_HEADER.value
-                if sni and host_header == sni:
-                    score += ScoringWeights.HOST_SNI_MATCH.value
+                # HOST_SNI_MATCH removed - no SNI check
         except Exception:
             pass
     return score
 
 
-def _calculate_tls_fingerprint_score(query: Dict) -> float:
+def _calculate_tls_fingerprint_score(query: Dict) -> float: # UTLS/TLS related - could be removed if TLS is fully ignored
     score = 0
     fp = query.get('fp', [None])[0]
     if fp:
@@ -353,7 +346,7 @@ def _calculate_tls_fingerprint_score(query: Dict) -> float:
             score += 0 # Default to 0 if fingerprint is not recognized
     return score
 
-def _calculate_utls_score(query: Dict) -> float:
+def _calculate_utls_score(query: Dict) -> float: # UTLS/TLS related - could be removed if TLS is fully ignored
     score = 0
     utls = query.get('utls', [None])[0]
     if utls:
@@ -391,13 +384,12 @@ def _calculate_uuid_score(parsed: urlparse, query: Dict) -> float:
         score += min(ScoringWeights.UUID_LENGTH.value, len(uuid_val) * (ScoringWeights.UUID_LENGTH.value / 36))
     return score
 
-def _calculate_early_data_score(query: Dict) -> float:
-    return ScoringWeights.EARLY_DATA_SUPPORT.value if query.get('earlyData', [None])[0] == "1" else 0
+def _calculate_early_data_score(query: Dict) -> float: # TLS related - could be removed if TLS is fully ignored
+    return 0.0
 
-def _calculate_parameter_consistency_score(query: Dict, sni: Optional[str], host_header: Optional[str]) -> float:
+def _calculate_parameter_consistency_score(query: Dict, sni: Optional[str], host_header: Optional[str]) -> float: # SNI is optional now
     score = 0
-    if sni and host_header and sni != host_header:
-        score -= (ScoringWeights.PARAMETER_CONSISTENCY.value / 2)
+    # Parameter consistency check removed as SNI is not central anymore
     return score
 
 def _calculate_ipv6_score(parsed: urlparse) -> float:
@@ -442,8 +434,8 @@ def _calculate_quic_param_score(query: Dict) -> float:
     return ScoringWeights.QUIC_PARAM.value if query.get('maxIdleTime', [None])[0] else 0 # Relevant for QUIC based protocols
 
 
-def _calculate_cdn_usage_score(sni: Optional[str]) -> float:
-    return ScoringWeights.CDN_USAGE.value if sni and ".cdn." in sni else 0 # CDN still could be relevant based on SNI
+def _calculate_cdn_usage_score(sni: Optional[str]) -> float: # SNI is optional now - function remains but always returns 0
+    return 0.0
 
 def _calculate_mtu_size_score(query: Dict) -> float:
     return 0.0 # MTU Size removed as it's not usually in profile
@@ -498,21 +490,21 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
     score += _calculate_security_score(query)
     score += _calculate_transport_score(query)
     score += _calculate_encryption_score(query)
-    score += _calculate_sni_score(query)
+    score += _calculate_sni_score(query) # SNI scoring removed
     score += _calculate_alpn_score(query)
     score += _calculate_path_score(query)
-    sni = query.get('sni', [None])[0]
-    score += _calculate_headers_score(query, sni)
-    tls_fingerprint_score = _calculate_tls_fingerprint_score(query)
+    sni = query.get('sni', [None])[0] # SNI is still read from config, but not used for SSL check anymore
+    score += _calculate_headers_score(query, sni) # SNI is optional now in header scoring
+    tls_fingerprint_score = _calculate_tls_fingerprint_score(query) # UTLS/TLS related - could be removed if TLS is fully ignored
     if tls_fingerprint_score is not None: # Check for None to avoid TypeError
         score += tls_fingerprint_score
-    utls_score_val = _calculate_utls_score(query)
+    utls_score_val = _calculate_utls_score(query) # UTLS/TLS related - could be removed if TLS is fully ignored
     if utls_score_val is not None: # Check for None to avoid TypeError
         score += utls_score_val
     score += _calculate_udp_score(protocol)
     score += _calculate_port_score(parsed.port)
     score += _calculate_uuid_score(parsed, query) # Relevant for vless
-    score += _calculate_early_data_score(query)
+    score += _calculate_early_data_score(query) # TLS related - could be removed if TLS is fully ignored
     host_header = None
     headers = query.get('headers', [None])[0]
     if headers:
@@ -533,7 +525,7 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
     if quic_param_score is not None: # Check for None to avoid TypeError
         score += quic_param_score
     score += ScoringWeights.STREAM_ENCRYPTION.value # Stream encryption is quite general and could be relevant
-    score += _calculate_cdn_usage_score(sni)
+    score += _calculate_cdn_usage_score(sni) # SNI is optional now - function remains but always returns 0
     mtu_size_score = _calculate_mtu_size_score(query) # MTU removed from scoring
     if mtu_size_score is not None: # Check for None to avoid TypeError - Although function now always returns float, keeping check for robustness
         score += mtu_size_score
@@ -622,12 +614,9 @@ def create_profile_key(config: str) -> str:
                 elif id_value:
                     key_parts.append(f"id:{id_value}")
 
-            if CHECK_TLS_REALITY:
+            if CHECK_TLS_REALITY: # Could be removed if TLS is fully ignored
                  key_parts.append(f"security:{query.get('security', [''])[0]}")
                  key_parts.append(f"encryption:{query.get('encryption', [''])[0]}")
-
-            if CHECK_SNI:
-                key_parts.append(f"sni:{query.get('sni', [''])[0]}")
 
             if CHECK_CONNECTION_TYPE:
                 key_parts.append(f"type:{query.get('type', [''])[0]}")
@@ -675,60 +664,33 @@ async def check_ip_port_availability(host: str, port: int, timeout: float = FAST
         logger.error(f"Error checking IP: {host}, Port: {port}: {e}") # Логируем общие ошибки на уровне ERROR
         return False
 
-async def check_vless_handshake_and_response(host: str, port: int, sni: Optional[str] = None, timeout: int = VLESS_CHECK_TIMEOUT, verify_ssl: bool = DEFAULT_VERIFY_SSL, verify_hostname: bool = True) -> bool:
+async def check_vless_handshake_and_response(host: str, port: int, timeout: int = VLESS_CHECK_TIMEOUT) -> bool: # SNI and SSL params removed
     """
-    Проверяет VLESS прокси, выполняя handshake и анализируя ответ сервера.
-    Учитывает SNI для TLS handshake, если предоставлен.
-    Настраиваемая верификация SSL сертификата и hostname.
+    Проверяет VLESS прокси, выполняя handshake и анализируя ответ сервера по **TCP без TLS**.
+    Проверка SSL и SNI **полностью удалена**.
     Возвращает True, если handshake успешен и получен ожидаемый ответ, иначе False.
     """
     writer = None
-    ssl_context_desc = "verify_ssl={}, verify_hostname={}".format(verify_ssl, verify_hostname) # Описание режима верификации для логов
+    ssl_context_desc = "No SSL Check" # Указываем в логах, что SSL проверка отключена
     try:
         async with vless_check_semaphore:
             transport = "TCP" # По умолчанию TCP, может быть расширено для QUIC и WS в будущем
 
-            ssl_context = None
-            if sni and verify_ssl: # SSL контекст только если SNI и verify_ssl=True
-                ssl_context = ssl.create_default_context()
-                if not verify_hostname:
-                    ssl_context.check_hostname = False # Отключаем проверку hostname, если verify_hostname=False
-                # Если verify_hostname=True (по умолчанию), то проверка hostname включена (по умолчанию в create_default_context)
-
-
-            extra_kwargs = {}
-            if ssl_context:
-                extra_kwargs['ssl'] = ssl_context
-                extra_kwargs['server_hostname'] = sni # Установка SNI для TLS handshake
-
+            extra_kwargs = {} # SSL Context removed
 
             try:
-                reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port, **extra_kwargs), timeout=timeout)
+                reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port, **extra_kwargs), timeout=timeout) # No SSL context
             except ConnectionRefusedError as e:
-                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): Connection refused - {e}")
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, {ssl_context_desc}): Connection refused - {e}")
                 return False
             except socket.gaierror as e:
-                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): DNS resolution failed - {e}")
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, {ssl_context_desc}): DNS resolution failed - {e}")
                 return False
             except TimeoutError as e:
-                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): Connection timeout - {e}")
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, {ssl_context_desc}): Connection timeout - {e}")
                 return False
-            except ssl.SSLCertVerificationError as e: # Ловим ошибки верификации сертификата
-                logger.error(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): SSL Certificate Verification Error - {e}")
-                return False
-            except ssl.SSLWantReadError as e: # Ловим SSLWantReadError
-                logger.error(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): SSL Want Read Error - {e}")
-                return False
-            except ssl.SSLError as e: # Общие ошибки SSL
-                if "WRONG_VERSION_NUMBER" in str(e):
-                    logger.warning(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): SSL WRONG_VERSION_NUMBER - {e}") # Лог как WARNING
-                elif "SSLV3_ALERT_HANDSHAKE_FAILURE" in str(e):
-                    logger.warning(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): SSL Handshake Failure - {e}") # Лог как WARNING
-                else:
-                    logger.error(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): General SSL Error - {e}") # Остальные SSL ошибки как ERROR
-                return False
-            except Exception as e:
-                logger.error(f"Error connecting to VLESS proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): Connection error - {e}")
+            except Exception as e: # SSL related exceptions removed
+                logger.error(f"Error connecting to VLESS proxy {host}:{port} ({transport}, {ssl_context_desc}): Connection error - {e}")
                 return False
 
 
@@ -737,7 +699,7 @@ async def check_vless_handshake_and_response(host: str, port: int, sni: Optional
                 writer.write(vless_header)
                 await writer.drain()
             except Exception as e:
-                logger.error(f"Error sending VLESS header to {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
+                logger.error(f"Error sending VLESS header to {host}:{port} ({transport}, {ssl_context_desc}): {e}")
                 return False
 
             http_request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n" # Стандартный HTTP запрос для проверки ответа
@@ -745,39 +707,39 @@ async def check_vless_handshake_and_response(host: str, port: int, sni: Optional
                 writer.write(http_request)
                 await writer.drain()
             except Exception as e:
-                logger.error(f"Error sending HTTP request after VLESS handshake to {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
+                logger.error(f"Error sending HTTP request after VLESS handshake to {host}:{port} ({transport}, {ssl_context_desc}): {e}")
                 return False
 
             try:
                 response_data = await asyncio.wait_for(reader.read(VLESS_RESPONSE_BYTES_LIMIT), timeout=timeout)
                 if not response_data:
-                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): No response received.")
+                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, {ssl_context_desc}): No response received.")
                     return False
 
                 if VLESS_HANDSHAKE_SUCCESS_MARKER in response_data:
-                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}) - Handshake successful, server active. Response: {response_data[:100]!r}") # Логируем начало ответа для отладки
+                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, {ssl_context_desc}) - Handshake successful, server active. Response: {response_data[:100]!r}") # Логируем начало ответа для отладки
                     return True
                 else:
                     for failure_marker in VLESS_HANDSHAKE_FAILURE_MARKERS:
                         if failure_marker in response_data:
-                            logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}) - Handshake failure detected by marker '{failure_marker.decode(errors='ignore')}', response: {response_data[:100]!r}")
+                            logger.debug(f"VLESS Proxy {host}:{port} ({transport}, {ssl_context_desc}) - Handshake failure detected by marker '{failure_marker.decode(errors='ignore')}', response: {response_data[:100]!r}")
                             return False
-                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}) - Handshake response without success marker, response: {response_data[:100]!r}") # Логируем ответ для анализа
+                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, {ssl_context_desc}) - Handshake response without success marker, response: {response_data[:100]!r}") # Логируем ответ для анализа
                     return False
 
 
             except asyncio.TimeoutError:
-                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): Timeout waiting for handshake response.")
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, {ssl_context_desc}): Timeout waiting for handshake response.")
                 return False
             except Exception as e:
-                logger.error(f"Error reading VLESS handshake response from {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
+                logger.error(f"Error reading VLESS handshake response from {host}:{port} ({transport}, {ssl_context_desc}): {e}")
                 return False
 
     except asyncio.CancelledError:
-        logger.debug(f"VLESS proxy check for {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}) cancelled.")
+        logger.debug(f"VLESS proxy check for {host}:{port} ({transport}, {ssl_context_desc}) cancelled.")
         return False
     except Exception as e:
-        logger.error(f"Unexpected error during VLESS proxy check for {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
+        logger.error(f"Unexpected error during VLESS proxy check for {host}:{port} ({transport}, {ssl_context_desc}): {e}")
         return False
     finally:
         if writer:
@@ -785,9 +747,9 @@ async def check_vless_handshake_and_response(host: str, port: int, sni: Optional
                 writer.close()
                 await writer.wait_closed()
             except ConnectionResetError as e:
-                logger.debug(f"ConnectionResetError while closing writer for {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
+                logger.debug(f"ConnectionResetError while closing writer for {host}:{port} ({transport}, {ssl_context_desc}): {e}")
             except Exception as e:
-                logger.error(f"Error closing writer for {host}:{port} ({transport}, SNI: {sni}, {ssl_context_desc}): {e}")
+                logger.error(f"Error closing writer for {host}:{port} ({transport}, {ssl_context_desc}): {e}")
 
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
@@ -864,18 +826,9 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                 hostname = parsed.hostname
                 port = parsed.port
                 query = parse_qs(parsed.query)
-                sni = query.get('sni', [None])[0] # Извлекаем SNI из параметров URL
-                security_param = query.get('security', ['tls'])[0].lower() # Получаем параметр security, по умолчанию 'tls'
-                verify_ssl_profile = DEFAULT_VERIFY_SSL # По умолчанию используем глобальную настройку верификации
-                verify_hostname_profile = True # По умолчанию верификация hostname включена
-
-                if security_param == 'none': # Если security=none, не используем SSL, даже если есть SNI
-                    ssl_needed = False
-                else:
-                    ssl_needed = bool(sni) or security_param == 'tls' or security_param == 'reality' # Определяем, нужен ли SSL на основе SNI или security параметра
-
+                # SNI and SSL params removed from check
                 if hostname and port:
-                    is_active = await check_vless_handshake_and_response(hostname, port, sni=sni if ssl_needed else None, verify_ssl=verify_ssl_profile and ssl_needed, verify_hostname=verify_hostname_profile) # Передаем verify_ssl, verify_hostname и SNI только если нужен SSL
+                    is_active = await check_vless_handshake_and_response(hostname, port) # No SNI and SSL params
                     if not is_active:
                         logger.debug(f"VLESS Proxy {line} не прошел проверку активности.")
                         continue # Пропускаем scoring, если прокси не активен
