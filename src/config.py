@@ -104,6 +104,9 @@ VLESS_CHECK_TIMEOUT = 5 # Timeout for VLESS handshake check in seconds
 MAX_VLESS_CHECK_CONCURRENCY = 40  # Максимальное количество параллельных проверок VLESS
 vless_check_semaphore = asyncio.Semaphore(MAX_VLESS_CHECK_CONCURRENCY) # Семафор для ограничения параллелизма VLESS проверок
 FAST_CHECK_TIMEOUT = 0.5  # Очень короткий таймаут для быстрой проверки IP/порта (в секундах)
+VLESS_RESPONSE_BYTES_LIMIT = 2048 # Лимит чтения ответа VLESS handshake
+VLESS_HANDSHAKE_SUCCESS_MARKER = b'HTTP/1.1 200 OK' # Маркер успешного ответа HTTP после VLESS handshake (пример)
+VLESS_HANDSHAKE_FAILURE_MARKERS = [b'VLESS', b'error', b'fail'] # Маркеры неудачного ответа VLESS handshake (примеры)
 
 
 HEADERS = {
@@ -670,85 +673,92 @@ async def check_ip_port_availability(host: str, port: int, timeout: float = FAST
         logger.error(f"Error checking IP: {host}, Port: {port}: {e}") # Логируем общие ошибки на уровне ERROR
         return False
 
-async def check_profile_availability(config: str, timeout: int = VLESS_CHECK_TIMEOUT) -> bool:
-    """Проверяет VLESS прокси, выполняя handshake, с ограничением параллелизма."""
+async def check_vless_handshake_and_response(host: str, port: int, sni: Optional[str] = None, timeout: int = VLESS_CHECK_TIMEOUT) -> bool:
+    """
+    Проверяет VLESS прокси, выполняя handshake и анализируя ответ сервера.
+    Учитывает SNI для TLS handshake, если предоставлен.
+    Возвращает True, если handshake успешен и получен ожидаемый ответ, иначе False.
+    """
     writer = None
     try:
-        async with vless_check_semaphore: # Используем асинхронный контекстный менеджер семафора
-            parsed_url = urlparse(config)
-            if parsed_url.scheme != 'vless':
-                return True  # Skip VLESS check for non-VLESS protocols
+        async with vless_check_semaphore:
+            transport = "TCP" # По умолчанию TCP, может быть расширено для QUIC и WS в будущем
 
-            host = parsed_url.hostname
-            port = parsed_url.port
-            if not host or not port:
-                logger.warning(f"Invalid proxy URL, missing host or port for VLESS check: {config}")
-                return False
+            extra_kwargs = {}
+            if sni:
+                extra_kwargs['server_hostname'] = sni # Установка SNI для TLS handshake
 
             try:
-                reader, writer = await asyncio.open_connection(host, port)
+                reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port, ssl=True if sni else None, **extra_kwargs), timeout=timeout)
             except ConnectionRefusedError as e:
-                logger.debug(f"VLESS Proxy {config}: Connection refused - {e}") # Log as DEBUG
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}): Connection refused - {e}")
                 return False
             except socket.gaierror as e:
-                logger.debug(f"VLESS Proxy {config}: DNS resolution failed - {e}") # Log as DEBUG
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}): DNS resolution failed - {e}")
                 return False
             except TimeoutError as e:
-                logger.debug(f"VLESS Proxy {config}: Connection timeout - {e}") # Log as DEBUG
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}): Connection timeout - {e}")
                 return False
             except Exception as e:
-                logger.error(f"Error checking VLESS proxy {config}: Connection error - {e}")
+                logger.error(f"Error connecting to VLESS proxy {host}:{port} ({transport}, SNI: {sni}): Connection error - {e}")
                 return False
 
-
-            # VLESS Handshake
             vless_header = generate_vless_header(CLIENT_ID)
             try:
                 writer.write(vless_header)
+                await writer.drain()
             except Exception as e:
-                logger.error(f"Error sending VLESS header to {config}: {e}")
+                logger.error(f"Error sending VLESS header to {host}:{port} ({transport}, SNI: {sni}): {e}")
                 return False
 
-            # Dummy request (HTTP GET) - for basic connectivity check
-            http_request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
+            http_request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n" # Стандартный HTTP запрос для проверки ответа
             try:
                 writer.write(http_request)
                 await writer.drain()
             except Exception as e:
-                logger.error(f"Error sending HTTP request to {config}: {e}")
+                logger.error(f"Error sending HTTP request after VLESS handshake to {host}:{port} ({transport}, SNI: {sni}): {e}")
                 return False
-
 
             try:
-                response = await asyncio.wait_for(reader.read(1024), timeout=timeout) # Читаем до 1024 байт
-                if response:
-                    logger.debug(f"VLESS Proxy {config} is reachable.")
+                response_data = await asyncio.wait_for(reader.read(VLESS_RESPONSE_BYTES_LIMIT), timeout=timeout)
+                if not response_data:
+                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}): No response received.")
+                    return False
+
+                if VLESS_HANDSHAKE_SUCCESS_MARKER in response_data:
+                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}) - Handshake successful, server active. Response: {response_data[:100]!r}") # Логируем начало ответа для отладки
                     return True
                 else:
-                    logger.debug(f"VLESS Proxy {config} - No response received.")
+                    for failure_marker in VLESS_HANDSHAKE_FAILURE_MARKERS:
+                        if failure_marker in response_data:
+                            logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}) - Handshake failure detected by marker '{failure_marker.decode(errors='ignore')}', response: {response_data[:100]!r}")
+                            return False
+                    logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}) - Handshake response without success marker, response: {response_data[:100]!r}") # Логируем ответ для анализа
                     return False
+
+
             except asyncio.TimeoutError:
-                logger.debug(f"VLESS Proxy {config} - Timeout waiting for response.")
+                logger.debug(f"VLESS Proxy {host}:{port} ({transport}, SNI: {sni}): Timeout waiting for handshake response.")
                 return False
             except Exception as e:
-                logger.error(f"Error reading response from {config}: {e}")
+                logger.error(f"Error reading VLESS handshake response from {host}:{port} ({transport}, SNI: {sni}): {e}")
                 return False
 
-    except asyncio.CancelledError: # Обработка отмены задачи, если необходимо
-        logger.debug(f"VLESS proxy check for {config} cancelled.")
+    except asyncio.CancelledError:
+        logger.debug(f"VLESS proxy check for {host}:{port} ({transport}, SNI: {sni}) cancelled.")
         return False
     except Exception as e:
-        logger.error(f"Unexpected error during VLESS proxy check for {config}: {e}")
+        logger.error(f"Unexpected error during VLESS proxy check for {host}:{port} ({transport}, SNI: {sni}): {e}")
         return False
     finally:
         if writer:
             try:
                 writer.close()
                 await writer.wait_closed()
-            except ConnectionResetError as e: # Catch ConnectionResetError during wait_closed
-                logger.debug(f"ConnectionResetError while closing writer for {config}: {e}") # Log as DEBUG
+            except ConnectionResetError as e:
+                logger.debug(f"ConnectionResetError while closing writer for {host}:{port} ({transport}, SNI: {sni}): {e}")
             except Exception as e:
-                logger.error(f"Error closing writer for {config}: {e}")
+                logger.error(f"Error closing writer for {host}:{port} ({transport}, SNI: {sni}): {e}")
 
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
@@ -821,17 +831,20 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
 
             # Проверка доступности VLESS профиля перед подсчетом очков
             if protocol == 'vless://':
-                parsed = urlparse(line) # Парсим URL здесь, чтобы получить hostname и port
+                parsed = urlparse(line)
                 hostname = parsed.hostname
                 port = parsed.port
-                if hostname and port: # Проверяем, что hostname и port существуют
-                    is_available = await check_ip_port_availability(hostname, port) # Используем новую функцию
-                    if not is_available:
-                        logger.debug(f"VLESS Proxy IP: {hostname}, Port: {port} is not available, skipping scoring.")
-                        continue # Пропускаем scoring, если прокси не доступен по IP и порту
+                query = parse_qs(parsed.query)
+                sni = query.get('sni', [None])[0] # Извлекаем SNI из параметров URL
+                if hostname and port:
+                    is_active = await check_vless_handshake_and_response(hostname, port, sni=sni) # Используем улучшенную функцию проверки VLESS handshake
+                    if not is_active:
+                        logger.debug(f"VLESS Proxy {line} не прошел проверку активности.")
+                        continue # Пропускаем scoring, если прокси не активен
                 else:
-                    logger.warning(f"Невозможно проверить IP/порт для VLESS proxy {line}: hostname или port не найдены.")
+                    logger.warning(f"Невозможно проверить VLESS proxy {line}: hostname или port не найдены.")
                     continue # Пропускаем, если не удалось извлечь hostname или port
+
 
             score = compute_profile_score(line, response_time=channel.metrics.avg_response_time)
 
