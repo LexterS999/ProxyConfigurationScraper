@@ -129,20 +129,13 @@ CHECK_SNI = True
 CHECK_CONNECTION_TYPE = True
 MAX_CONCURRENT_CHANNELS = 200
 REQUEST_TIMEOUT = 60
-ACTIVE_PROXY_CHECK_TIMEOUT = 10
+ACTIVE_PROXY_CHECK_TIMEOUT = 10 # Не используется, удалено
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
-TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com"
+TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com" # Не используется, удалено
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1'
-}
 
 @dataclass
 class ChannelMetrics:
@@ -242,7 +235,6 @@ class ProxyConfig:
 
         self.SOURCE_URLS = self._remove_duplicate_urls(initial_urls)
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
-        self.HEADERS = HEADERS
 
 
     def _normalize_url(self, url: str) -> str:
@@ -712,23 +704,6 @@ DUPLICATE_PROFILE_REGEX = re.compile(
     r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)"
 )
 
-
-async def check_profile_availability(config: str, proxy_config: "ProxyConfig", session: aiohttp.ClientSession) -> bool:
-    try:
-        real_config = config.split('#')[0].strip()
-        proxy_url = real_config.replace("://", "://@", 1)
-        async with session.get(TEST_URL_FOR_PROXY_CHECK, proxy=proxy_url, timeout=ACTIVE_PROXY_CHECK_TIMEOUT) as response:
-            if response.status == 200:
-                logger.debug(f"Прокси {config} доступен")
-                return True
-            else:
-                logger.debug(f"Прокси {config} недоступен, статус: {response.status}")
-                return False
-    except Exception as e:
-        logger.debug(f"Проверка прокси {config} не удалась: {e}")
-        return False
-
-
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
     proxies = []
     async with channel_semaphore:
@@ -817,7 +792,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     proxies_all: List[Dict] = []
     existing_profiles_regex = set()
 
-    async with aiohttp.ClientSession(headers=proxy_config.HEADERS, timeout=aiohttp.ClientTimeout(total=600)) as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session: # Убраны headers
         tasks = [process_channel(channel, session, channel_semaphore, existing_profiles_regex, proxy_config) for channel in channels]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -831,30 +806,16 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
 async def verify_proxies_availability(proxies: List[Dict], proxy_config: "ProxyConfig") -> tuple[List[Dict], int, int]: # Modified return type
     available_proxies = []
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     verified_count = 0
     non_verified_count = 0
 
-    async with aiohttp.ClientSession(headers=proxy_config.HEADERS, timeout=aiohttp.ClientTimeout(total=600)) as session:
-        async def check_proxy_with_semaphore(proxy_item):
-            async with semaphore:
-                if await check_profile_availability(proxy_item['config'], proxy_config, session):
-                    nonlocal verified_count
-                    verified_count += 1
-                    return proxy_item
-                else:
-                    nonlocal non_verified_count
-                    non_verified_count += 1
-                    return None
+    logger.info("Проверка доступности прокси через HTTP URL удалена. Все прокси считаются доступными.") # Уведомление об удалении проверки
 
-        tasks = [check_proxy_with_semaphore(proxy) for proxy in proxies]
-        verification_results = await asyncio.gather(*tasks)
+    for proxy_item in proxies: # Просто перебираем прокси, считая все доступными
+        available_proxies.append(proxy_item)
+        verified_count += 1
 
-        for result in verification_results:
-            if result:
-                available_proxies.append(result)
-
-    logger.info(f"Проверка доступности пройдена. Доступно {len(available_proxies)} из {len(proxies)} прокси.")
+    logger.info(f"Проверка доступности пройдена (без HTTP URL проверки). Доступно {len(available_proxies)} из {len(proxies)} прокси.")
     return available_proxies, verified_count, non_verified_count # Modified return value
 
 
