@@ -846,7 +846,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
 
                 if profile_id: # Проверяем ID только если он присутствует
                     if not is_valid_uuid(profile_id):
-                        logger.warning(f"Профиль {line} пропущен из-за неверного формата UUID: {profile_id}")
+                        logger.debug(f"Профиль {line} пропущен из-за неверного формата UUID: {profile_id}") # Изменено на logger.debug
                         continue # Пропускаем текущий профиль, если UUID не валиден
                 # --- Конец проверки UUID ---
 
