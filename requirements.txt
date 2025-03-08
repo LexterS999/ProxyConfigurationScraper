@@ -8,3 +8,7 @@ PySocks
 cryptography
 ipaddress
 tuple
+pytest
+numpy
+typing-extensions
+dataclasses
