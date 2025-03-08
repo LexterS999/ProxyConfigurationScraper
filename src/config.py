@@ -306,11 +306,11 @@ def _calculate_config_length_score(config: str) -> float:
 
 def _calculate_security_score(query: Dict) -> float:
     score = 0
-    security_params = query.getlist('security')
+    security_params = query.get('security', []) # Исправлено: используем get с дефолтным значением []
     if security_params:
         score += ScoringWeights.SECURITY_PARAM.value
         score += min(ScoringWeights.NUM_SECURITY_PARAMS.value, len(security_params) * (ScoringWeights.NUM_SECURITY_PARAMS.value / 3))
-        security_type = security_params[0].lower()
+        security_type = security_params[0].lower() if security_params else 'none' # Добавлена проверка на пустоту списка
         score += {
             "tls": ScoringWeights.SECURITY_TYPE_TLS.value,
             "reality": ScoringWeights.SECURITY_TYPE_REALITY.value,
@@ -464,10 +464,13 @@ def _calculate_hidden_param_score(query: Dict) -> float:
         'headers', 'fp', 'utls',
         'earlyData', 'id', 'bufferSize', 'tcpFastOpen', 'maxIdleTime', 'streamEncryption', 'obfs', 'debug', 'comment'
     )
-    for key, value in query.items():
+    for key, value in query.items(): # Цикл по элементам словаря query
         if key not in known_params:
             score += ScoringWeights.HIDDEN_PARAM.value
-            score += min(ScoringWeights.RARITY_BONUS.value, ScoringWeights.RARITY_BONUS.value / len(value[0]))
+            # value здесь - это список, даже если parse_qs вернул обычный dict.
+            # parse_qs всегда возвращает значения в виде списков, даже если параметр указан один раз.
+            if value and value[0]: # Проверяем, что список не пуст и содержит хотя бы один элемент
+                score += min(ScoringWeights.RARITY_BONUS.value, ScoringWeights.RARITY_BONUS.value / len(value[0]))
     return score
 
 def _calculate_buffer_size_score(query: Dict) -> float:
