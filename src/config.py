@@ -17,7 +17,6 @@ import io
 from enum import Enum
 import shutil
 
-# Настройка logging на DEBUG для более подробных сообщений
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(process)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -25,14 +24,7 @@ DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 
 class ScoringWeights(Enum):
     """
-    Enum, определяющий веса для различных параметров конфигурации прокси.
-    Веса загружаются из файла конфигурации (scoring_weights.json) при инициализации.
-    Если файл конфигурации не найден или веса не определены в файле, используются значения по умолчанию.
-
-    Каждый член Enum представляет собой вес, присваиваемый определенной характеристике
-    конфигурации. Веса используются для расчета общего скора профиля прокси.
-
-    Подробное описание каждого веса смотрите в docstring соответствующего члена Enum.
+    Scoring weights, now including weights relevant to trojan protocol.
     """
     PROTOCOL_BASE = 50
     CONFIG_LENGTH = 10
@@ -70,8 +62,8 @@ class ScoringWeights(Enum):
     PORT_80 = 5
     PORT_443 = 10
     PORT_OTHER = 2
-    UUID_PRESENT = 5
-    UUID_LENGTH = 3
+    UUID_PRESENT = 5 # VLESS specific, might rename or generalize if needed for other protocols
+    UUID_LENGTH = 3    # VLESS specific
     EARLY_DATA_SUPPORT = 5
     PARAMETER_CONSISTENCY = 12
     IPV6_ADDRESS = -9
@@ -91,19 +83,11 @@ class ScoringWeights(Enum):
     OBFS = 4
     DEBUG_PARAM = -3
     COMMENT = 1
+    TROJAN_PASSWORD_PRESENT = 8 # Trojan specific: presence of password is crucial
+    TROJAN_PASSWORD_LENGTH = 5  # Trojan specific: password length can indicate complexity
 
     @staticmethod
     def load_weights_from_json(file_path: str = DEFAULT_SCORING_WEIGHTS_FILE) -> None:
-        """
-        Загружает веса скоринга из JSON файла.
-
-        Если файл не найден или возникает ошибка при чтении/парсинге,
-        используются веса по умолчанию, определенные в Enum.
-
-        Args:
-            file_path (str, optional): Путь к JSON файлу с весами.
-                                        Defaults to DEFAULT_SCORING_WEIGHTS_FILE.
-        """
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 weights_data: Dict[str, Any] = json.load(f)
@@ -116,7 +100,7 @@ class ScoringWeights(Enum):
                         logger.error(f"Неверное значение веса для {name}: {value}. Используется значение по умолчанию.")
         except FileNotFoundError:
             logger.warning(f"Файл весов скоринга не найден: {file_path}. Используются веса по умолчанию.")
-            ScoringWeights._create_default_weights_file(file_path) # Создаем файл с весами по умолчанию
+            ScoringWeights._create_default_weights_file(file_path)
         except json.JSONDecodeError:
             logger.error(f"Ошибка при чтении JSON файла весов: {file_path}. Используются веса по умолчанию.")
         except Exception as e:
@@ -124,12 +108,6 @@ class ScoringWeights(Enum):
 
     @staticmethod
     def _create_default_weights_file(file_path: str) -> None:
-        """
-        Создает JSON файл с весами скоринга по умолчанию.
-
-        Args:
-            file_path (str): Путь для сохранения файла весов по умолчанию.
-        """
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         default_weights = {member.name: member.value for member in ScoringWeights}
         try:
@@ -139,15 +117,12 @@ class ScoringWeights(Enum):
         except Exception as e:
             logger.error(f"Ошибка при создании файла весов скоринга по умолчанию: {e}")
 
-
-# Загружаем веса скоринга при запуске модуля
 ScoringWeights.load_weights_from_json()
-
 
 MIN_ACCEPTABLE_SCORE = 100.0
 MIN_CONFIG_LENGTH = 40
-ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://"]
-PREFERRED_PROTOCOLS = ["vless://"]
+ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "trojan://"] # Added trojan://
+PREFERRED_PROTOCOLS = ["vless://", "trojan://"] #троян может быть тоже preferred
 CHECK_USERNAME = True
 CHECK_TLS_REALITY = True
 CHECK_SNI = True
@@ -198,7 +173,7 @@ class ChannelConfig:
         if not isinstance(url, str):
             raise ValueError(f"URL должен быть строкой, получен тип: {type(url).__name__}")
         url = url.strip()
-        valid_protocols = ('http://', 'https://', 'ssconf://')
+        valid_protocols = ('http://', 'https://', 'ssconf://', 'trojan://') # Added trojan:// validation here too, although it's in ALLOWED_PROTOCOLS
         if not any(url.startswith(proto) for proto in valid_protocols):
             raise ValueError(f"Неверный протокол URL. Ожидаются: {', '.join(valid_protocols)}, получен: {url[:url.find('://') + 3] if '://' in url else url[:10]}...")
         return url
@@ -239,7 +214,7 @@ class ChannelConfig:
         else:
             self.metrics.fail_count += 1
         if response_time > 0:
-            self.metrics.avg_response_time = (self.metrics.avg_response_time * 0.7) + (response_time * 0.3) if self.metrics.avg_response_time else self.metrics.avg_response_time = response_time # Fixed typo here
+            self.metrics.avg_response_time = (self.metrics.avg_response_time * 0.7) + (response_time * 0.3) if self.metrics.avg_response_time else self.metrics.avg_response_time = response_time
         self.calculate_overall_score()
 
 class ProxyConfig:
@@ -453,10 +428,19 @@ def _calculate_port_score(port: Optional[int]) -> float:
 def _calculate_uuid_score(parsed: urlparse, query: Dict) -> float:
     score = 0
     uuid_val = parsed.username or query.get('id', [None])[0]
-    if uuid_val:
+    if uuid_val and parsed.scheme == 'vless': # Make UUID score vless specific
         score += ScoringWeights.UUID_PRESENT.value
         score += min(ScoringWeights.UUID_LENGTH.value, len(uuid_val) * (ScoringWeights.UUID_LENGTH.value / 36))
     return score
+
+def _calculate_trojan_password_score(parsed: urlparse) -> float: # Trojan specific score
+    score = 0
+    password = parsed.password
+    if password:
+        score += ScoringWeights.TROJAN_PASSWORD_PRESENT.value
+        score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value, len(password) * (ScoringWeights.TROJAN_PASSWORD_LENGTH.value / 16)) # Adjusted length scaling
+    return score
+
 
 def _calculate_early_data_score(query: Dict) -> float:
     return ScoringWeights.EARLY_DATA_SUPPORT.value if query.get('earlyData', [None])[0] == "1" else 0
@@ -578,7 +562,9 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
         score += utls_score_val
     score += _calculate_udp_score(protocol)
     score += _calculate_port_score(parsed.port)
-    score += _calculate_uuid_score(parsed, query)
+    score += _calculate_uuid_score(parsed, query) # Vless specific score
+    if protocol == 'trojan://': # Trojan specific score - apply only for trojan
+        score += _calculate_trojan_password_score(parsed)
     score += _calculate_early_data_score(query)
     host_header = None
     headers = query.get('headers', [None])[0]
@@ -649,6 +635,12 @@ def generate_custom_name(config: str) -> str:
             name_parts.append(security_type)
         elif parsed.scheme in ("tuic", "hy2"):
             name_parts.append(parsed.scheme.upper())
+        elif parsed.scheme in ("trojan"): # Added trojan naming
+            transport_type = query.get("type", ["NONE"])[0].upper()
+            security_type = query.get("security", ["NONE"])[0].upper() # Trojan also uses security
+            name_parts.append(transport_type)
+            name_parts.append(security_type)
+
 
         return " - ".join(filter(lambda x: x != "NONE" and x, name_parts))
     except Exception as e:
@@ -669,7 +661,7 @@ def create_profile_key(config: str) -> str:
         parsed = urlparse(config)
         query = parse_qs(parsed.query)
 
-        core_pattern = re.compile(r"^(vless|tuic|hy2)://.*?@([\w\d\.\:]+):(\d+)")
+        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan)://.*?@([\w\d\.\:]+):(\d+)") # Added trojan to regex
         match = core_pattern.match(config)
 
         if match:
@@ -681,13 +673,16 @@ def create_profile_key(config: str) -> str:
                 port,
             ]
 
-            if CHECK_USERNAME:
+            if CHECK_USERNAME or protocol == 'trojan': # Username check relevant for trojan too
                 user = parsed.username
-                id_value = query.get('id', [None])[0]
+                password = parsed.password # Password for trojan
+                id_value = query.get('id', [None])[0] # id for vless
                 if user:
-                    key_parts.append(f"user:{user}")
+                    key_parts.append(f"user:{user}") # user for vless, tuic, hy2
+                elif password and protocol == 'trojan':
+                    key_parts.append(f"password:***") # password for trojan - masked for key
                 elif id_value:
-                    key_parts.append(f"id:{id_value}")
+                    key_parts.append(f"id:{id_value}") # id for vless
 
             if CHECK_TLS_REALITY:
                  key_parts.append(f"security:{query.get('security', [''])[0]}")
@@ -708,7 +703,7 @@ def create_profile_key(config: str) -> str:
         raise ValueError(f"Не удалось создать ключ для профиля: {config}") from e
 
 DUPLICATE_PROFILE_REGEX = re.compile(
-    r"^(vless|tuic|hy2)://(?:.*?@)?([^@/:]+):(\d+)"
+    r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)" # Added trojan to regex
 )
 
 
@@ -718,10 +713,10 @@ async def check_profile_availability(config: str, proxy_config: "ProxyConfig", s
         proxy_url = real_config.replace("://", "://@", 1)
         async with session.get(TEST_URL_FOR_PROXY_CHECK, proxy=proxy_url, timeout=ACTIVE_PROXY_CHECK_TIMEOUT) as response:
             if response.status == 200:
-                logger.debug(f"Прокси {config} доступен") # Debug log on success
+                logger.debug(f"Прокси {config} доступен")
                 return True
             else:
-                logger.debug(f"Прокси {config} недоступен, статус: {response.status}") # Debug log on fail with status
+                logger.debug(f"Прокси {config} недоступен, статус: {response.status}")
                 return False
     except Exception as e:
         logger.debug(f"Проверка прокси {config} не удалась: {e}")
