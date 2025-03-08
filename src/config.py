@@ -829,16 +829,23 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
     return proxies_all
 
-async def verify_proxies_availability(proxies: List[Dict], proxy_config: "ProxyConfig") -> List[Dict]:
+async def verify_proxies_availability(proxies: List[Dict], proxy_config: "ProxyConfig") -> tuple[List[Dict], int, int]: # Modified return type
     available_proxies = []
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
+    verified_count = 0
+    non_verified_count = 0
 
     async with aiohttp.ClientSession(headers=proxy_config.HEADERS, timeout=aiohttp.ClientTimeout(total=600)) as session:
         async def check_proxy_with_semaphore(proxy_item):
             async with semaphore:
                 if await check_profile_availability(proxy_item['config'], proxy_config, session):
+                    nonlocal verified_count
+                    verified_count += 1
                     return proxy_item
-                return None
+                else:
+                    nonlocal non_verified_count
+                    non_verified_count += 1
+                    return None
 
         tasks = [check_proxy_with_semaphore(proxy) for proxy in proxies]
         verification_results = await asyncio.gather(*tasks)
@@ -848,7 +855,7 @@ async def verify_proxies_availability(proxies: List[Dict], proxy_config: "ProxyC
                 available_proxies.append(result)
 
     logger.info(f"Проверка доступности пройдена. Доступно {len(available_proxies)} из {len(proxies)} прокси.")
-    return available_proxies
+    return available_proxies, verified_count, non_verified_count # Modified return value
 
 
 def save_final_configs(proxies: List[Dict], output_file: str):
@@ -872,7 +879,7 @@ def main():
 
     async def runner():
         proxies = await process_all_channels(channels, proxy_config)
-        verified_proxies = await verify_proxies_availability(proxies, proxy_config)
+        verified_proxies, verified_count, non_verified_count = await verify_proxies_availability(proxies, proxy_config) # Modified line
         save_final_configs(verified_proxies, proxy_config.OUTPUT_FILE)
 
         total_channels = len(channels)
@@ -897,16 +904,12 @@ def main():
         logger.info(f"Всего уникальных конфигураций: {total_unique_configs}")
         logger.info(f"Всего успехов (загрузок): {total_successes}")
         logger.info(f"Всего неудач (загрузок): {total_fails}")
+        logger.info(f"Прокси прошли проверку: {verified_count}") # New log output
+        logger.info(f"Прокси не прошли проверку: {non_verified_count}") # New log output
 
         logger.info("Статистика по протоколам:")
         for protocol, count in protocol_stats.items():
             logger.info(f"  {protocol}: {count}")
-
-        sorted_channels = sorted(channels, key=lambda ch: ch.metrics.overall_score, reverse=True)
-        logger.info("Статистика по каналам (отсортировано по стабильности):")
-        for channel in sorted_channels:
-            logger.info(f"  URL: {channel.url}, Валидных конфигураций: {channel.metrics.valid_configs}, Оценка стабильности: {channel.metrics.overall_score:.2f}, Успехов: {channel.metrics.success_count}, Неудач: {channel.metrics.fail_count}")
-
         logger.info("================== КОНЕЦ СТАТИСТИКИ ==============")
 
 
