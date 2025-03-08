@@ -214,7 +214,10 @@ class ChannelConfig:
         else:
             self.metrics.fail_count += 1
         if response_time > 0:
-            self.metrics.avg_response_time = (self.metrics.avg_response_time * 0.7) + (response_time * 0.3) if self.metrics.avg_response_time else self.metrics.avg_response_time = response_time
+            if self.metrics.avg_response_time: # Исправленная логика с if-else
+                self.metrics.avg_response_time = (self.metrics.avg_response_time * 0.7) + (response_time * 0.3)
+            else:
+                self.metrics.avg_response_time = response_time
         self.calculate_overall_score()
 
 class ProxyConfig:
