@@ -121,8 +121,8 @@ ScoringWeights.load_weights_from_json()
 
 MIN_ACCEPTABLE_SCORE = 100.0
 MIN_CONFIG_LENGTH = 40
-ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "trojan://"] # Added trojan://
-PREFERRED_PROTOCOLS = ["vless://", "trojan://"] #троян может быть тоже preferred
+ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "trojan://"]
+PREFERRED_PROTOCOLS = ["vless://", "trojan://", "tuic://", "hy2://"] # Теперь все 4 протокола preferred
 CHECK_USERNAME = True
 CHECK_TLS_REALITY = True
 CHECK_SNI = True
@@ -173,7 +173,7 @@ class ChannelConfig:
         if not isinstance(url, str):
             raise ValueError(f"URL должен быть строкой, получен тип: {type(url).__name__}")
         url = url.strip()
-        valid_protocols = ('http://', 'https://', 'ssconf://', 'trojan://') # Added trojan:// validation here too, although it's in ALLOWED_PROTOCOLS
+        valid_protocols = ('http://', 'https://', 'ssconf://', 'trojan://')
         if not any(url.startswith(proto) for proto in valid_protocols):
             raise ValueError(f"Неверный протокол URL. Ожидаются: {', '.join(valid_protocols)}, получен: {url[:url.find('://') + 3] if '://' in url else url[:10]}...")
         return url
@@ -428,17 +428,17 @@ def _calculate_port_score(port: Optional[int]) -> float:
 def _calculate_uuid_score(parsed: urlparse, query: Dict) -> float:
     score = 0
     uuid_val = parsed.username or query.get('id', [None])[0]
-    if uuid_val and parsed.scheme == 'vless': # Make UUID score vless specific
+    if uuid_val and parsed.scheme == 'vless':
         score += ScoringWeights.UUID_PRESENT.value
         score += min(ScoringWeights.UUID_LENGTH.value, len(uuid_val) * (ScoringWeights.UUID_LENGTH.value / 36))
     return score
 
-def _calculate_trojan_password_score(parsed: urlparse) -> float: # Trojan specific score
+def _calculate_trojan_password_score(parsed: urlparse) -> float:
     score = 0
     password = parsed.password
     if password:
         score += ScoringWeights.TROJAN_PASSWORD_PRESENT.value
-        score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value, len(password) * (ScoringWeights.TROJAN_PASSWORD_LENGTH.value / 16)) # Adjusted length scaling
+        score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value, len(password) * (ScoringWeights.TROJAN_PASSWORD_LENGTH.value / 16))
     return score
 
 
@@ -562,8 +562,8 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
         score += utls_score_val
     score += _calculate_udp_score(protocol)
     score += _calculate_port_score(parsed.port)
-    score += _calculate_uuid_score(parsed, query) # Vless specific score
-    if protocol == 'trojan://': # Trojan specific score - apply only for trojan
+    score += _calculate_uuid_score(parsed, query)
+    if protocol == 'trojan://':
         score += _calculate_trojan_password_score(parsed)
     score += _calculate_early_data_score(query)
     host_header = None
@@ -635,9 +635,9 @@ def generate_custom_name(config: str) -> str:
             name_parts.append(security_type)
         elif parsed.scheme in ("tuic", "hy2"):
             name_parts.append(parsed.scheme.upper())
-        elif parsed.scheme in ("trojan"): # Added trojan naming
+        elif parsed.scheme in ("trojan"):
             transport_type = query.get("type", ["NONE"])[0].upper()
-            security_type = query.get("security", ["NONE"])[0].upper() # Trojan also uses security
+            security_type = query.get("security", ["NONE"])[0].upper()
             name_parts.append(transport_type)
             name_parts.append(security_type)
 
@@ -661,7 +661,7 @@ def create_profile_key(config: str) -> str:
         parsed = urlparse(config)
         query = parse_qs(parsed.query)
 
-        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan)://.*?@([\w\d\.\:]+):(\d+)") # Added trojan to regex
+        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan)://.*?@([\w\d\.\:]+):(\d+)")
         match = core_pattern.match(config)
 
         if match:
@@ -673,16 +673,16 @@ def create_profile_key(config: str) -> str:
                 port,
             ]
 
-            if CHECK_USERNAME or protocol == 'trojan': # Username check relevant for trojan too
+            if CHECK_USERNAME or protocol == 'trojan':
                 user = parsed.username
-                password = parsed.password # Password for trojan
-                id_value = query.get('id', [None])[0] # id for vless
+                password = parsed.password
+                id_value = query.get('id', [None])[0]
                 if user:
-                    key_parts.append(f"user:{user}") # user for vless, tuic, hy2
+                    key_parts.append(f"user:{user}")
                 elif password and protocol == 'trojan':
-                    key_parts.append(f"password:***") # password for trojan - masked for key
+                    key_parts.append(f"password:***")
                 elif id_value:
-                    key_parts.append(f"id:{id_value}") # id for vless
+                    key_parts.append(f"id:{id_value}")
 
             if CHECK_TLS_REALITY:
                  key_parts.append(f"security:{query.get('security', [''])[0]}")
@@ -703,7 +703,7 @@ def create_profile_key(config: str) -> str:
         raise ValueError(f"Не удалось создать ключ для профиля: {config}") from e
 
 DUPLICATE_PROFILE_REGEX = re.compile(
-    r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)" # Added trojan to regex
+    r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)"
 )
 
 
