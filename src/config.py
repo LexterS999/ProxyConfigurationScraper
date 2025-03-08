@@ -135,14 +135,8 @@ OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com"
 
-XRAY_BINARY_PATH = "./xray"
-XRAY_TEMP_CONFIG_DIR = "temp_xray_configs"
-XRAY_DOWNLOAD_URL = "https://github.com/XTLS/Xray-core/releases/download/v25.3.6/Xray-linux-64.zip"
-XRAY_ZIP_FILE = "xray.zip"
-os.makedirs(XRAY_TEMP_CONFIG_DIR, exist_ok=True)
 
 MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS = 60
-MAX_CONCURRENT_XRAY_CHECKS = 60
 
 
 @dataclass
@@ -838,8 +832,8 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
 
 async def verify_proxies_availability(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
-    """Verifies proxy availability using Xray or TCP handshake based on Xray binary presence."""
-    return await verify_proxies_availability_tcp_handshake(proxies, proxy_config) # Используем TCP handshake проверку
+    """Verifies proxy availability using TCP handshake."""
+    return await verify_proxies_availability_tcp_handshake(proxies, proxy_config)
 
 
 async def verify_proxies_availability_tcp_handshake(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
