@@ -25,8 +25,8 @@ import urllib.parse
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(process)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
-DEFAULT_CHANNEL_SOURCES_FILE = "configs/channel_sources.json" # Added DEFAULT_CHANNEL_SOURCES_FILE
+DEFAULT_SCORING_WEIGHTS_FILE = "scoring_weights.json"
+DEFAULT_CHANNEL_SOURCES_FILE = "all_urls.txt" # Added DEFAULT_CHANNEL_SOURCES_FILE
 
 class ScoringWeightsModel(BaseModel):
     """Data model for scoring weights with validation."""
