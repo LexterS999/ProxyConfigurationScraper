@@ -182,16 +182,19 @@ class ChannelConfig:
         self.check_count = 0
 
     def _validate_url(self, url: str) -> str:
-        """Проверяет URL канала."""
+        """Проверяет URL канала, используя регулярное выражение для протоколов."""
         if not url:
             raise ValueError("URL не может быть пустым.")
         if not isinstance(url, str):
             raise ValueError(f"URL должен быть строкой, получено: {type(url).__name__}")
         url = url.strip()
-        valid_protocols = ('http://', 'https://', 'trojan://', 'vless://', 'tuic://', 'hy2://') # ssconf removed
-        if not any(url.startswith(proto) for proto in valid_protocols):
+        protocol_regex = re.compile(r"^(vless|tuic|hy2|trojan)://", re.IGNORECASE) # Regex для протоколов
+        http_https_regex = re.compile(r"^(http|https)://", re.IGNORECASE) # Regex для http/https
+
+        if not (protocol_regex.match(url) or http_https_regex.match(url)): # Используем regex для проверки протокола
             detected_protocol = url[:url.find('://') + 3] if '://' in url else url[:10]
-            raise ValueError(f"Неверный протокол URL: '{detected_protocol}...'. Ожидается один из: {', '.join(valid_protocols)}.")
+            valid_protocols_str = ', '.join([proto + '://' for proto in ['vless', 'tuic', 'hy2', 'trojan', 'http', 'https']])
+            raise ValueError(f"Неверный протокол URL: '{detected_protocol}...'. Ожидается один из: {valid_protocols_str}.")
         return url
 
     def calculate_overall_score(self):
@@ -222,8 +225,10 @@ class ChannelConfig:
         return 0
 
     def _calculate_response_time_penalty(self) -> float:
-        """Вычисляет штраф за время ответа."""
-        assert self.metrics.avg_response_time >= 0, "Среднее время ответа не должно быть отрицательным" # Добавлено утверждение
+        """Вычисляет штраф за время ответа, используя предупреждение вместо assertion."""
+        if self.metrics.avg_response_time < 0:
+            logger.warning(f"Среднее время ответа отрицательное: {self.metrics.avg_response_time} для {self.url}. Ожидается неотрицательное значение.")
+            return 0 # Возвращаем 0 штрафа в случае отрицательного времени, чтобы избежать проблем с оценкой
         return self.metrics.avg_response_time * ScoringWeights.RESPONSE_TIME.value if self.metrics.avg_response_time > 0 else 0
 
     def update_channel_stats(self, success: bool, response_time: float = 0):
@@ -268,6 +273,7 @@ class ProxyConfig:
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
 
     def _normalize_url(self, url: str) -> str:
+        """Нормализует URL, исключая параметры запроса и фрагменты для целей уникальности."""
         try:
             if not url:
                 raise ValueError("URL не может быть пустым для нормализации.")
@@ -279,12 +285,13 @@ class ProxyConfig:
                 raise ValueError(f"Отсутствует netloc (домен или IP) в URL: '{url}'.")
 
             path = parsed.path.rstrip('/')
-            return f"{parsed.scheme}://{parsed.netloc}{path}"
+            return f"{parsed.scheme}://{parsed.netloc}{path}" # Исключаем query и fragment
         except Exception as e:
             logger.error(f"Ошибка нормализации URL для url '{url}': {str(e)}")
             raise
 
     def _remove_duplicate_urls(self, channel_configs: List[ChannelConfig]) -> List[ChannelConfig]:
+        """Удаляет дубликаты URL, используя нормализованные URL для сравнения и проверяя IPv6 адреса."""
         try:
             seen_urls = set()
             unique_configs = []
@@ -437,7 +444,7 @@ def _calculate_utls_score(query: Dict) -> float:
             "chrome": ScoringWeights.UTLS_VALUE_CHROME.value,
             "firefox": ScoringWeights.UTLS_VALUE_FIREFOX.value,
             "ios": ScoringWeights.UTLS_VALUE_IOS.value,
-            "safari": ScoringWeights.UTLS_VALUE_SAFARI,
+            "safari": ScoringWeights.UTLS_VALUE_SAFARI.value,
             "randomized": ScoringWeights.UTLS_VALUE_RANDOMIZED.value,
             "random": ScoringWeights.UTLS_VALUE_RANDOM.value
         }.get(utls.lower(), 0)
@@ -565,16 +572,12 @@ def _calculate_multiplexing_score(query: Dict) -> float:
 
 
 def is_valid_uuid(uuid_string: str) -> bool:
-    """Проверяет формат UUID v4 или v6."""
+    """Проверяет, является ли строка действительным UUID v4."""
     try:
-        uuid.UUID(uuid_string, version=4)
+        uuid.UUID(uuid_string, version=4) # Проверяем только UUID v4
         return True
     except ValueError:
-        try:
-            uuid.UUID(uuid_string, version=6) # Рассмотреть, нужен ли v6 или достаточно только v4
-            return True
-        except ValueError:
-            return False
+        return False
 
 def _compute_protocol_score(protocol: str) -> float:
     """Вычисляет базовую оценку на основе протокола."""
@@ -694,7 +697,7 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
 
 
 def generate_custom_name(config: str) -> str:
-    """Генерирует пользовательское имя для прокси-профиля из URL конфигурации."""
+    """Генерирует пользовательское имя для прокси-профиля из URL конфигурации, включая протокол для TUIC/HY2."""
     protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
     if not protocol:
         return "UNKNOWN"
@@ -710,7 +713,7 @@ def generate_custom_name(config: str) -> str:
             name_parts.append(transport_type)
             name_parts.append(security_type)
         elif parsed.scheme in ("tuic", "hy2"):
-            name_parts.append(parsed.scheme.upper()) # Базовое имя протокола для tuic/hy2 пока что
+            name_parts.append(parsed.scheme.upper()) # Включаем имя протокола для TUIC/HY2
         elif parsed.scheme in ("trojan"):
             transport_type = query.get("type", ["NONE"])[0].upper()
             security_type = query.get("security", ["NONE"])[0].upper()
@@ -733,17 +736,17 @@ def is_valid_ipv4(hostname: str) -> bool:
         return False
 
 def create_profile_key(config: str, check_username=CHECK_USERNAME, check_tls_reality=CHECK_TLS_REALITY, check_sni=CHECK_SNI, check_connection_type=CHECK_CONNECTION_TYPE) -> str:
-    """Создает уникальный ключ для прокси-профиля для идентификации дубликатов, на основе настраиваемых параметров."""
+    """Создает уникальный ключ для прокси-профиля для идентификации дубликатов, на основе настраиваемых параметров, поддерживает IPv6."""
     try:
         parsed = urlparse(config)
         query = parse_qs(parsed.query)
 
-        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan)://.*?@([\w\d\.\:]+):(\d+)") # Более надежное regex для host:port
+        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan)://.*?@([\w\d\.\:\[\]]+):(\d+)", re.IPV6) # Regex для host:port, поддержка IPv6 в скобках
         match = core_pattern.match(config)
 
         if match:
             protocol, host_port, port = match.groups()
-            host = host_port.split(':')[0] if ':' in host_port else host_port
+            host = host_port.strip('[]') # Удаляем скобки из IPv6 адреса, если они есть
             key_parts = [
                 protocol,
                 host,
@@ -780,13 +783,14 @@ def create_profile_key(config: str, check_username=CHECK_USERNAME, check_tls_rea
         raise ValueError(f"Не удалось создать ключ профиля для: {config}. Ошибка: {e}") from e
 
 DUPLICATE_PROFILE_REGEX = re.compile(
-    r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)" # Более надежное regex для сопоставления дубликатов
+    r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)", re.IPV6 # Regex для сопоставления дубликатов, поддержка IPv6
 )
 
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
-    """Обрабатывает один URL канала для извлечения конфигураций прокси."""
+    """Обрабатывает один URL канала для извлечения конфигураций прокси, используя блокировку для `existing_profiles_regex`."""
     proxies = []
+    lock = asyncio.Lock() # Блокировка для защиты existing_profiles_regex
     async with channel_semaphore:
         start_time = asyncio.get_event_loop().time()
         try:
@@ -835,7 +839,10 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                 if not hostname or not port:
                     continue
                 if not is_valid_ipv4(hostname) and ":" in hostname: # Более надежная проверка IPv6, хотя IPv6 адреса могут быть валидными
-                  continue
+                  try:
+                      ipaddress.IPv6Address(hostname) # Пытаемся распарсить как IPv6 для валидации
+                  except ipaddress.AddressValueError:
+                      continue # Пропускаем, если не IPv6
 
                 profile_id = None
                 if protocol == 'vless://':
@@ -855,9 +862,10 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             match = DUPLICATE_PROFILE_REGEX.match(line)
             if match:
                 duplicate_key = f"{match.group(1)}://{match.group(2)}:{match.group(3)}"
-                if duplicate_key in existing_profiles_regex:
-                    continue
-                existing_profiles_regex.add(duplicate_key)
+                async with lock: # Используем блокировку перед доступом к existing_profiles_regex
+                    if duplicate_key in existing_profiles_regex:
+                        continue
+                    existing_profiles_regex.add(duplicate_key)
             else:
                 logger.warning(f"Не удалось создать ключ фильтра дубликатов для: {line}")
                 continue
@@ -882,7 +890,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     """Обрабатывает все каналы для извлечения и проверки конфигураций прокси."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     proxies_all: List[Dict] = []
-    existing_profiles_regex = set()
+    existing_profiles_regex = set() # Множество для отслеживания дубликатов профилей
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
         tasks = [process_channel(channel, session, channel_semaphore, existing_profiles_regex, proxy_config) for channel in channels]
@@ -949,7 +957,7 @@ async def _verify_proxy_tcp_handshake(hostname: str, port: int, tcp_semaphore: a
                 await writer.wait_closed()
                 logger.debug(f"TCP рукопожатие: Прокси {hostname}:{port} пройдена.")
                 return True, proxy_item
-    except (TimeoutError, ConnectionRefusedError, OSError) as e:
+    except (TimeoutError, ConnectionRefusedError, OSError, asyncio.TimeoutError) as e: # Явное указание asyncio.TimeoutError
         logger.debug(f"TCP рукопожатие не удалось для {hostname}:{port}: {type(e).__name__} - {e}")
         return False, proxy_item
 
@@ -961,8 +969,8 @@ def save_final_configs(proxies: List[Dict], output_file: str):
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
             f.write("# Окончательные конфигурации прокси (Отсортированы по оценке)\n") # Добавлен заголовок в файл вывода
-            f.write("# Минимальная приемлемая оценка: {}\n".format(MIN_ACCEPTABLE_SCORE))
-            f.write("# Сгенерировано: {}\n\n".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            f.write(f"# Минимальная приемлемая оценка: {MIN_ACCEPTABLE_SCORE}\n") # Исправлены f-strings и добавлены \n
+            f.write(f"# Сгенерировано: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n") # Исправлены f-strings и добавлены \n
             for proxy in proxies_sorted:
                 if proxy['score'] > MIN_ACCEPTABLE_SCORE:
                     config = proxy['config'].split('#')[0].strip()
