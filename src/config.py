@@ -26,13 +26,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 
 class ScoringWeights(Enum):
-    """Scoring weights."""
+    """Scoring weights - Optimized for VLESS, Trojan, Tuic, Hy2."""
     PROTOCOL_BASE = 50
     CONFIG_LENGTH = 10
     SECURITY_PARAM = 15
     NUM_SECURITY_PARAMS = 5
     SECURITY_TYPE_TLS = 10
-    SECURITY_TYPE_REALITY = 12
+    SECURITY_TYPE_REALITY = 12 # Keep for Reality, if used
     SECURITY_TYPE_NONE = -5
     TRANSPORT_TYPE_TCP = 2
     TRANSPORT_TYPE_WS = 8
@@ -52,39 +52,39 @@ class ScoringWeights(Enum):
     NUM_HEADERS = 1
     HOST_HEADER = 5
     HOST_SNI_MATCH = 10
-    UTLS_PRESENT = 4
+    UTLS_PRESENT = 4 # Keep UTLS related weights as they can be present
     UTLS_VALUE_CHROME = 5
     UTLS_VALUE_FIREFOX = 4
     UTLS_VALUE_IOS = 2
     UTLS_VALUE_SAFARI = 3
     UTLS_VALUE_RANDOMIZED = 7
     UTLS_VALUE_RANDOM = 6
-    UDP_SUPPORT = 7
+    UDP_SUPPORT = 7 # Keep UDP support as Tuic and Hy2 use it
     PORT_80 = 5
     PORT_443 = 10
     PORT_OTHER = 2
-    UUID_PRESENT = 5
+    UUID_PRESENT = 5 # Keep UUID for VLESS
     UUID_LENGTH = 3
-    EARLY_DATA_SUPPORT = 5
-    PARAMETER_CONSISTENCY = 12
-    IPV6_ADDRESS = -9
-    RARITY_BONUS = 4
-    HIDDEN_PARAM = 6
-    NEW_PARAM = 5
+    EARLY_DATA_SUPPORT = 5 # Keep Early Data - relevant for some protocols/setups
+    PARAMETER_CONSISTENCY = 12 # Keep Parameter Consistency
+    IPV6_ADDRESS = -9 # Keep IPv6 penalty
+    RARITY_BONUS = 4 # Keep Rarity Bonus for less common params
+    HIDDEN_PARAM = 6 # Keep Hidden Param score
+    NEW_PARAM = 5 # Keep New Param score
     RESPONSE_TIME = -0.05
     CHANNEL_STABILITY = 20
-    BUFFER_SIZE_SMALL = -2
+    BUFFER_SIZE_SMALL = -2 # Keep Buffer Size related weights - can be present
     BUFFER_SIZE_MEDIUM = 3
     BUFFER_SIZE_LARGE = 7
     BUFFER_SIZE_UNLIMITED = 5
-    TCP_OPTIMIZATION = 5
-    QUIC_PARAM = 3
-    STREAM_ENCRYPTION = 6
-    CDN_USAGE = 8
-    OBFS = 4
-    DEBUG_PARAM = -3
-    COMMENT = 1
-    TROJAN_PASSWORD_PRESENT = 8
+    TCP_OPTIMIZATION = 5 # Keep TCP Optimization - can be present
+    QUIC_PARAM = 3 # Keep QUIC Param - relevant for QUIC transport
+    STREAM_ENCRYPTION = 6 # Keep Stream Encryption
+    CDN_USAGE = 8 # Keep CDN Usage
+    OBFS = 4 # Keep OBFS - can be present
+    DEBUG_PARAM = -3 # Keep Debug Param
+    COMMENT = 1 # Keep Comment
+    TROJAN_PASSWORD_PRESENT = 8 # Keep Trojan Password related weights
     TROJAN_PASSWORD_LENGTH = 5
 
     @staticmethod
@@ -120,24 +120,22 @@ class ScoringWeights(Enum):
 
 ScoringWeights.load_weights_from_json()
 
-MIN_ACCEPTABLE_SCORE = 100.0
-MIN_CONFIG_LENGTH = 40
+MIN_ACCEPTABLE_SCORE = 90.0 # Optimized Constant
+MIN_CONFIG_LENGTH = 30 # Optimized Constant
 ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "trojan://"]
 PREFERRED_PROTOCOLS = ["vless://", "trojan://", "tuic://", "hy2://"]
-CHECK_USERNAME = True
-CHECK_TLS_REALITY = True
-CHECK_SNI = True
-CHECK_CONNECTION_TYPE = True
-MAX_CONCURRENT_CHANNELS = 200
-REQUEST_TIMEOUT = 60
-HIGH_FREQUENCY_THRESHOLD_HOURS = 12
-HIGH_FREQUENCY_BONUS = 3
+CHECK_USERNAME = False # Optimized Constant - Disabled checks
+CHECK_TLS_REALITY = False # Optimized Constant - Disabled checks
+CHECK_SNI = False # Optimized Constant - Disabled checks
+CHECK_CONNECTION_TYPE = False # Optimized Constant - Disabled checks
+MAX_CONCURRENT_CHANNELS = 200 # Optimized Constant
+REQUEST_TIMEOUT = 60 # Optimized Constant
+HIGH_FREQUENCY_THRESHOLD_HOURS = 12 # Optimized Constant
+HIGH_FREQUENCY_BONUS = 3 # Optimized Constant
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com"
-MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS = 60
-CHANNEL_CACHE_DIR = "cache/channels" # Директория для кэша каналов
-CHANNEL_CACHE_TTL_HOURS = 1 # Время жизни кэша в часах
+MAX_CONCURRENT_HTTP_CHECKS = 60 # Replaced TCP_HANDSHAKE with HTTP Checks, keeping concurrency limit
 
 
 @dataclass
@@ -214,33 +212,6 @@ class ChannelConfig:
             else:
                 self.metrics.avg_response_time = response_time
         self.calculate_overall_score()
-
-    def get_cached_content(self) -> Optional[str]:
-        """Получает кэшированный контент канала, если он есть и не истек TTL."""
-        cache_file_path = os.path.join(CHANNEL_CACHE_DIR, f"{hashlib.md5(self.url.encode()).hexdigest()}.cache") # Используем хеш URL для имени файла
-        if not os.path.exists(cache_file_path):
-            return None
-
-        cache_modified_time = datetime.fromtimestamp(os.path.getmtime(cache_file_path))
-        if (datetime.now() - cache_modified_time).total_seconds() > CHANNEL_CACHE_TTL_HOURS * 3600:
-            return None
-
-        try:
-            with open(cache_file_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception as e:
-            logger.error(f"Ошибка чтения кэш-файла {cache_file_path}: {e}")
-            return None
-
-    def save_content_to_cache(self, content: str) -> None:
-        """Сохраняет контент канала в кэш."""
-        os.makedirs(CHANNEL_CACHE_DIR, exist_ok=True)
-        cache_file_path = os.path.join(CHANNEL_CACHE_DIR, f"{hashlib.md5(self.url.encode()).hexdigest()}.cache")
-        try:
-            with open(cache_file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-        except Exception as e:
-            logger.error(f"Ошибка сохранения кэша в {cache_file_path}: {e}")
 
 
 class ProxyConfig:
@@ -333,7 +304,7 @@ def _calculate_security_score(query: Dict) -> float:
         security_type = security_params[0].lower() if security_params else 'none'
         score += {
             "tls": ScoringWeights.SECURITY_TYPE_TLS.value,
-            "reality": ScoringWeights.SECURITY_TYPE_REALITY.value,
+            "reality": ScoringWeights.SECURITY_TYPE_REALITY.value, # Keep Reality
             "none": ScoringWeights.SECURITY_TYPE_NONE.value
         }.get(security_type, 0)
     return score
@@ -402,25 +373,11 @@ def _calculate_headers_score(query: Dict, sni: Optional[str]) -> float:
 
 
 def _calculate_tls_fingerprint_score(query: Dict) -> float:
-    score = 0
-    fp = query.get('fp', [None])[0]
-    if fp:
-        fingerprint_score = {
-            "chrome": ScoringWeights.UTLS_VALUE_CHROME.value,
-            "firefox": ScoringWeights.UTLS_VALUE_FIREFOX.value,
-            "ios": ScoringWeights.UTLS_VALUE_IOS.value,
-            "safari": ScoringWeights.UTLS_VALUE_SAFARI.value,
-            "edge": ScoringWeights.UTLS_VALUE_EDGE.value if hasattr(ScoringWeights, 'UTLS_VALUE_EDGE') else ScoringWeights.UTLS_VALUE_CHROME.value
-        }.get(fp.lower(), 0)
-        if fingerprint_score is not None:
-            score += fingerprint_score
-        else:
-            score += 0
-    return score
+    return _calculate_utls_score(query) # если fp это utls, используем _calculate_utls_score
 
 def _calculate_utls_score(query: Dict) -> float:
     score = 0
-    utls = query.get('utls', [None])[0]
+    utls = query.get('utls', query.get('fp', [None]))[0] # fp fallback for utls
     if utls:
         score += ScoringWeights.UTLS_PRESENT.value
         utls_score = {
@@ -429,12 +386,11 @@ def _calculate_utls_score(query: Dict) -> float:
             "ios": ScoringWeights.UTLS_VALUE_IOS.value,
             "safari": ScoringWeights.UTLS_VALUE_SAFARI,
             "randomized": ScoringWeights.UTLS_VALUE_RANDOMIZED.value,
-            "random": ScoringWeights.UTLS_VALUE_RANDOM.value
+            "random": ScoringWeights.UTLS_VALUE_RANDOM.value,
+            "edge": ScoringWeights.UTLS_VALUE_EDGE.value if hasattr(ScoringWeights, 'UTLS_VALUE_EDGE') else ScoringWeights.UTLS_VALUE_CHROME.value # Edge fallback
         }.get(utls.lower(), 0)
         if utls_score is not None:
             score += utls_score
-        else:
-            score += 0
     return score
 
 def _calculate_udp_score(protocol: str) -> float:
@@ -506,8 +462,6 @@ def _calculate_buffer_size_score(query: Dict) -> float:
         }.get(buffer_size, 0)
         if score_val is not None:
             score += score_val
-        else:
-            score += 0
     return score
 
 def _calculate_tcp_optimization_score(query: Dict) -> float:
@@ -609,12 +563,12 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
     score += _calculate_path_score(query)
     sni = query.get('sni', [None])[0]
     score += _calculate_headers_score(query, sni)
-    tls_fingerprint_score = _calculate_tls_fingerprint_score(query)
+    tls_fingerprint_score = _calculate_tls_fingerprint_score(query) # Using UTLS score now
     if tls_fingerprint_score is not None:
         score += tls_fingerprint_score
-    utls_score_val = _calculate_utls_score(query)
-    if utls_score_val is not None:
-        score += utls_score_val
+    # utls_score_val = _calculate_utls_score(query) # No need to call again, already in tls_fingerprint_score
+    # if utls_score_val is not None:
+    #     score += utls_score_val
     score += _calculate_udp_score(protocol)
     score += _calculate_port_score(parsed.port)
     score += _calculate_uuid_score(parsed, query)
@@ -642,31 +596,31 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
         score += quic_param_score
     score += ScoringWeights.STREAM_ENCRYPTION.value
     score += _calculate_cdn_usage_score(sni)
-    mtu_size_score = _calculate_mtu_size_score(query)
+    mtu_size_score = _calculate_mtu_size_score(query) # always 0
     if mtu_size_score is not None:
         score += mtu_size_score
     score += _calculate_obfs_score(query)
     score += _calculate_debug_param_score(query)
     score += _calculate_comment_score(query)
-    client_compatibility_score = _calculate_client_compatibility_score(query)
+    client_compatibility_score = _calculate_client_compatibility_score(query) # always 0
     if client_compatibility_score is not None:
         score += client_compatibility_score
-    session_resumption_score = _calculate_session_resumption_score(query)
+    session_resumption_score = _calculate_session_resumption_score(query) # always 0
     if session_resumption_score is not None:
         score += session_resumption_score
-    fallback_type_score = _calculate_fallback_type_score(query)
+    fallback_type_score = _calculate_fallback_type_score(query) # always 0
     if fallback_type_score is not None:
         score += fallback_type_score
-    webtransport_score = _calculate_webtransport_score(query)
+    webtransport_score = _calculate_webtransport_score(query) # always 0
     if webtransport_score is not None:
         score += webtransport_score
-    security_direct_score = _calculate_security_direct_score(query)
+    security_direct_score = _calculate_security_direct_score(query) # always 0
     if security_direct_score is not None:
         score += security_direct_score
-    tls_version_score = _calculate_tls_version_score(query)
+    tls_version_score = _calculate_tls_version_score(query) # always 0
     if tls_version_score is not None:
         score += tls_version_score
-    multiplexing_score = _calculate_multiplexing_score(query)
+    multiplexing_score = _calculate_multiplexing_score(query) # always 0
     if multiplexing_score is not None:
         score += multiplexing_score
 
@@ -759,38 +713,30 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
     proxies = []
     async with channel_semaphore:
         start_time = asyncio.get_event_loop().time()
-        text = channel.get_cached_content() # Пытаемся получить кэшированный контент
-        if text:
-            logger.info(f"Используется кэшированный контент для {channel.url}")
-            end_time = asyncio.get_event_loop().time()
-            response_time = end_time - start_time # Время ответа считаем как 0 для кэша
-            channel.update_channel_stats(success=True, response_time=0) # Время ответа 0 для кэша
-        else: # Если кэша нет или истек TTL, загружаем заново
-            try:
-                async with session.get(channel.url, timeout=channel.request_timeout) as response:
-                    if response.status != 200:
-                        logger.error(f"Канал {channel.url} вернул статус {response.status}")
-                        channel.check_count += 1
-                        channel.update_channel_stats(success=False)
-                        return proxies
+        try:
+            async with session.get(channel.url, timeout=channel.request_timeout) as response:
+                if response.status != 200:
+                    logger.error(f"Канал {channel.url} вернул статус {response.status}")
+                    channel.check_count += 1
+                    channel.update_channel_stats(success=False)
+                    return proxies
 
-                    text = await response.text()
-                    channel.save_content_to_cache(text) # Сохраняем в кэш после загрузки
-                    end_time = asyncio.get_event_loop().time()
-                    response_time = end_time - start_time
-                    logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд")
-                    channel.update_channel_stats(success=True, response_time=response_time)
+                text = await response.text()
+                end_time = asyncio.get_event_loop().time()
+                response_time = end_time - start_time
+                logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд")
+                channel.update_channel_stats(success=True, response_time=response_time)
 
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                logger.error(f"Ошибка загрузки из {channel.url}: {type(e).__name__} - {e}")
-                channel.check_count += 1
-                channel.update_channel_stats(success=False)
-                return proxies
-            except Exception as e:
-                logger.exception(f"Непредвиденная ошибка при загрузке из {channel.url}: {e}")
-                channel.check_count += 1
-                channel.update_channel_stats(success=False)
-                return proxies
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.error(f"Ошибка загрузки из {channel.url}: {type(e).__name__} - {e}")
+            channel.check_count += 1
+            channel.update_channel_stats(success=False)
+            return proxies
+        except Exception as e:
+            logger.exception(f"Непредвиденная ошибка при загрузке из {channel.url}: {e}")
+            channel.check_count += 1
+            channel.update_channel_stats(success=False)
+            return proxies
 
 
         lines = text.splitlines()
@@ -877,69 +823,6 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     return proxies_all
 
 
-async def verify_proxies_availability(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
-    """Verifies proxy availability using TCP handshake and HTTP check."""
-    available_proxies_tcp, verified_count_tcp, non_verified_count_tcp = await verify_proxies_availability_tcp_handshake(proxies, proxy_config)
-    available_proxies_http, verified_count_http, non_verified_count_http = await verify_proxies_availability_http(available_proxies_tcp, proxy_config) # Проверяем HTTP только TCP-прошедшие
-
-    verified_count_total = verified_count_http
-    non_verified_count_total = len(proxies) - verified_count_total
-
-    return available_proxies_http, verified_count_total, non_verified_count_total
-
-
-async def verify_proxies_availability_tcp_handshake(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
-    """Verifies proxy availability via TCP handshake with concurrency control."""
-    available_proxies_tcp = []
-    verified_count_tcp = 0
-    non_verified_count_tcp = 0
-
-    logger.info("Начинается проверка доступности прокси через TCP handshake...")
-
-    tcp_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS)
-
-    tasks = []
-    for proxy_item in proxies:
-        config = proxy_item['config']
-        parsed_url = urlparse(config)
-        hostname = parsed_url.hostname
-        port = parsed_url.port
-        if hostname and port:
-            tasks.append(_verify_proxy_tcp_handshake(hostname, port, tcp_semaphore, proxy_item))
-        else:
-            non_verified_count_tcp += 1
-            logger.warning(f"Не удалось определить хост и порт для прокси {config}. Проверка TCP пропущена.")
-
-    results = await asyncio.gather(*tasks)
-
-    for result in results:
-        if result:
-            is_available, proxy_item = result
-            if is_available:
-                available_proxies_tcp.append(proxy_item)
-                verified_count_tcp += 1
-            else:
-                non_verified_count_tcp += 1
-
-    logger.info(f"Проверка доступности TCP handshake завершена. Доступно: {len(available_proxies_tcp)} из {len(proxies)} прокси.")
-    return available_proxies_tcp, verified_count_tcp, non_verified_count_tcp
-
-
-async def _verify_proxy_tcp_handshake(hostname: str, port: int, tcp_semaphore: asyncio.Semaphore, proxy_item: Dict) -> Tuple[bool, Dict]:
-    """Verifies TCP server availability with semaphore for concurrency control."""
-    try:
-        async with tcp_semaphore:
-            async with asyncio.timeout(5):
-                reader, writer = await asyncio.open_connection(hostname, port)
-                writer.close()
-                await writer.wait_closed()
-                logger.debug(f"TCP handshake: Прокси {hostname}:{port} прошел проверку.")
-                return True, proxy_item
-    except (TimeoutError, ConnectionRefusedError, OSError) as e:
-        logger.debug(f"TCP handshake не удался для {hostname}:{port}: {type(e).__name__} - {e}")
-        return False, proxy_item
-
-
 async def verify_proxies_availability_http(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
     """Verifies proxy availability via HTTP GET request through proxy."""
     available_proxies_http = []
@@ -948,7 +831,7 @@ async def verify_proxies_availability_http(proxies: List[Dict], proxy_config: "P
 
     logger.info("Начинается проверка доступности прокси через HTTP...")
 
-    http_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS) # Используем тот же лимит concurrency, можно сделать отдельный
+    http_semaphore = asyncio.Semaphore(MAX_CONCURRENT_HTTP_CHECKS) #  Лимит concurrency HTTP checks
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as session: # Используем ClientSession
         tasks = []
@@ -1011,7 +894,7 @@ def main():
 
     async def runner():
         proxies = await process_all_channels(channels, proxy_config)
-        verified_proxies, verified_count, non_verified_count = await verify_proxies_availability(proxies, proxy_config)
+        verified_proxies, verified_count, non_verified_count = await verify_proxies_availability_http(proxies, proxy_config) # Directly call HTTP check
         save_final_configs(verified_proxies, proxy_config.OUTPUT_FILE)
 
         total_channels = len(channels)
@@ -1034,8 +917,8 @@ def main():
         logger.info(f"Всего уникальных конфигураций: {total_unique_configs}")
         logger.info(f"Всего успешных загрузок: {total_successes}")
         logger.info(f"Всего неудачных загрузок: {total_fails}")
-        logger.info(f"Прокси прошли проверку (TCP+HTTP): {verified_count}") # Обновлено: показывает количество прокси, прошедших ОБЕ проверки (TCP и HTTP)
-        logger.info(f"Прокси не прошли проверку (TCP+HTTP): {non_verified_count}") # Обновлено: показывает количество прокси, не прошедших ОБЕ проверки
+        logger.info(f"Прокси прошли проверку (HTTP): {verified_count}") # Обновлено: показывает количество прокси, прошедших HTTP проверку
+        logger.info(f"Прокси не прошли проверку (HTTP): {non_verified_count}") # Обновлено: показывает количество прокси, не прошедших HTTP проверку
         logger.info("Статистика по протоколам:")
         for protocol, count in protocol_stats.items():
             logger.info(f"  {protocol}: {count}")
