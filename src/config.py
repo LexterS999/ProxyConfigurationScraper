@@ -17,8 +17,7 @@ import io
 from enum import Enum
 import shutil
 import uuid
-import zipfile
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from abc import ABC, abstractmethod
 import base64
 import urllib.parse
@@ -96,7 +95,7 @@ class ScoringWeightsModel(BaseModel):
     SS_OBFS_BONUS: float = Field(5, ge=0, le=10)
 
 
-    @validator('*', pre=True)
+    @field_validator('*', mode='before')
     def ensure_numeric(cls, value):
         if not isinstance(value, (int, float)):
             raise ValueError(f"Weight value must be numeric, got: {type(value).__name__}")
@@ -121,7 +120,7 @@ class ScoringWeightsModel(BaseModel):
     @classmethod
     def create_default_weights_file(cls, file_path: str) -> 'ScoringWeightsModel':
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        default_weights = cls().dict()
+        default_weights = cls().model_dump()
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(default_weights, f, indent=4)
@@ -246,7 +245,7 @@ class ChannelConfig:
             recency_bonus = self._calculate_recency_bonus()
             response_time_penalty = self._calculate_response_time_penalty()
 
-            self.metrics.overall_score = round((success_ratio * ScoringWeights.CHANNEL_STABILITY.value) + recency_bonus + response_time_penalty, 2)
+            self.metrics.overall_score = round((success_ratio * ScoringWeights.CHANNEL_STABILITY) + recency_bonus + response_time_penalty, 2)
             self.metrics.overall_score = max(0, self.metrics.overall_score)
 
         except Exception as e:
@@ -267,7 +266,7 @@ class ChannelConfig:
 
     def _calculate_response_time_penalty(self) -> float:
         """Calculates the response time penalty."""
-        return self.metrics.avg_response_time * ScoringWeights.RESPONSE_TIME.value if self.metrics.avg_response_time > 0 else 0
+        return self.metrics.avg_response_time * ScoringWeights.RESPONSE_TIME if self.metrics.avg_response_time > 0 else 0
 
     def update_channel_stats(self, success: bool, response_time: float = 0):
         """Updates channel statistics after a check."""
@@ -462,14 +461,14 @@ class ScoringFeature(ABC):
 
 class ProtocolBaseScore(ScoringFeature):
     """Scores based on protocol."""
-    weight = ScoringWeights.PROTOCOL_BASE.value
+    weight = ScoringWeights.PROTOCOL_BASE
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         return self.weight
 
 class ConfigLengthScore(ScoringFeature):
     """Scores based on config length."""
-    weight = ScoringWeights.CONFIG_LENGTH.value
+    weight = ScoringWeights.CONFIG_LENGTH
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         config_len = len(channel_details['protocol'] + "://" + channel_details['parsed_url'].netloc + channel_details['parsed_url'].path + channel_details['parsed_url'].query + channel_details['parsed_url'].fragment)
@@ -477,93 +476,93 @@ class ConfigLengthScore(ScoringFeature):
 
 class SecurityScore(ScoringFeature):
     """Scores based on security parameters."""
-    weight = ScoringWeights.SECURITY_PARAM.value
+    weight = ScoringWeights.SECURITY_PARAM
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
         query = channel_details['query_params']
         security_params = query.get('security', [])
         if security_params:
-            score += ScoringWeights.SECURITY_PARAM.value
-            score += min(ScoringWeights.NUM_SECURITY_PARAMS.value, len(security_params) * (ScoringWeights.NUM_SECURITY_PARAMS.value / 3))
+            score += ScoringWeights.SECURITY_PARAM
+            score += min(ScoringWeights.NUM_SECURITY_PARAMS, len(security_params) * (ScoringWeights.NUM_SECURITY_PARAMS / 3))
             security_type = security_params[0].lower() if security_params else 'none'
             score += {
-                "tls": ScoringWeights.SECURITY_TYPE_TLS.value,
-                "reality": ScoringWeights.SECURITY_TYPE_REALITY.value,
-                "none": ScoringWeights.SECURITY_TYPE_NONE.value
+                "tls": ScoringWeights.SECURITY_TYPE_TLS,
+                "reality": ScoringWeights.SECURITY_TYPE_REALITY,
+                "none": ScoringWeights.SECURITY_TYPE_NONE
             }.get(security_type, 0)
         return score
 
 class TransportScore(ScoringFeature):
     """Scores based on transport type."""
-    weight = ScoringWeights.TRANSPORT_TYPE_TCP.value
+    weight = ScoringWeights.TRANSPORT_TYPE_TCP
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
         transport_type = query.get('type', ['tcp'])[0].lower()
         return {
-            "tcp": ScoringWeights.TRANSPORT_TYPE_TCP.value,
-            "ws": ScoringWeights.TRANSPORT_TYPE_WS.value,
-            "quic": ScoringWeights.TRANSPORT_TYPE_QUIC.value,
+            "tcp": ScoringWeights.TRANSPORT_TYPE_TCP,
+            "ws": ScoringWeights.TRANSPORT_TYPE_WS,
+            "quic": ScoringWeights.TRANSPORT_TYPE_QUIC,
         }.get(transport_type, 0)
 
 class EncryptionScore(ScoringFeature):
     """Scores based on encryption type."""
-    weight = ScoringWeights.ENCRYPTION_TYPE_NONE.value
+    weight = ScoringWeights.ENCRYPTION_TYPE_NONE
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
         encryption_type = query.get('encryption', ['none'])[0].lower()
         return {
-            "none": ScoringWeights.ENCRYPTION_TYPE_NONE.value,
-            "auto": ScoringWeights.ENCRYPTION_TYPE_AUTO.value,
-            "aes-128-gcm": ScoringWeights.ENCRYPTION_TYPE_AES_128_GCM.value,
-            "chacha20-poly1305": ScoringWeights.ENCRYPTION_TYPE_CHACHA20_POLY1305.value,
-            "zero": ScoringWeights.ENCRYPTION_TYPE_ZERO.value
+            "none": ScoringWeights.ENCRYPTION_TYPE_NONE,
+            "auto": ScoringWeights.ENCRYPTION_TYPE_AUTO,
+            "aes-128-gcm": ScoringWeights.ENCRYPTION_TYPE_AES_128_GCM,
+            "chacha20-poly1305": ScoringWeights.ENCRYPTION_TYPE_CHACHA20_POLY1305,
+            "zero": ScoringWeights.ENCRYPTION_TYPE_ZERO
         }.get(encryption_type, 0)
 
 class SniScore(ScoringFeature):
     """Scores based on SNI presence and commonality."""
-    weight = ScoringWeights.SNI_PRESENT.value
+    weight = ScoringWeights.SNI_PRESENT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
         sni = channel_details['query_params'].get('sni', [None])[0]
         if sni:
-            score += ScoringWeights.SNI_PRESENT.value
+            score += ScoringWeights.SNI_PRESENT
             if sni.endswith(('.com', '.net', '.org', '.info', '.xyz')):
-                score += ScoringWeights.COMMON_SNI_BONUS.value
+                score += ScoringWeights.COMMON_SNI_BONUS
         return score
 
 class AlpnScore(ScoringFeature):
     """Scores based on ALPN protocol."""
-    weight = ScoringWeights.ALPN_PRESENT.value
+    weight = ScoringWeights.ALPN_PRESENT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
         alpn = channel_details['query_params'].get('alpn', [None])[0]
         if alpn:
-            score += ScoringWeights.ALPN_PRESENT.value
+            score += ScoringWeights.ALPN_PRESENT
             alpn_protocols = alpn.split(',')
-            score += min(ScoringWeights.NUM_ALPN_PROTOCOLS.value, len(alpn_protocols) * (ScoringWeights.NUM_ALPN_PROTOCOLS.value / 2))
+            score += min(ScoringWeights.NUM_ALPN_PROTOCOLS, len(alpn_protocols) * (ScoringWeights.NUM_ALPN_PROTOCOLS / 2))
         return score
 
 class PathScore(ScoringFeature):
     """Scores based on path complexity."""
-    weight = ScoringWeights.PATH_PRESENT.value
+    weight = ScoringWeights.PATH_PRESENT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
         path = channel_details['query_params'].get('path', [None])[0]
         if path:
-            score += ScoringWeights.PATH_PRESENT.value
+            score += ScoringWeights.PATH_PRESENT
             complexity = len(re.findall(r'[^a-zA-Z0-9]', path)) + (len(path) / 10)
-            score += min(ScoringWeights.PATH_COMPLEXITY.value, complexity * (ScoringWeights.PATH_COMPLEXITY.value / 5))
+            score += min(ScoringWeights.PATH_COMPLEXITY, complexity * (ScoringWeights.PATH_COMPLEXITY / 5))
         return score
 
 class HeadersScore(ScoringFeature):
     """Scores based on headers and Host header matching SNI."""
-    weight = ScoringWeights.HEADERS_PRESENT.value
+    weight = ScoringWeights.HEADERS_PRESENT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
@@ -571,36 +570,36 @@ class HeadersScore(ScoringFeature):
         sni = channel_details['sni']
         headers = query.get('headers', [None])[0]
         if headers:
-            score += ScoringWeights.HEADERS_PRESENT.value
+            score += ScoringWeights.HEADERS_PRESENT
             try:
                 headers_dict = dict(item.split(":") for item in headers.split("&"))
-                score += min(ScoringWeights.NUM_HEADERS.value, len(headers_dict) * (ScoringWeights.NUM_HEADERS.value / 2))
+                score += min(ScoringWeights.NUM_HEADERS, len(headers_dict) * (ScoringWeights.NUM_HEADERS / 2))
                 host_header = headers_dict.get('Host', None)
                 if host_header:
-                    score += ScoringWeights.HOST_HEADER.value
+                    score += ScoringWeights.HOST_HEADER
                     if sni and host_header == sni:
-                        score += ScoringWeights.HOST_SNI_MATCH.value
+                        score += ScoringWeights.HOST_SNI_MATCH
             except Exception:
                 pass
         return score
 
 class UtlsScore(ScoringFeature):
     """Scores based on uTLS fingerprint."""
-    weight = ScoringWeights.UTLS_PRESENT.value
+    weight = ScoringWeights.UTLS_PRESENT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
         query = channel_details['query_params']
         utls = query.get('utls', [None])[0]
         if utls:
-            score += ScoringWeights.UTLS_PRESENT.value
+            score += ScoringWeights.UTLS_PRESENT
             utls_score = {
-                "chrome": ScoringWeights.UTLS_VALUE_CHROME.value,
-                "firefox": ScoringWeights.UTLS_VALUE_FIREFOX.value,
-                "ios": ScoringWeights.UTLS_VALUE_IOS.value,
-                "safari": ScoringWeights.UTLS_VALUE_SAFARI.value,
-                "randomized": ScoringWeights.UTLS_VALUE_RANDOMIZED.value,
-                "random": ScoringWeights.UTLS_VALUE_RANDOM.value
+                "chrome": ScoringWeights.UTLS_VALUE_CHROME,
+                "firefox": ScoringWeights.UTLS_VALUE_FIREFOX,
+                "ios": ScoringWeights.UTLS_VALUE_IOS,
+                "safari": ScoringWeights.UTLS_VALUE_SAFARI,
+                "randomized": ScoringWeights.UTLS_VALUE_RANDOMIZED,
+                "random": ScoringWeights.UTLS_VALUE_RANDOM
             }.get(utls.lower(), 0)
             if utls_score is not None:
                 score += utls_score
@@ -610,28 +609,28 @@ class UtlsScore(ScoringFeature):
 
 class UDPScore(ScoringFeature):
     """Scores if UDP is supported by protocol."""
-    weight = ScoringWeights.UDP_SUPPORT.value
+    weight = ScoringWeights.UDP_SUPPORT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         protocol = channel_details['protocol']
-        return ScoringWeights.UDP_SUPPORT.value if protocol in ("tuic://", "hy2://", "ss://") else 0 # Added ss://
+        return ScoringWeights.UDP_SUPPORT if protocol in ("tuic://", "hy2://", "ss://") else 0 # Added ss://
 
 class PortScore(ScoringFeature):
     """Scores based on port number."""
-    weight = ScoringWeights.PORT_OTHER.value
+    weight = ScoringWeights.PORT_OTHER
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         port = channel_details['port']
         if port:
             return {
-                80: ScoringWeights.PORT_80.value,
-                443: ScoringWeights.PORT_443.value
-            }.get(port, ScoringWeights.PORT_OTHER.value)
+                80: ScoringWeights.PORT_80,
+                443: ScoringWeights.PORT_443
+            }.get(port, ScoringWeights.PORT_OTHER)
         return 0
 
 class UUIDScore(ScoringFeature):
     """Scores based on UUID presence and length in vless protocol."""
-    weight = ScoringWeights.UUID_PRESENT.value
+    weight = ScoringWeights.UUID_PRESENT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
@@ -639,34 +638,34 @@ class UUIDScore(ScoringFeature):
         query = channel_details['query_params']
         uuid_val = parsed.username or query.get('id', [None])[0]
         if uuid_val and parsed.scheme == 'vless':
-            score += ScoringWeights.UUID_PRESENT.value
-            score += min(ScoringWeights.UUID_LENGTH.value, len(uuid_val) * (ScoringWeights.UUID_LENGTH.value / 36))
+            score += ScoringWeights.UUID_PRESENT
+            score += min(ScoringWeights.UUID_LENGTH, len(uuid_val) * (ScoringWeights.UUID_LENGTH / 36))
         return score
 
 class TrojanPasswordScore(ScoringFeature):
     """Scores based on trojan password presence and length."""
-    weight = ScoringWeights.TROJAN_PASSWORD_PRESENT.value
+    weight = ScoringWeights.TROJAN_PASSWORD_PRESENT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
         parsed = channel_details['parsed_url']
         password = parsed.password
         if password:
-            score += ScoringWeights.TROJAN_PASSWORD_PRESENT.value
-            score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value, len(password) * (ScoringWeights.TROJAN_PASSWORD_LENGTH.value / 16))
+            score += ScoringWeights.TROJAN_PASSWORD_PRESENT
+            score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH, len(password) * (ScoringWeights.TROJAN_PASSWORD_LENGTH / 16))
         return score
 
 class EarlyDataScore(ScoringFeature):
     """Scores if early data is supported."""
-    weight = ScoringWeights.EARLY_DATA_SUPPORT.value
+    weight = ScoringWeights.EARLY_DATA_SUPPORT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
-        return ScoringWeights.EARLY_DATA_SUPPORT.value if query.get('earlyData', [None])[0] == "1" else 0
+        return ScoringWeights.EARLY_DATA_SUPPORT if query.get('earlyData', [None])[0] == "1" else 0
 
 class ParameterConsistencyScore(ScoringFeature):
     """Penalizes score for inconsistent parameters."""
-    weight = ScoringWeights.PARAMETER_CONSISTENCY.value
+    weight = ScoringWeights.PARAMETER_CONSISTENCY
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
@@ -681,20 +680,20 @@ class ParameterConsistencyScore(ScoringFeature):
             except:
                 pass
         if sni and host_header and sni != host_header:
-            score -= (ScoringWeights.PARAMETER_CONSISTENCY.value / 2)
+            score -= (ScoringWeights.PARAMETER_CONSISTENCY / 2)
         return score
 
 class IPv6Score(ScoringFeature):
     """Penalizes score for IPv6 addresses."""
-    weight = ScoringWeights.IPV6_ADDRESS.value
+    weight = ScoringWeights.IPV6_ADDRESS
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         parsed = channel_details['parsed_url']
-        return ScoringWeights.IPV6_ADDRESS.value if ":" in parsed.hostname else 0
+        return ScoringWeights.IPV6_ADDRESS if ":" in parsed.hostname else 0
 
 class HiddenParamScore(ScoringFeature):
     """Scores for hidden or unknown parameters."""
-    weight = ScoringWeights.HIDDEN_PARAM.value
+    weight = ScoringWeights.HIDDEN_PARAM
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
@@ -706,14 +705,14 @@ class HiddenParamScore(ScoringFeature):
         )
         for key, value in query.items():
             if key not in known_params:
-                score += ScoringWeights.HIDDEN_PARAM.value
+                score += ScoringWeights.HIDDEN_PARAM
                 if value and value[0]:
-                    score += min(ScoringWeights.RARITY_BONUS.value, ScoringWeights.RARITY_BONUS.value / len(value[0]))
+                    score += min(ScoringWeights.RARITY_BONUS, ScoringWeights.RARITY_BONUS / len(value[0]))
         return score
 
 class BufferSizeScore(ScoringFeature):
     """Scores based on buffer size parameter."""
-    weight = ScoringWeights.BUFFER_SIZE_UNLIMITED.value
+    weight = ScoringWeights.BUFFER_SIZE_UNLIMITED
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         score = 0
@@ -722,12 +721,12 @@ class BufferSizeScore(ScoringFeature):
         if buffer_size:
             buffer_size = buffer_size.lower()
             score_val = {
-                "unlimited": ScoringWeights.BUFFER_SIZE_UNLIMITED.value,
-                "small": ScoringWeights.BUFFER_SIZE_SMALL.value,
-                "medium": ScoringWeights.BUFFER_SIZE_MEDIUM.value,
-                "large": ScoringWeights.BUFFER_SIZE_LARGE.value,
-                "-1": ScoringWeights.BUFFER_SIZE_UNLIMITED.value,
-                "0": ScoringWeights.BUFFER_SIZE_UNLIMITED.value,
+                "unlimited": ScoringWeights.BUFFER_SIZE_UNLIMITED,
+                "small": ScoringWeights.BUFFER_SIZE_SMALL,
+                "medium": ScoringWeights.BUFFER_SIZE_MEDIUM,
+                "large": ScoringWeights.BUFFER_SIZE_LARGE,
+                "-1": ScoringWeights.BUFFER_SIZE_UNLIMITED,
+                "0": ScoringWeights.BUFFER_SIZE_UNLIMITED,
             }.get(buffer_size, 0)
             if score_val is not None:
                 score += score_val
@@ -737,27 +736,27 @@ class BufferSizeScore(ScoringFeature):
 
 class TCPOptimizationScore(ScoringFeature):
     """Scores if TCP Fast Open is enabled."""
-    weight = ScoringWeights.TCP_OPTIMIZATION.value
+    weight = ScoringWeights.TCP_OPTIMIZATION
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
-        return ScoringWeights.TCP_OPTIMIZATION.value if query.get('tcpFastOpen', [None])[0] == "true" else 0
+        return ScoringWeights.TCP_OPTIMIZATION if query.get('tcpFastOpen', [None])[0] == "true" else 0
 
 class QuicParamScore(ScoringFeature):
     """Scores if QUIC parameters are present."""
-    weight = ScoringWeights.QUIC_PARAM.value
+    weight = ScoringWeights.QUIC_PARAM
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
-        return ScoringWeights.QUIC_PARAM.value if query.get('maxIdleTime', [None])[0] else 0
+        return ScoringWeights.QUIC_PARAM if query.get('maxIdleTime', [None])[0] else 0
 
 class CDNUsageScore(ScoringFeature):
     """Scores for CDN usage based on SNI."""
-    weight = ScoringWeights.CDN_USAGE.value
+    weight = ScoringWeights.CDN_USAGE
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         sni = channel_details['sni']
-        return ScoringWeights.CDN_USAGE.value if sni and ".cdn." in sni else 0
+        return ScoringWeights.CDN_USAGE if sni and ".cdn." in sni else 0
 
 class MTUSizeScore(ScoringFeature):
     """Scores based on MTU size parameter (currently no scoring)."""
@@ -768,27 +767,27 @@ class MTUSizeScore(ScoringFeature):
 
 class ObfsScore(ScoringFeature):
     """Scores if obfuscation is used."""
-    weight = ScoringWeights.OBFS.value
+    weight = ScoringWeights.OBFS
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
-        return ScoringWeights.OBFS.value if query.get('obfs', [None])[0] else 0
+        return ScoringWeights.OBFS if query.get('obfs', [None])[0] else 0
 
 class DebugParamScore(ScoringFeature):
     """Penalizes score if debug parameter is present."""
-    weight = ScoringWeights.DEBUG_PARAM.value
+    weight = ScoringWeights.DEBUG_PARAM
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
-        return ScoringWeights.DEBUG_PARAM.value if query.get('debug', [None])[0] == "true" else 0
+        return ScoringWeights.DEBUG_PARAM if query.get('debug', [None])[0] == "true" else 0
 
 class CommentScore(ScoringFeature):
     """Scores if comment parameter is present."""
-    weight = ScoringWeights.COMMENT.value
+    weight = ScoringWeights.COMMENT
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
-        return ScoringWeights.COMMENT.value if query.get('comment', [None])[0] else 0
+        return ScoringWeights.COMMENT if query.get('comment', [None])[0] else 0
 
 class ClientCompatibilityScore(ScoringFeature):
     """Scores for client compatibility (currently no scoring)."""
@@ -841,43 +840,43 @@ class MultiplexingScore(ScoringFeature):
 
 class SSBase64Score(ScoringFeature):
     """Bonus for SS protocol being base64 encoded."""
-    weight = ScoringWeights.SS_BASE64_BONUS.value
+    weight = ScoringWeights.SS_BASE64_BONUS
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
-        return ScoringWeights.SS_BASE64_BONUS.value if channel_details['protocol'] == 'ss://' else 0
+        return ScoringWeights.SS_BASE64_BONUS if channel_details['protocol'] == 'ss://' else 0
 
 class SSMethodScore(ScoringFeature):
     """Bonus for specific SS methods."""
-    weight = ScoringWeights.SS_METHOD_BONUS.value
+    weight = ScoringWeights.SS_METHOD_BONUS
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         method = channel_details.get('ss_method', '').lower()
         if channel_details['protocol'] == 'ss://' and method in ('chacha20-ietf-poly1305', 'aes-256-gcm', 'aes-128-gcm'):
-            return ScoringWeights.SS_METHOD_BONUS.value
+            return ScoringWeights.SS_METHOD_BONUS
         return 0
 
 class SSPasswordScore(ScoringFeature):
     """Bonus for SS password presence."""
-    weight = ScoringWeights.SS_PASSWORD_BONUS.value
+    weight = ScoringWeights.SS_PASSWORD_BONUS
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
-        return ScoringWeights.SS_PASSWORD_BONUS.value if channel_details.get('ss_password') else 0
+        return ScoringWeights.SS_PASSWORD_BONUS if channel_details.get('ss_password') else 0
 
 class SSPluginScore(ScoringFeature):
     """Bonus for SS plugin parameter."""
-    weight = ScoringWeights.SS_PLUGIN_BONUS.value
+    weight = ScoringWeights.SS_PLUGIN_BONUS
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
-        return ScoringWeights.SS_PLUGIN_BONUS.value if channel_details['protocol'] == 'ss://' and query.get('plugin') else 0
+        return ScoringWeights.SS_PLUGIN_BONUS if channel_details['protocol'] == 'ss://' and query.get('plugin') else 0
 
 class SSObfsScore(ScoringFeature):
     """Bonus for SS obfs parameter."""
-    weight = ScoringWeights.SS_OBFS_BONUS.value
+    weight = ScoringWeights.SS_OBFS_BONUS
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         query = channel_details['query_params']
-        return ScoringWeights.SS_OBFS_BONUS.value if channel_details['protocol'] == 'ss://' and query.get('obfs') else 0
+        return ScoringWeights.SS_OBFS_BONUS if channel_details['protocol'] == 'ss://' and query.get('obfs') else 0
 
 
 SCORING_FEATURES_CONFIG = [
