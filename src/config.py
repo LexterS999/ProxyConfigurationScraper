@@ -673,7 +673,7 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
         logger.error(f"Ошибка разбора URL {config}: {e}")
         return 0.0
 
-    protocol = next((p for p in ALLOWED_PROTOКОЛЫ if config.startswith(p)), None)
+    protocol = next((p for p in ALLOWED_PROTOCОLS if config.startswith(p)), None)
     if not protocol:
         return 0.0
 
