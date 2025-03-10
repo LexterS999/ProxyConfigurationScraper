@@ -1,3 +1,4 @@
+https://github.com/Vauth/node/raw/main/Main
 https://raw.githubusercontent.com/lagzian/SS-Collector/refs/heads/main/VLESS/VL100.txt
 https://raw.githubusercontent.com/lagzian/SS-Collector/main/reality.txt
 https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/All_Configs_Sub.txt
@@ -30,4 +31,14 @@ https://raw.githubusercontent.com/Leon406/SubCrawler/refs/heads/main/sub/share/v
 https://raw.githubusercontent.com/Leon406/SubCrawler/refs/heads/main/sub/share/hysteria2
 https://raw.githubusercontent.com/Leon406/SubCrawler/refs/heads/main/sub/share/a11
 https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/all
-https://github.com/Vauth/node/raw/main/Main
+https://raw.githubusercontent.com/mermeroo/Loon/refs/heads/main/all.nodes.txt
+https://raw.githubusercontent.com/LalatinaHub/Mineral/refs/heads/master/result/nodes
+https://bitbucket.org/huwo1/proxy_nodes/raw/f31ca9ec67b84071515729ff45b011b6b09c10f2/proxy.md
+https://bitbucket.org/huwo1/proxy_nodes/raw/f31ca9ec67b84071515729ff45b011b6b09c10f2/trojan.md
+https://raw.githubusercontent.com/luxl-1379/merge/77247d23def72b25226dfa741614e9b07a569c72/sub/sub_merge_base64.txt
+https://raw.githubusercontent.com/cdp2020/v2ray/master/README.md
+https://raw.githubusercontent.com/mermeroo/Loon/main/node
+https://raw.githubusercontent.com/mermeroo/Loon/main/node%202
+https://raw.githubusercontent.com/SEDYY/vless-configs/refs/heads/main/servers.txt
+https://raw.githubusercontent.com/sevcator/5ubscrpt10n/refs/heads/main/protocols/vl.txt
+https://raw.githubusercontent.com/sevcator/5ubscrpt10n/refs/heads/main/protocols/tr.txt
