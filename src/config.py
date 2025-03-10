@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
-DEFAULT_CHANNEL_URLS_FILE = "all_urls.txt" # Changed from JSON to TXT and renamed constant
+DEFAULT_CHANNEL_URLS_FILE = "all_urls.txt"
 
 class ScoringWeightsModel(BaseModel):
     """Data model for scoring weights with validation."""
@@ -109,7 +109,7 @@ class ScoringWeightsModel(BaseModel):
                 weights_data = json.load(f)
                 return cls(**weights_data)
         except FileNotFoundError:
-            logger.warning(f"Scoring weights file not found: {file_path}. Using defaults.")
+            logger.debug(f"Scoring weights file not found: {file_path}. Using defaults.") # Changed to debug
             return cls.create_default_weights_file(file_path)
         except json.JSONDecodeError:
             logger.error(f"Error reading JSON weights file: {file_path}. Using defaults.")
@@ -146,7 +146,7 @@ REQUEST_TIMEOUT = 60
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
-ALL_URLS_FILE = DEFAULT_CHANNEL_URLS_FILE # Используем DEFAULT_CHANNEL_URLS_FILE
+ALL_URLS_FILE = DEFAULT_CHANNEL_URLS_FILE
 TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com"
 MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS = 60
 
@@ -291,7 +291,7 @@ class ChannelConfig:
 
 class ProxyConfig:
     """Manages proxy configurations, loading, saving, and deduplication."""
-    CHANNEL_SOURCES_CONFIG_FILE = "configs/channel_sources.json" # Renamed constant - not directly used now, but kept for potential future config
+    CHANNEL_SOURCES_CONFIG_FILE = "configs/channel_sources.json"
 
     def __init__(self):
         os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
@@ -303,7 +303,7 @@ class ProxyConfig:
         channel_configs = []
 
         try:
-            channel_configs.extend(self._load_from_file_source(DEFAULT_CHANNEL_URLS_FILE)) # Load directly from all_urls.txt
+            channel_configs.extend(self._load_from_file_source(DEFAULT_CHANNEL_URLS_FILE))
         except Exception as e:
             logger.error(f"Error loading channels from default URL file {DEFAULT_CHANNEL_URLS_FILE}: {e}")
 
@@ -320,9 +320,9 @@ class ProxyConfig:
                         try:
                             configs.append(ChannelConfig(url))
                         except ValueError as e:
-                            logger.warning(f"Invalid URL in file {file_path}: {url} - {e}")
+                            logger.debug(f"Invalid URL in file {file_path}: {url} - {e}") # Changed to debug
         except FileNotFoundError:
-            logger.warning(f"Channel source file not found: {file_path}")
+            logger.debug(f"Channel source file not found: {file_path}") # Changed to debug
         return configs
 
     def _normalize_url(self, url: str) -> str:
@@ -352,7 +352,7 @@ class ProxyConfig:
             unique_configs = []
             for config in channel_configs:
                 if not isinstance(config, ChannelConfig):
-                    logger.warning(f"Invalid config skipped: {config}")
+                    logger.debug(f"Invalid config skipped: {config}") # Changed to debug
                     continue
                 try:
                     normalized_url = self._normalize_url(config.url)
@@ -853,7 +853,7 @@ SCORING_FEATURES_CONFIG = [
     {'feature': SecurityDirectScore, 'enabled': False},
     {'feature': TLSVersionScore, 'enabled': False},
     {'feature': MultiplexingScore, 'enabled': False},
-    {'feature': SSBase64Score, 'enabled': True}, # SS Protocol Specific Scores
+    {'feature': SSBase64Score, 'enabled': True},
     {'feature': SSMethodScore, 'enabled': True},
     {'feature': SSPasswordScore, 'enabled': True},
     {'feature': SSPluginScore, 'enabled': True},
@@ -936,7 +936,7 @@ def create_profile_key(config: str) -> str:
                 port,
             ]
 
-            if CHECK_USERNAME or protocol in ('trojan', 'ss'): # Added ss
+            if CHECK_USERNAME or protocol in ('trojan', 'ss'):
                 user = parsed.username
                 password = parsed.password
                 id_value = query.get('id', [None])[0]
@@ -944,19 +944,19 @@ def create_profile_key(config: str) -> str:
                     key_parts.append(f"user:{user}")
                 elif password and protocol == 'trojan':
                     key_parts.append(f"password:***")
-                elif password and protocol == 'ss': # Added ss password
+                elif password and protocol == 'ss':
                     key_parts.append(f"password:***")
                 elif id_value:
                     key_parts.append(f"id:{id_value}")
 
-            if CHECK_TLS_REALITY and protocol != 'ss': # TLS Reality check, exclude ss
+            if CHECK_TLS_REALITY and protocol != 'ss':
                  key_parts.append(f"security:{query.get('security', [''])[0]}")
                  key_parts.append(f"encryption:{query.get('encryption', [''])[0]}")
 
-            if CHECK_SNI and protocol != 'ss': # SNI check, exclude ss
+            if CHECK_SNI and protocol != 'ss':
                 key_parts.append(f"sni:{query.get('sni', [''])[0]}")
 
-            if CHECK_CONNECTION_TYPE and protocol != 'ss': # Connection type check, exclude ss
+            if CHECK_CONNECTION_TYPE and protocol != 'ss':
                 key_parts.append(f"type:{query.get('type', [''])[0]}")
 
             return "|".join(key_parts)
@@ -968,14 +968,14 @@ def create_profile_key(config: str) -> str:
         raise ValueError(f"Failed to create profile key: {config}") from e
 
 DUPLICATE_PROFILE_REGEX = re.compile(
-    r"^(vless|tuic|hy2|trojan|ss)://(?:.*?@)?([^@/:]+):(\d+)" # Added ss
+    r"^(vless|tuic|hy2|trojan|ss)://(?:.*?@)?([^@/:]+):(\d+)"
 )
 
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
     """Processes a single channel URL to extract proxy configurations."""
     proxies = []
-    channel.status = ChannelStatus.CHECKING # Update channel status to checking
+    channel.status = ChannelStatus.CHECKING
     async with channel_semaphore:
         start_time = asyncio.get_event_loop().time()
         try:
@@ -984,7 +984,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                     logger.error(f"Channel {channel.url} returned status {response.status}")
                     channel.check_count += 1
                     channel.update_channel_stats(success=False)
-                    channel.status = ChannelStatus.FAILED # Update channel status to failed
+                    channel.status = ChannelStatus.FAILED
                     return proxies
 
                 text = await response.text()
@@ -992,19 +992,19 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                 response_time = end_time - start_time
                 logger.info(f"Content from {channel.url} loaded in {response_time:.2f} seconds")
                 channel.update_channel_stats(success=True, response_time=response_time)
-                channel.status = ChannelStatus.ACTIVE # Update channel status to active
+                channel.status = ChannelStatus.ACTIVE
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.error(f"Error loading from {channel.url}: {type(e).__name__} - {e}")
             channel.check_count += 1
             channel.update_channel_stats(success=False)
-            channel.status = ChannelStatus.FAILED # Update channel status to failed
+            channel.status = ChannelStatus.FAILED
             return proxies
         except Exception as e:
             logger.exception(f"Unexpected error loading from {channel.url}: {e}")
             channel.check_count += 1
             channel.update_channel_stats(success=False)
-            channel.status = ChannelStatus.FAILED # Update channel status to failed
+            channel.status = ChannelStatus.FAILED
             return proxies
 
         lines = text.splitlines()
@@ -1038,19 +1038,19 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                 elif protocol == 'ss://':
                     userinfo_base64 = parsed.netloc.split('@')[0]
                     try:
-                        base64.b64decode(userinfo_base64 + '===') # Test base64 decoding for ss
+                        base64.b64decode(userinfo_base64 + '===')
                     except:
-                        logger.debug(f"Profile {line} skipped due to invalid base64 encoding in ss url")
+                        logger.debug(f"Profile {line} skipped due to invalid base64 encoding in ss url") # Changed to debug
                         continue
 
 
-                if profile_id and protocol in ('vless://', 'trojan://'): # UUID check for vless and trojan
+                if profile_id and protocol in ('vless://', 'trojan://'):
                     if not is_valid_uuid(profile_id):
-                        logger.debug(f"Profile {line} skipped due to invalid UUID format: {profile_id}")
+                        logger.debug(f"Profile {line} skipped due to invalid UUID format: {profile_id}") # Changed to debug
                         continue
 
             except ValueError as e:
-                logger.debug(f"URL parsing error {line}: {e}")
+                logger.debug(f"URL parsing error {line}: {e}") # Changed to debug
                 continue
 
             match = DUPLICATE_PROFILE_REGEX.match(line)
@@ -1060,11 +1060,11 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                     continue
                 existing_profiles_regex.add(duplicate_key)
             else:
-                logger.warning(f"Failed to create duplicate filter key for: {line}")
+                logger.debug(f"Failed to create duplicate filter key for: {line}") # Changed to debug
                 continue
 
             try:
-                score = compute_profile_score(ChannelConfig(line), response_time=channel.metrics.avg_response_time) # Create ChannelConfig object for scoring
+                score = compute_profile_score(ChannelConfig(line), response_time=channel.metrics.avg_response_time)
             except Exception as e:
                 logger.error(f"Error computing score for config {line}: {e}")
                 continue
@@ -1085,7 +1085,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
 
 
 async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
-    """Processes all channels to extract and verify proxy configurations."""
+    """Processes all channels to extract proxy configurations."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     proxies_all: List[Dict] = []
     existing_profiles_regex = set()
@@ -1103,98 +1103,6 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     return proxies_all
 
 
-VERIFICATION_METHODS_CONFIG = [
-    {'method': 'tcp_handshake', 'enabled': True},
-    {'method': 'http_get', 'enabled': True, 'test_url': TEST_URL_FOR_PROXY_CHECK},
-]
-
-async def verify_proxies_availability(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
-    """Verifies proxy availability using configurable methods."""
-    available_proxies = []
-    verified_count = 0
-    non_verified_count = 0
-
-    logger.info("Starting proxy availability check...")
-
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
-        for proxy_item in proxies:
-            config = proxy_item['config']
-            is_available = False
-            verification_details = {}
-
-            for method_config in VERIFICATION_METHODS_CONFIG:
-                if method_config.get('enabled', True):
-                    method_name = method_config['method']
-                    try:
-                        if method_name == 'tcp_handshake':
-                            hostname = urlparse(config).hostname
-                            port = urlparse(config).port
-                            if hostname and port:
-                                is_available, method_details = await _verify_proxy_tcp_handshake(hostname, port)
-                                verification_details['tcp_handshake'] = method_details
-                        elif method_name == 'http_get':
-                            test_url = method_config.get('test_url', TEST_URL_FOR_PROXY_CHECK)
-                            is_available, method_details = await _verify_proxy_http_get(session, config, test_url)
-                            verification_details['http_get'] = method_details
-
-                        if is_available:
-                            break # Stop on first successful method (optional)
-                    except Exception as e:
-                        logger.error(f"Error during proxy verification method {method_name} for {config}: {e}")
-                        verification_details[method_name] = {'error': str(e)}
-
-            if is_available:
-                available_proxies.append(proxy_item)
-                verified_count += 1
-                logger.debug(f"Proxy {config} passed verification. Details: {verification_details}")
-            else:
-                non_verified_count += 1
-                logger.debug(f"Proxy {config} failed verification. Details: {verification_details}")
-
-    logger.info(f"Proxy availability check complete. Available: {len(available_proxies)} of {len(proxies)} proxies.")
-    return available_proxies, verified_count, non_verified_count
-
-
-async def _verify_proxy_tcp_handshake(hostname: str, port: int) -> Tuple[bool, Dict]:
-    """Verifies TCP server availability."""
-    start_time = asyncio.get_event_loop().time()
-    try:
-        async with asyncio.timeout(5):
-            reader, writer = await asyncio.open_connection(hostname, port)
-            writer.close()
-            await writer.wait_closed()
-            end_time = asyncio.get_event_loop().time()
-            response_time = end_time - start_time
-            logger.debug(f"TCP handshake: Proxy {hostname}:{port} passed in {response_time:.2f} seconds.")
-            return True, {'status': 'success', 'response_time': response_time}
-    except (TimeoutError, ConnectionRefusedError, OSError) as e:
-        end_time = asyncio.get_event_loop().time()
-        response_time = end_time - start_time
-        logger.debug(f"TCP handshake failed for {hostname}:{port} in {response_time:.2f} seconds: {type(e).__name__} - {e}")
-        return False, {'status': 'failed', 'error_type': type(e).__name__, 'error_message': str(e), 'response_time': response_time}
-
-
-async def _verify_proxy_http_get(session: aiohttp.ClientSession, proxy_url: str, test_url: str) -> Tuple[bool, Dict]:
-    """Verifies proxy by making a GET request through it."""
-    start_time = asyncio.get_event_loop().time()
-    try:
-        async with asyncio.timeout(10):
-            async with session.get(test_url, proxy=proxy_url) as response:
-                end_time = asyncio.get_event_loop().time()
-                response_time = end_time - start_time
-                if response.status == 200:
-                    logger.debug(f"HTTP GET via proxy {proxy_url} to {test_url} passed in {response_time:.2f} seconds.")
-                    return True, {'status': 'success', 'http_status': response.status, 'response_time': response_time}
-                else:
-                    logger.debug(f"HTTP GET via proxy {proxy_url} to {test_url} failed with status {response.status} in {response_time:.2f} seconds.")
-                    return False, {'status': 'failed', 'http_status': response.status, 'response_time': response_time}
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        end_time = asyncio.get_event_loop().time()
-        response_time = end_time - start_time
-        logger.debug(f"HTTP GET via proxy {proxy_url} to {test_url} error in {response_time:.2f} seconds: {type(e).__name__} - {e}")
-        return False, {'status': 'failed', 'error_type': type(e).__name__, 'error_message': str(e), 'response_time': response_time}
-
-
 def save_final_configs(proxies: List[Dict], output_file: str):
     """Saves final proxy configurations to output file, sorted by score."""
     proxies_sorted = sorted(proxies, key=lambda x: x['score'], reverse=True)
@@ -1204,9 +1112,9 @@ def save_final_configs(proxies: List[Dict], output_file: str):
             for proxy in proxies_sorted:
                 if proxy['score'] > MIN_ACCEPTABLE_SCORE:
                     config = proxy['config'].split('#')[0].strip()
-                    channel_config = ChannelConfig(config) # Create ChannelConfig for naming
+                    channel_config = ChannelConfig(config)
                     profile_name = generate_custom_name(channel_config)
-                    final_line = f"{config}# {profile_name} | Score: {proxy['score']:.2f}\n" # Added score to output
+                    final_line = f"{config}# {profile_name} | Score: {proxy['score']:.2f}\n"
                     f.write(final_line)
         logger.info(f"Final configurations saved to {output_file}")
     except Exception as e:
@@ -1230,8 +1138,9 @@ def main():
 
     async def runner():
         proxies = await process_all_channels(channels, proxy_config)
-        verified_proxies, verified_count, non_verified_count = await verify_proxies_availability(proxies, proxy_config)
-        save_final_configs(verified_proxies, proxy_config.OUTPUT_FILE)
+        # Proxy verification removed
+        # verified_proxies, verified_count, non_verified_count = await verify_proxies_availability(proxies, proxy_config)
+        save_final_configs(proxies, proxy_config.OUTPUT_FILE) # Save all proxies directly
 
         total_channels = len(channels)
         enabled_channels = sum(1 for channel in channels)
@@ -1253,8 +1162,6 @@ def main():
         logger.info(f"Total unique configurations: {total_unique_configs}")
         logger.info(f"Total download successes: {total_successes}")
         logger.info(f"Total download failures: {total_fails}")
-        logger.info(f"Proxies passed check: {verified_count}")
-        logger.info(f"Proxies failed check: {non_verified_count}")
         logger.info("Protocol Statistics:")
         for protocol, count in protocol_stats.items():
             logger.info(f"  {protocol}: {count}")
