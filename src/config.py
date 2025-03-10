@@ -1,5 +1,4 @@
 import asyncio
-import asyncio_retry
 import aiohttp
 import re
 import os
@@ -19,10 +18,11 @@ from enum import Enum
 import shutil
 import uuid
 import zipfile
-from asyncio_retry import retry
-import yarl  # Для расширенной валидации URL
-import joblib # Для загрузки модели машинного обучения
-#import geoip2.database # Для геолокации
+try:
+    from asyncio_retry import retry
+except ModuleNotFoundError:
+    print("Модуль asyncio_retry не найден. Пожалуйста, установите его: pip install asyncio_retry")
+    retry = lambda **kwargs: lambda f: f  # Заглушка для retry, чтобы код не сломался
 import scapy.all as scapy # Для оценки производительности сети
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(process)s - %(message)s')
@@ -40,9 +40,9 @@ class ScoringWeights(Enum):
     PROTOCOL_BASE = 50
     CONFIG_LENGTH = 10
     # Детализация SECURITY_PARAM
-    SECURITY_TLS_VERSION = 5
-    SECURITY_CIPHER = 5
-    SECURITY_CERTIFICATE_VALIDITY = 5
++   SECURITY_TLS_VERSION = 5
++   SECURITY_CIPHER = 5
++   SECURITY_CERTIFICATE_VALIDITY = 5
     NUM_SECURITY_PARAMS = 5
     SECURITY_TYPE_TLS = 10
     SECURITY_TYPE_REALITY = 12
@@ -222,17 +222,6 @@ RETRY_ON_HTTP_STATUSES = [503, 504] # Эвристики повторных по
 PERFORMANCE_TEST_PACKET_COUNT = 10 # Количество пакетов для теста производительности
 PERFORMANCE_TEST_TIMEOUT = 5 # Таймаут для теста производительности
 
-# Загрузка модели машинного обучения (пример)
-ML_MODEL_FILE = "configs/proxy_quality_model.joblib"
-try:
-    ml_model = joblib.load(ML_MODEL_FILE)
-    logger.info(f"Модель машинного обучения загружена из {ML_MODEL_FILE}")
-except FileNotFoundError:
-    ml_model = None
-    logger.warning(f"Файл модели машинного обучения не найден: {ML_MODEL_FILE}. Оценка на основе ML отключена.")
-except Exception as e:
-    ml_model = None
-    logger.error(f"Ошибка загрузки модели машинного обучения из {ML_MODEL_FILE}: {e}. Оценка на основе ML отключена.")
 
 @dataclass
 class ChannelMetrics:
@@ -660,7 +649,8 @@ def _calculate_buffer_size_score(query: Dict) -> float:
 def _calculate_tcp_optimization_score(query: Dict) -> float:
     return ScoringWeights.TCP_OPTIMIZATION.value if query.get('tcpFastOpen', [None])[0] == "true" else 0
 
-def _calculate_quic_param_score(query: Dict) -> float: return ScoringWeights.QUIC_PARAM.value if query.get('maxIdleTime', [None])[0] else 0
+def _calculate_quic_param_score(query: Dict) -> float:
+    return ScoringWeights.QUIC_PARAM.value if query.get('maxIdleTime', [None])[0] else 0
 
 
 def _calculate_cdn_usage_score(sni: Optional[str]) -> float:
@@ -829,58 +819,8 @@ def compute_profile_score(config: str, response_time: float = 0.0, jitter: float
     if query.get('security', [''])[0].lower() == 'none' and query.get('encryption', [''])[0].lower() == 'none':
         score *= 0.5 # Уменьшаем оценку вдвое, если нет ни security, ни encryption
 
-    # Оценка на основе машинного обучения (если модель загружена)
-    if ml_model:
-        try:
-            # TODO: Подготовить features для модели (из query, config)
-            features = prepare_ml_features(query, config, jitter, packet_loss, bandwidth) # Функция для подготовки данных
-            score += ml_model.predict([features])[0] # Добавляем предсказание модели к оценке
-        except Exception as e:
-            logger.error(f"Ошибка при использовании модели машинного обучения для {config}: {e}")
-
     return round(score, 2)
 
-def prepare_ml_features(query: Dict, config: str, jitter: float, packet_loss: float, bandwidth: float) -> List[float]:
-    """Подготавливает features для модели машинного обучения."""
-    #  Пример: One-Hot Encoding для security, transport, encryption
-    #  Длина config, наличие sni, alpn, и т.д.
-    # Важно: Возвращать features в одном и том же порядке!
-    # Пример реализации (заглушка)
-    protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
-
-    security = query.get('security', [''])[0].lower()
-    transport = query.get('type', [''])[0].lower()
-    encryption = query.get('encryption', [''])[0].lower()
-    sni = query.get('sni', [''])[0]
-    alpn = query.get('alpn', [''])[0]
-
-    features = [
-        1 if protocol == 'vless://' else 0, # Протокол
-        1 if protocol == 'tuic://' else 0,
-        1 if protocol == 'hy2://' else 0,
-        1 if protocol == 'trojan://' else 0,
-
-        1 if security == 'tls' else 0, # Security
-        1 if security == 'reality' else 0,
-        1 if security == 'none' else 0,
-
-        1 if transport == 'tcp' else 0, # Transport
-        1 if transport == 'ws' else 0,
-        1 if transport == 'quic' else 0,
-
-        1 if encryption == 'aes-128-gcm' else 0, # Шифрование
-        1 if encryption == 'chacha20-poly1305' else 0,
-        1 if encryption == 'none' else 0,
-
-        len(config), # Длина конфига
-        1 if sni else 0, # SNI
-        1 if alpn else 0, # ALPN
-        jitter, # Jitter
-        packet_loss, # Packet Loss
-        bandwidth # Bandwidth
-
-    ]
-    return features
 
 def generate_custom_name(config: str) -> str:
     """Генерирует пользовательское имя для прокси-профиля из URL конфигурации."""
