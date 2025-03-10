@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
+DEFAULT_CHANNEL_SOURCES_FILE = "configs/channel_sources.json" # Added DEFAULT_CHANNEL_SOURCES_FILE
 
 class ScoringWeightsModel(BaseModel):
     """Data model for scoring weights with validation."""
@@ -108,7 +109,7 @@ class ScoringWeightsModel(BaseModel):
                 weights_data = json.load(f)
                 return cls(**weights_data)
         except FileNotFoundError:
-            logger.warning(f"Scoring weights file not found: {file_path}. Using defaults.")
+            logger.warning(f"Scoring weights file not found: {file_path}. Using defaults.") # Updated log message
             return cls.create_default_weights_file(file_path)
         except json.JSONDecodeError:
             logger.error(f"Error reading JSON weights file: {file_path}. Using defaults.")
@@ -145,7 +146,7 @@ REQUEST_TIMEOUT = 60
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
-ALL_URLS_FILE = "all_urls.txt"
+ALL_URLS_FILE = "all_urls.txt" # Removed unused ALL_URLS_FILE
 TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com"
 MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS = 60
 
@@ -290,7 +291,7 @@ class ChannelConfig:
 
 class ProxyConfig:
     """Manages proxy configurations, loading, saving, and deduplication."""
-    CONFIG_SOURCES_FILE = "configs/channel_sources.json"
+    CONFIG_SOURCES_FILE = DEFAULT_CHANNEL_SOURCES_FILE # Use DEFAULT_CHANNEL_SOURCES_FILE
 
     def __init__(self):
         os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
@@ -303,7 +304,7 @@ class ProxyConfig:
             with open(self.CONFIG_SOURCES_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except FileNotFoundError:
-            logger.warning(f"Channel sources config file not found: {self.CONFIG_SOURCES_FILE}. Using default empty sources.")
+            logger.warning(f"Channel sources config file not found: {self.CONFIG_SOURCES_FILE}. Using default empty sources.") # Updated log message
             return []
         except json.JSONDecodeError:
             logger.error(f"Error reading JSON config file: {self.CONFIG_SOURCES_FILE}. Using default empty sources.")
