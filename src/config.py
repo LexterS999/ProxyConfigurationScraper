@@ -733,7 +733,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             if not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
                 continue
 
-            protocol = next((p for p in ALLOWED_PROTOCOлы if line.startswith(p)), None)
+            protocol = next((p for p in ALLOWED_PROTOCOLS if line.startswith(p)), None)
             if not protocol:
                 continue
             try:
