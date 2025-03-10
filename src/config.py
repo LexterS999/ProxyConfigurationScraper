@@ -18,17 +18,29 @@ from enum import Enum
 import shutil
 import uuid
 import zipfile
+from asyncio_retry import retry
+import yarl  # Для расширенной валидации URL
+import joblib # Для загрузки модели машинного обучения
+#import geoip2.database # Для геолокации
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(process)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 
+# Адаптивная параллельность
+CPU_COUNT = os.cpu_count()
+MAX_CONCURRENT_CHANNELS = min(CPU_COUNT * 10, 200)
+MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS = min(CPU_COUNT * 5, 60)
+
 class ScoringWeights(Enum):
     """Веса для оценки."""
     PROTOCOL_BASE = 50
     CONFIG_LENGTH = 10
-    SECURITY_PARAM = 15
+    # Детализация SECURITY_PARAM
+    SECURITY_TLS_VERSION = 5
+    SECURITY_CIPHER = 5
+    SECURITY_CERTIFICATE_VALIDITY = 5
     NUM_SECURITY_PARAMS = 5
     SECURITY_TYPE_TLS = 10
     SECURITY_TYPE_REALITY = 12
@@ -124,6 +136,15 @@ class ScoringWeights(Enum):
         except Exception as e:
             logger.error(f"Неожиданная ошибка при загрузке весов оценки из {file_path}: {e}. Используются значения по умолчанию.")
 
+        # Веса на основе редкости (пример)
+        ScoringWeights._adjust_weights_based_on_rarity()
+
+    @staticmethod
+    def _adjust_weights_based_on_rarity():
+        """Здесь должна быть логика для корректировки весов на основе анализа конфигураций."""
+        # TODO: Реализовать анализ конфигураций и корректировку весов
+        pass
+
     @staticmethod
     def _create_default_weights_file(file_path: str) -> None:
         """Создает файл JSON с весами оценки по умолчанию."""
@@ -147,7 +168,6 @@ CHECK_USERNAME = True
 CHECK_TLS_REALITY = True
 CHECK_SNI = True
 CHECK_CONNECTION_TYPE = True
-MAX_CONCURRENT_CHANNELS = 200
 REQUEST_TIMEOUT = 60
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_THRESHOLD_SECONDS = HIGH_FREQUENCY_THRESHOLD_HOURS * 3600 # Константа для секунд
@@ -155,9 +175,26 @@ HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com"
+TEST_URLS_FOR_PROXY_CHECK = [
+    "http://speed.cloudflare.com",
+    "https://www.google.com",
+    "https://www.bing.com"
+]
 MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS = 60
 CONFIG_LENGTH_NORMALIZATION_FACTOR = 200.0 # Константа для нормализации длины конфигурации
+RETRY_ON_HTTP_STATUSES = [503, 504] # Эвристики повторных попыток
 
+# Загрузка модели машинного обучения (пример)
+ML_MODEL_FILE = "configs/proxy_quality_model.joblib"
+try:
+    ml_model = joblib.load(ML_MODEL_FILE)
+    logger.info(f"Модель машинного обучения загружена из {ML_MODEL_FILE}")
+except FileNotFoundError:
+    ml_model = None
+    logger.warning(f"Файл модели машинного обучения не найден: {ML_MODEL_FILE}. Оценка на основе ML отключена.")
+except Exception as e:
+    ml_model = None
+    logger.error(f"Ошибка загрузки модели машинного обучения из {ML_MODEL_FILE}: {e}. Оценка на основе ML отключена.")
 
 @dataclass
 class ChannelMetrics:
@@ -169,10 +206,12 @@ class ChannelMetrics:
     success_count: int = 0
     overall_score: float = 0.0
     protocol_counts: Dict[str, int] = None
+    response_times: List[float] = None # Для адаптивного таймаута
 
     def __post_init__(self):
         if self.protocol_counts is None:
             self.protocol_counts = defaultdict(int)
+        self.response_times = []
 
 class ChannelConfig:
     def __init__(self, url: str, request_timeout: int = REQUEST_TIMEOUT):
@@ -192,6 +231,13 @@ class ChannelConfig:
         if not any(url.startswith(proto) for proto in valid_protocols):
             detected_protocol = url[:url.find('://') + 3] if '://' in url else url[:10]
             raise ValueError(f"Неверный протокол URL: '{detected_protocol}...'. Ожидается один из: {', '.join(valid_protocols)}.")
+
+        # Расширенная валидация URL с помощью yarl
+        try:
+            yarl.URL(url)
+        except yarl.URLParseError as e:
+            raise ValueError(f"Неверный формат URL: {e}") from e
+
         return url
 
     def calculate_overall_score(self):
@@ -236,12 +282,18 @@ class ChannelConfig:
             self.metrics.last_success_time = datetime.now()
         else:
             self.metrics.fail_count += 1
+
         if response_time > 0:
+            self.metrics.response_times.append(response_time) # Сохраняем все времена ответа
             # Экспоненциальное скользящее среднее с коэффициентом сглаживания 0.3
             if self.metrics.avg_response_time:
                 self.metrics.avg_response_time = (self.metrics.avg_response_time * 0.7) + (response_time * 0.3)
             else:
                 self.metrics.avg_response_time = response_time
+
+            # Адаптивный таймаут (пример)
+            median_response_time = sorted(self.metrics.response_times)[len(self.metrics.response_times) // 2] if self.metrics.response_times else REQUEST_TIMEOUT
+            self.request_timeout = min(REQUEST_TIMEOUT, median_response_time * 2) # Пример: таймаут = 2 * медианное время ответа
         self.calculate_overall_score()
 
 class ProxyConfig:
@@ -338,7 +390,10 @@ def _calculate_security_score(query: Dict) -> float:
     score = 0
     security_params = query.get('security', [])
     if security_params:
-        score += ScoringWeights.SECURITY_PARAM.value
+        score += ScoringWeights.SECURITY_TLS_VERSION.value # Пример разделения
+        score += ScoringWeights.SECURITY_CIPHER.value       # Пример разделения
+        score += ScoringWeights.SECURITY_CERTIFICATE_VALIDITY.value # Пример разделения
+
         score += min(ScoringWeights.NUM_SECURITY_PARAMS.value, len(security_params) * (ScoringWeights.NUM_SECURITY_PARAMS.value / 3))
         security_type = security_params[0].lower() if security_params else 'none'
         score += {
@@ -485,7 +540,11 @@ def _calculate_parameter_consistency_score(query: Dict, sni: Optional[str], host
     return score
 
 def _calculate_ipv6_score(parsed: urlparse) -> float:
-    return ScoringWeights.IPV6_ADDRESS.value if ":" in parsed.hostname else 0
+    try:
+        ipaddress.IPv6Address(parsed.hostname)
+        return ScoringWeights.IPV6_ADDRESS.value
+    except ipaddress.AddressValueError:
+        return 0
 
 def _calculate_hidden_param_score(query: Dict) -> float:
     score = 0
@@ -659,7 +718,6 @@ def _compute_misc_score_and_penalties(parsed: urlparse, query: Dict, sni: Option
 
     return score
 
-
 def compute_profile_score(config: str, response_time: float = 0.0) -> float:
     """Вычисляет оценку для заданной конфигурации прокси-профиля, суммируя оценки из разных категорий."""
     score = 0.0
@@ -690,8 +748,28 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
 
     score += _compute_misc_score_and_penalties(parsed, query, sni, host_header, response_time)
 
+    # Мультипликативные факторы (пример)
+    if query.get('security', [''])[0].lower() == 'none' and query.get('encryption', [''])[0].lower() == 'none':
+        score *= 0.5 # Уменьшаем оценку вдвое, если нет ни security, ни encryption
+
+    # Оценка на основе машинного обучения (если модель загружена)
+    if ml_model:
+        try:
+            # TODO: Подготовить features для модели (из query, config)
+            features = prepare_ml_features(query, config) # Функция для подготовки данных
+            score += ml_model.predict([features])[0] # Добавляем предсказание модели к оценке
+        except Exception as e:
+            logger.error(f"Ошибка при использовании модели машинного обучения для {config}: {e}")
+
     return round(score, 2)
 
+def prepare_ml_features(query: Dict, config: str) -> List[float]:
+    """Подготавливает features для модели машинного обучения."""
+    # TODO: Реализовать извлечение признаков из query и config
+    #  Пример: One-Hot Encoding для security, transport, encryption
+    #  Длина config, наличие sni, alpn, и т.д.
+    # Важно: Возвращать features в одном и том же порядке!
+    return [0.0] * 10  # Заглушка, пока не реализовано
 
 def generate_custom_name(config: str) -> str:
     """Генерирует пользовательское имя для прокси-профиля из URL конфигурации."""
@@ -783,6 +861,11 @@ DUPLICATE_PROFILE_REGEX = re.compile(
     r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)" # Более надежное regex для сопоставления дубликатов
 )
 
+@retry(limit=3, delay=2, max_delay=10, retry_on_exception=lambda e: isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError)), retry_on_http_status=RETRY_ON_HTTP_STATUSES)
+async def fetch_with_retry(session: aiohttp.ClientSession, url: str, timeout: int) -> aiohttp.ClientResponse:
+    """Функция для повторных попыток загрузки URL."""
+    async with session.get(url, timeout=timeout, trust_env=True) as response: # trust_env=True
+        return response
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
     """Обрабатывает один URL канала для извлечения конфигураций прокси."""
@@ -790,18 +873,18 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
     async with channel_semaphore:
         start_time = asyncio.get_event_loop().time()
         try:
-            async with session.get(channel.url, timeout=channel.request_timeout) as response:
-                if response.status != 200:
-                    logger.error(f"Канал {channel.url} вернул статус {response.status}: {response.reason}") # Больше деталей об ошибке HTTP
-                    channel.check_count += 1
-                    channel.update_channel_stats(success=False)
-                    return proxies
+            response = await fetch_with_retry(session, channel.url, channel.request_timeout)
+            if response.status != 200:
+                logger.error(f"Канал {channel.url} вернул статус {response.status}: {response.reason}") # Больше деталей об ошибке HTTP
+                channel.check_count += 1
+                channel.update_channel_stats(success=False)
+                return proxies
 
-                text = await response.text()
-                end_time = asyncio.get_event_loop().time()
-                response_time = end_time - start_time
-                logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд")
-                channel.update_channel_stats(success=True, response_time=response_time)
+            text = await response.text()
+            end_time = asyncio.get_event_loop().time()
+            response_time = end_time - start_time
+            logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд")
+            channel.update_channel_stats(success=True, response_time=response_time)
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.error(f"Ошибка загрузки из {channel.url}: {type(e).__name__} - {e}")
@@ -814,10 +897,26 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             channel.update_channel_stats(success=False)
             return proxies
 
-        lines = text.splitlines()
+        # Извлечение нескольких конфигураций (пример: JSON)
+        if response.content_type == 'application/json':
+            try:
+                data = json.loads(text)
+                if isinstance(data, list): # Ожидаем список конфигураций
+                    lines = [item.get('config') for item in data if isinstance(item, dict) and item.get('config')] # Извлекаем 'config' из каждого элемента
+                else:
+                    logger.warning(f"JSON канал {channel.url} вернул не список.")
+                    return proxies
+            except json.JSONDecodeError as e:
+                logger.error(f"Ошибка декодирования JSON из {channel.url}: {e}")
+                channel.check_count += 1
+                channel.update_channel_stats(success=False)
+                return proxies
+        else:
+            lines = text.splitlines()
+
         valid_configs_from_channel = 0
         for line in lines:
-            line = line.strip()
+            line = str(line).strip() # Преобразуем в строку на всякий случай
             if len(line) < MIN_CONFIG_LENGTH:
                 continue
 
@@ -834,8 +933,12 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
 
                 if not hostname or not port:
                     continue
-                if not is_valid_ipv4(hostname) and ":" in hostname: # Более надежная проверка IPv6, хотя IPv6 адреса могут быть валидными
-                  continue
+                if not is_valid_ipv4(hostname): # Сначала проверяем IPv4
+                    try:
+                        ipaddress.IPv6Address(hostname)  # Теперь пытаемся распарсить как IPv6
+                    except ipaddress.AddressValueError:
+                        logger.debug(f"Неверный IP адрес: {hostname}")
+                        continue
 
                 profile_id = None
                 if protocol == 'vless://':
@@ -877,14 +980,13 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
         logger.info(f"Канал {channel.url}: Найдено {valid_configs_from_channel} действительных конфигураций.")
         return proxies
 
-
 async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
     """Обрабатывает все каналы для извлечения и проверки конфигураций прокси."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     proxies_all: List[Dict] = []
     existing_profiles_regex = set()
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session: # trust_env=True удалено отсюда
         tasks = [process_channel(channel, session, channel_semaphore, existing_profiles_regex, proxy_config) for channel in channels]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -896,63 +998,82 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
     return proxies_all
 
+class ProxyChecker:
+    def __init__(self, test_urls: List[str] = TEST_URLS_FOR_PROXY_CHECK):
+        self.test_urls = test_urls
+
+    async def check_http(self, session: aiohttp.ClientSession, proxy: str) -> bool:
+        """Проверяет прокси через HTTP запрос."""
+        try:
+            test_url = self.test_urls[0]  # Выбираем первый URL для проверки
+            async with session.get(test_url, proxy=proxy, timeout=5) as response:
+                return response.status == 200
+        except Exception:
+            return False
+
+    async def check_tcp_handshake(self, hostname: str, port: int) -> bool:
+         """Проверяет доступность TCP сервера."""
+         try:
+             async with asyncio.timeout(5):
+                 reader, writer = await asyncio.open_connection(hostname, port)
+                 writer.close()
+                 await writer.wait_closed()
+                 return True
+         except (TimeoutError, ConnectionRefusedError, OSError):
+             return False
+
+    async def check_dns(self, hostname: str) -> bool:
+        """Проверяет, разрешается ли доменное имя в IP-адрес."""
+        try:
+            await asyncio.get_event_loop().getaddrinfo(hostname, 80)
+            return True
+        except OSError:
+            return False
 
 async def verify_proxies_availability(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
-    """Проверяет доступность прокси с использованием TCP рукопожатия."""
-    return await verify_proxies_availability_tcp_handshake(proxies, proxy_config)
+    """Проверяет доступность прокси с использованием различных методов."""
+    proxy_checker = ProxyChecker()
+    available_proxies = []
+    verified_count = 0
+    non_verified_count = 0
 
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS) # Ограничение параллельности
 
-async def verify_proxies_availability_tcp_handshake(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
-    """Проверяет доступность прокси через TCP рукопожатие с контролем параллелизма."""
-    available_proxies_tcp = []
-    verified_count_tcp = 0
-    non_verified_count_tcp = 0
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        async def verify_proxy(proxy_item: Dict):
+            nonlocal verified_count, non_verified_count
+            config = proxy_item['config']
+            parsed_url = urlparse(config)
+            hostname = parsed_url.hostname
+            port = parsed_url.port
 
-    logger.info("Начинается проверка доступности прокси через TCP рукопожатие...")
+            async with semaphore:  # Ограничиваем параллельность
+                if hostname and port:
+                    tcp_result = await proxy_checker.check_tcp_handshake(hostname, port)
+                    if tcp_result:
+                        http_proxy = f"http://{hostname}:{port}" # Используем HTTP прокси для проверки HTTP
+                        http_result = await proxy_checker.check_http(session, http_proxy)
+                        if http_result:
+                            available_proxies.append(proxy_item)
+                            verified_count += 1
+                            logger.debug(f"Прокси {config} прошла проверку TCP и HTTP.")
+                        else:
+                            non_verified_count += 1
+                            logger.debug(f"Прокси {config} не прошла проверку HTTP.")
 
-    tcp_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS)
+                    else:
+                        non_verified_count += 1
+                        logger.debug(f"Прокси {config} не прошла проверку TCP.")
 
-    tasks = []
-    for proxy_item in proxies:
-        config = proxy_item['config']
-        parsed_url = urlparse(config)
-        hostname = parsed_url.hostname
-        port = parsed_url.port
-        if hostname and port:
-            tasks.append(_verify_proxy_tcp_handshake(hostname, port, tcp_semaphore, proxy_item))
-        else:
-            non_verified_count_tcp += 1
-            logger.warning(f"Не удалось определить хост и порт для прокси {config}. Проверка пропущена.")
+                else:
+                    non_verified_count += 1
+                    logger.warning(f"Не удалось определить хост и порт для прокси {config}. Проверка пропущена.")
 
-    results = await asyncio.gather(*tasks)
+        tasks = [verify_proxy(proxy_item) for proxy_item in proxies]
+        await asyncio.gather(*tasks) # Запускаем все проверки параллельно
 
-    for result in results:
-        if result:
-            is_available, proxy_item = result
-            if is_available:
-                available_proxies_tcp.append(proxy_item)
-                verified_count_tcp += 1
-            else:
-                non_verified_count_tcp += 1
-
-    logger.info(f"Проверка доступности TCP рукопожатием завершена. Доступно: {len(available_proxies_tcp)} из {len(proxies)} прокси.")
-    return available_proxies_tcp, verified_count_tcp, non_verified_count_tcp
-
-
-async def _verify_proxy_tcp_handshake(hostname: str, port: int, tcp_semaphore: asyncio.Semaphore, proxy_item: Dict) -> Tuple[bool, Dict]:
-    """Проверяет доступность TCP сервера с семафором для контроля параллелизма."""
-    try:
-        async with tcp_semaphore:
-            async with asyncio.timeout(5):
-                reader, writer = await asyncio.open_connection(hostname, port)
-                writer.close()
-                await writer.wait_closed()
-                logger.debug(f"TCP рукопожатие: Прокси {hostname}:{port} пройдена.")
-                return True, proxy_item
-    except (TimeoutError, ConnectionRefusedError, OSError) as e:
-        logger.debug(f"TCP рукопожатие не удалось для {hostname}:{port}: {type(e).__name__} - {e}")
-        return False, proxy_item
-
+    logger.info(f"Проверка доступности завершена. Доступно: {len(available_proxies)} из {len(proxies)} прокси.")
+    return available_proxies, verified_count, non_verified_count
 
 def save_final_configs(proxies: List[Dict], output_file: str):
     """Сохраняет окончательные конфигурации прокси в файл вывода, отсортированные по оценке."""
@@ -997,7 +1118,7 @@ def main():
         logger.info("================== СТАТИСТИКА ==================")
         logger.info(f"Всего каналов: {total_channels}")
         logger.info(f"Включено каналов: {enabled_channels}")
-        logger.info(f"Отключено каналов: {disabled_channels}") # В текущей логике всегда 0
+        logger.info(f"Отключено каналов: {disabled_channels}") # В текущей логике всегда будет 0
         logger.info(f"Всего действительных конфигураций: {total_valid_configs}")
         logger.info(f"Всего уникальных конфигураций: {total_unique_configs}")
         logger.info(f"Всего успешных загрузок: {total_successes}")
