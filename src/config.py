@@ -109,7 +109,7 @@ class ScoringWeightsModel(BaseModel):
                 weights_data = json.load(f)
                 return cls(**weights_data)
         except FileNotFoundError:
-            logger.debug(f"Scoring weights file not found: {file_path}. Using defaults.") # Changed to debug
+            logger.debug(f"Scoring weights file not found: {file_path}. Using defaults.")
             return cls.create_default_weights_file(file_path)
         except json.JSONDecodeError:
             logger.error(f"Error reading JSON weights file: {file_path}. Using defaults.")
@@ -210,7 +210,7 @@ class ChannelConfig:
             'username': parsed.username,
             'password': parsed.password,
             'path': parsed.path,
-            'fragment': parsed.fragment, # Added fragment
+            'fragment': parsed.fragment,
             'sni': query.get('sni', [None])[0],
             'security': query.get('security', [None])[0],
             'type': query.get('type', [None])[0],
@@ -223,13 +223,13 @@ class ChannelConfig:
         elif protocol == 'ss://':
             try:
                 userinfo_base64 = parsed.netloc.split('@')[0]
-                userinfo_decoded = base64.b64decode(userinfo_base64 + '===').decode('utf-8') # Pad for correct base64 decoding
+                userinfo_decoded = base64.b64decode(userinfo_base64 + '===').decode('utf-8')
                 method, password = userinfo_decoded.split(':')
                 details['ss_method'] = method
                 details['ss_password'] = password
                 host_port = parsed.netloc.split('@')[1]
                 details['hostname'] = host_port.split(':')[0]
-                details['port'] = int(host_port.split(':')[1]) if ':' in host_port else 80 # Default port for ss
+                details['port'] = int(host_port.split(':')[1]) if ':' in host_port else 80
             except Exception as e:
                 raise ValueError(f"Invalid SS URL format: {self.url} - {e}")
 
@@ -280,7 +280,7 @@ class ChannelConfig:
             self.status = ChannelStatus.ACTIVE
         else:
             self.metrics.fail_count += 1
-            self.status = ChannelStatus.INACTIVE # Or FAILED depending on logic
+            self.status = ChannelStatus.INACTIVE
         if response_time > 0:
             if self.metrics.avg_response_time:
                 self.metrics.avg_response_time = (self.metrics.avg_response_time * 0.7) + (response_time * 0.3)
@@ -320,9 +320,9 @@ class ProxyConfig:
                         try:
                             configs.append(ChannelConfig(url))
                         except ValueError as e:
-                            logger.debug(f"Invalid URL in file {file_path}: {url} - {e}") # Changed to debug
+                            logger.debug(f"Invalid URL in file {file_path}: {url} - {e}")
         except FileNotFoundError:
-            logger.debug(f"Channel source file not found: {file_path}") # Changed to debug
+            logger.debug(f"Channel source file not found: {file_path}")
         return configs
 
     def _normalize_url(self, url: str) -> str:
@@ -352,7 +352,7 @@ class ProxyConfig:
             unique_configs = []
             for config in channel_configs:
                 if not isinstance(config, ChannelConfig):
-                    logger.debug(f"Invalid config skipped: {config}") # Changed to debug
+                    logger.debug(f"Invalid config skipped: {config}")
                     continue
                 try:
                     normalized_url = self._normalize_url(config.url)
@@ -553,7 +553,7 @@ class UDPScore(ScoringFeature):
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         protocol = channel_details['protocol']
-        return ScoringWeights.UDP_SUPPORT if protocol in ("tuic://", "hy2://", "ss://") else 0 # Added ss://
+        return ScoringWeights.UDP_SUPPORT if protocol in ("tuic://", "hy2://", "ss://") else 0
 
 class PortScore(ScoringFeature):
     """Scores based on port number."""
@@ -641,7 +641,7 @@ class HiddenParamScore(ScoringFeature):
         known_params = (
             'security', 'type', 'encryption', 'sni', 'alpn', 'path',
             'headers', 'fp', 'utls',
-            'earlyData', 'id', 'bufferSize', 'tcpFastOpen', 'maxIdleTime', 'streamEncryption', 'obfs', 'debug', 'comment', 'plugin', 'obfs-host', 'obfs-uri', 'remarks' # Added for ss
+            'earlyData', 'id', 'bufferSize', 'tcpFastOpen', 'maxIdleTime', 'streamEncryption', 'obfs', 'debug', 'comment', 'plugin', 'obfs-host', 'obfs-uri', 'remarks'
         )
         for key, value in query.items():
             if key not in known_params:
@@ -700,7 +700,7 @@ class CDNUsageScore(ScoringFeature):
 
 class MTUSizeScore(ScoringFeature):
     """Scores based on MTU size parameter (currently no scoring)."""
-    weight = 0.0 # No weight for MTU size yet
+    weight = 0.0
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         return 0.0
@@ -731,49 +731,49 @@ class CommentScore(ScoringFeature):
 
 class ClientCompatibilityScore(ScoringFeature):
     """Scores for client compatibility (currently no scoring)."""
-    weight = 0.0 # No weight for client compatibility yet
+    weight = 0.0
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         return 0.0
 
 class SessionResumptionScore(ScoringFeature):
     """Scores for session resumption (currently no scoring)."""
-    weight = 0.0 # No weight for session resumption yet
+    weight = 0.0
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         return 0.0
 
 class FallbackTypeScore(ScoringFeature):
     """Scores for fallback type (currently no scoring)."""
-    weight = 0.0 # No weight for fallback type yet
+    weight = 0.0
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         return 0.0
 
 class WebtransportScore(ScoringFeature):
     """Scores for webtransport (currently no scoring)."""
-    weight = 0.0 # No weight for webtransport yet
+    weight = 0.0
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         return 0.0
 
 class SecurityDirectScore(ScoringFeature):
     """Scores for security direct (currently no scoring)."""
-    weight = 0.0 # No weight for security direct yet
+    weight = 0.0
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         return 0.0
 
 class TLSVersionScore(ScoringFeature):
     """Scores for TLS version (currently no scoring)."""
-    weight = 0.0 # No weight for TLS version yet
+    weight = 0.0
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         return 0.0
 
 class MultiplexingScore(ScoringFeature):
     """Scores for multiplexing (currently no scoring)."""
-    weight = 0.0 # No weight for multiplexing yet
+    weight = 0.0
 
     def calculate_score(self, channel_details: Dict[str, Any]) -> float:
         return 0.0
@@ -896,11 +896,10 @@ def generate_custom_name(channel: ChannelConfig) -> str:
         'transport': transport_type if transport_type != "NONE" else '',
         'security': security_type if security_type != "NONE" else '',
         'sni_short': f"SNI:{sni_short}" if sni_short != "NoSNI" else '',
-        'server': server_name[:15], # Shorten server name
+        'server': server_name[:15],
         'port': port_number
     }
 
-    # Filter out empty strings and "NONE" components for cleaner names
     filtered_components = [v for k, v in name_components.items() if v and v.upper() != 'NONE']
 
     return " | ".join(filtered_components)
@@ -924,7 +923,7 @@ def create_profile_key(config: str) -> str:
         parsed = urlparse(config)
         query = parse_qs(parsed.query)
 
-        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan|ss)://.*?@([\w\d\.\:]+):(\d+)") # Added ss
+        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan|ss)://.*?@([\w\d\.\:]+):(\d+)")
         match = core_pattern.match(config)
 
         if match:
@@ -1040,17 +1039,17 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                     try:
                         base64.b64decode(userinfo_base64 + '===')
                     except:
-                        logger.debug(f"Profile {line} skipped due to invalid base64 encoding in ss url") # Changed to debug
+                        logger.debug(f"Profile {line} skipped due to invalid base64 encoding in ss url")
                         continue
 
 
                 if profile_id and protocol in ('vless://', 'trojan://'):
                     if not is_valid_uuid(profile_id):
-                        logger.debug(f"Profile {line} skipped due to invalid UUID format: {profile_id}") # Changed to debug
+                        logger.debug(f"Profile {line} skipped due to invalid UUID format: {profile_id}")
                         continue
 
             except ValueError as e:
-                logger.debug(f"URL parsing error {line}: {e}") # Changed to debug
+                logger.debug(f"URL parsing error {line}: {e}")
                 continue
 
             match = DUPLICATE_PROFILE_REGEX.match(line)
@@ -1060,11 +1059,12 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                     continue
                 existing_profiles_regex.add(duplicate_key)
             else:
-                logger.debug(f"Failed to create duplicate filter key for: {line}") # Changed to debug
+                logger.debug(f"Failed to create duplicate filter key for: {line}")
                 continue
 
             try:
-                score = compute_profile_score(ChannelConfig(line), response_time=channel.metrics.avg_response_time)
+                # Removed response_time argument here
+                score = compute_profile_score(ChannelConfig(line))
             except Exception as e:
                 logger.error(f"Error computing score for config {line}: {e}")
                 continue
@@ -1138,9 +1138,7 @@ def main():
 
     async def runner():
         proxies = await process_all_channels(channels, proxy_config)
-        # Proxy verification removed
-        # verified_proxies, verified_count, non_verified_count = await verify_proxies_availability(proxies, proxy_config)
-        save_final_configs(proxies, proxy_config.OUTPUT_FILE) # Save all proxies directly
+        save_final_configs(proxies, proxy_config.OUTPUT_FILE)
 
         total_channels = len(channels)
         enabled_channels = sum(1 for channel in channels)
