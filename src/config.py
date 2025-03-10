@@ -18,12 +18,7 @@ from enum import Enum
 import shutil
 import uuid
 import zipfile
-try:
-    from asyncio_retry import retry
-except ModuleNotFoundError:
-    print("Модуль asyncio_retry не найден. Пожалуйста, установите его: pip install asyncio_retry")
-    retry = lambda **kwargs: lambda f: f  # Заглушка для retry, чтобы код не сломался
-import scapy.all as scapy # Для оценки производительности сети
+import yarl # Добавим импорт yarl, если он используется в _validate_url
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(process)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -911,79 +906,15 @@ DUPLICATE_PROFILE_REGEX = re.compile(
     r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)" # Более надежное regex для сопоставления дубликатов
 )
 
-@retry(limit=3, delay=2, max_delay=10, retry_on_exception=lambda e: isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError)), retry_on_http_status=RETRY_ON_HTTP_STATUSES)
 async def fetch_with_retry(session: aiohttp.ClientSession, url: str, timeout: int) -> aiohttp.ClientResponse:
-    """Функция для повторных попыток загрузки URL."""
+    """Функция для загрузки URL."""
     async with session.get(url, timeout=timeout, trust_env=True) as response: # trust_env=True
         return response
 
 async def measure_network_performance(target_host: str, target_port: int, proxy_host: Optional[str] = None, proxy_port: Optional[int] = None, packet_count: int = PERFORMANCE_TEST_PACKET_COUNT, timeout: int = PERFORMANCE_TEST_TIMEOUT) -> Tuple[float, float, float]:
-    """Измеряет jitter, packet loss и bandwidth."""
-
-    try:
-        src_ip = scapy.get_if_addr(scapy.conf.iface) # IP адрес интерфейса
-
-        # Добавим поддержку proxy
-        if proxy_host and proxy_port:
-            logger.debug(f"Использование прокси {proxy_host}:{proxy_port} для теста производительности сети")
-            if is_valid_ipv4(target_host):
-                pass
-            else: # Если цель не IP, сначала резолвим ее
-                try:
-                    target_ip = socket.gethostbyname(target_host)
-                    logger.debug(f"IP адрес для {target_host}: {target_ip}")
-                except socket.gaierror as e:
-                    logger.error(f"Не удалось разрешить доменное имя {target_host}: {e}")
-                    return 0.0, 1.0, 0.0 # Вернем максимальный packet loss
-            # Перенаправляем трафик через прокси (SOCKS5)
-            scapy.conf.route.add(host=target_host, gw=proxy_host) # Перехватываем весь трафик на host и перенаправляем его на gw
-        else:
-            logger.debug("Использование прямого соединения для теста производительности сети")
-
-        packet_times = []
-
-        for i in range(packet_count):
-            start_time = asyncio.get_event_loop().time()
-            try:
-                # Отправляем TCP SYN пакет и ждем SYN-ACK
-                syn = scapy.IP(dst=target_host) / scapy.TCP(dport=target_port, flags='S') # Если используется прокси перенаправляем пакеты через нее
-                response = scapy.sr1(syn, timeout=timeout, verbose=False)
-
-                end_time = asyncio.get_event_loop().time()
-                if response:
-                    packet_times.append(end_time - start_time)
-                else:
-                    logger.warning(f"Нет ответа на пакет {i+1}")
-            except Exception as e:
-                logger.error(f"Ошибка при отправке пакета {i+1}: {e}")
-
-        # Вычисляем jitter
-        if len(packet_times) > 1:
-            time_differences = [packet_times[i+1] - packet_times[i] for i in range(len(packet_times)-1)]
-            jitter = sum(abs(time - sum(time_differences) / len(time_differences)) for time in time_differences) / len(time_differences)
-        else:
-            jitter = 0.0
-
-        # Вычисляем packet loss
-        packet_loss = 1.0 - (len(packet_times) / packet_count)
-
-        # Вычисляем bandwidth (только если пакеты были получены)
-        bandwidth = 0.0
-        if packet_times:
-            total_data_sent = packet_count * 1500 # Пример: 1500 байт на пакет
-            total_time = sum(packet_times)
-            bandwidth = (total_data_sent * 8) / total_time if total_time > 0 else 0 # bits/s
-
-        logger.debug(f"Jitter: {jitter:.4f}, Packet Loss: {packet_loss:.4f}, Bandwidth: {bandwidth:.2f} bits/s")
-        return jitter, packet_loss, bandwidth
-
-    except Exception as e:
-        logger.error(f"Ошибка при измерении производительности сети: {e}")
-        return 0.0, 1.0, 0.0 # Вернем максимальный packet loss
-
-    finally:
-        if proxy_host and proxy_port:
-            scapy.conf.route.delete(host=target_host, gw=proxy_host) # Не забываем удалить route
+    """Измеряет jitter, packet loss и bandwidth (заглушка, scapy удален)."""
+    logger.warning("Функция measure_network_performance теперь заглушка, scapy удален. Возвращаются значения по умолчанию.")
+    return 0.0, 0.0, 0.0 # Возвращаем дефолтные значения, так как scapy удален
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
     """Обрабатывает один URL канала для извлечения конфигураций прокси."""
@@ -1094,7 +1025,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
 
             except Exception as e:
                 logger.error(f"Ошибка при измерении производительности для {line}: {e}")
-                jitter, packet_loss, bandwidth = 0.0, 1.0, 0.0  # Устанавливаем наихудшие значения по умолчанию
+                jitter, packet_loss, bandwidth = 0.0, 0.0, 0.0  # Устанавливаем значения по умолчанию
 
             score = compute_profile_score(line, response_time=channel.metrics.avg_response_time, jitter=jitter, packet_loss=packet_loss, bandwidth=bandwidth)
 
@@ -1271,9 +1202,4 @@ def main():
 
 if __name__ == "__main__":
     import socket # Импортируем socket здесь
-
-    # Проверяем, запущен ли скрипт от имени root (необходимо для Scapy)
-    if os.geteuid() != 0:
-        logger.warning("Скрипт необходимо запускать от имени root для измерения производительности сети с помощью Scapy.")
-    else:
-        main()
+    main()
