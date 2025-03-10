@@ -134,8 +134,8 @@ HIGH_FREQUENCY_THRESHOLD_HOURS = 12 # Optimized Constant
 HIGH_FREQUENCY_BONUS = 3 # Optimized Constant
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
-TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com"
-MAX_CONCURRENT_HTTP_CHECKS = 60 # Replaced TCP_HANDSHAKE with HTTP Checks, keeping concurrency limit
+TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com" # Removed
+MAX_CONCURRENT_HTTP_CHECKS = 60 # Replaced TCP_HANDSHAKE with HTTP Checks, keeping concurrency limit # Removed
 
 
 @dataclass
@@ -177,7 +177,7 @@ class ChannelConfig:
             recency_bonus = self._calculate_recency_bonus()
             response_time_penalty = self._calculate_response_time_penalty()
 
-            self.metrics.overall_score = round((success_ratio * ScoringWeights.CHANNEL_STABILITY.value) + recency_bonus + response_time_penalty, 2)
+            self.metrics.overall_score = round((success_ratio * ScoringWeights.CHANNEL_STABILITY.value) + recency_bonus + response_time_penalty, 2) # Use .value
             self.metrics.overall_score = max(0, self.metrics.overall_score)
 
         except Exception as e:
@@ -195,7 +195,7 @@ class ChannelConfig:
         return 0
 
     def _calculate_response_time_penalty(self) -> float:
-        return self.metrics.avg_response_time * ScoringWeights.RESPONSE_TIME.value if self.metrics.avg_response_time > 0 else 0
+        return self.metrics.avg_response_time * ScoringWeights.RESPONSE_TIME.value if self.metrics.avg_response_time > 0 else 0 # Use .value
 
     def update_channel_stats(self, success: bool, response_time: float = 0):
         assert isinstance(success, bool), f"Аргумент 'success' должен быть bool, получено {type(success)}"
@@ -236,7 +236,7 @@ class ProxyConfig:
 
         self.SOURCE_URLS = self._remove_duplicate_urls(initial_urls)
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
-        self.TEST_URL_FOR_PROXY_CHECK = TEST_URL_FOR_PROXY_CHECK # Добавлено для HTTP проверки
+        # self.TEST_URL_FOR_PROXY_CHECK = TEST_URL_FOR_PROXY_CHECK # Removed
 
     def _normalize_url(self, url: str) -> str:
         try:
@@ -293,80 +293,80 @@ class ProxyConfig:
             return False
 
 def _calculate_config_length_score(config: str) -> float:
-    return min(ScoringWeights.CONFIG_LENGTH.value, (len(config) / 200.0) * ScoringWeights.CONFIG_LENGTH.value)
+    return min(ScoringWeights.CONFIG_LENGTH.value, (len(config) / 200.0) * ScoringWeights.CONFIG_LENGTH.value) # Use .value
 
 def _calculate_security_score(query: Dict) -> float:
     score = 0
     security_params = query.get('security', [])
     if security_params:
-        score += ScoringWeights.SECURITY_PARAM.value
-        score += min(ScoringWeights.NUM_SECURITY_PARAMS.value, len(security_params) * (ScoringWeights.NUM_SECURITY_PARAMS.value / 3))
+        score += ScoringWeights.SECURITY_PARAM.value # Use .value
+        score += min(ScoringWeights.NUM_SECURITY_PARAMS.value, len(security_params) * (ScoringWeights.NUM_SECURITY_PARAMS.value / 3)) # Use .value
         security_type = security_params[0].lower() if security_params else 'none'
         score += {
-            "tls": ScoringWeights.SECURITY_TYPE_TLS.value,
-            "reality": ScoringWeights.SECURITY_TYPE_REALITY.value, # Keep Reality
-            "none": ScoringWeights.SECURITY_TYPE_NONE.value
+            "tls": ScoringWeights.SECURITY_TYPE_TLS.value, # Use .value
+            "reality": ScoringWeights.SECURITY_TYPE_REALITY.value, # Use .value # Keep Reality
+            "none": ScoringWeights.SECURITY_TYPE_NONE.value # Use .value
         }.get(security_type, 0)
     return score
 
 def _calculate_transport_score(query: Dict) -> float:
     transport_type = query.get('type', ['tcp'])[0].lower()
     return {
-        "tcp": ScoringWeights.TRANSPORT_TYPE_TCP.value,
-        "ws": ScoringWeights.TRANSPORT_TYPE_WS.value,
-        "quic": ScoringWeights.TRANSPORT_TYPE_QUIC.value,
+        "tcp": ScoringWeights.TRANSPORT_TYPE_TCP.value, # Use .value
+        "ws": ScoringWeights.TRANSPORT_TYPE_WS.value, # Use .value
+        "quic": ScoringWeights.TRANSPORT_TYPE_QUIC.value, # Use .value
     }.get(transport_type, 0)
 
 def _calculate_encryption_score(query: Dict) -> float:
     encryption_type = query.get('encryption', ['none'])[0].lower()
     return {
-        "none": ScoringWeights.ENCRYPTION_TYPE_NONE.value,
-        "auto": ScoringWeights.ENCRYPTION_TYPE_AUTO.value,
-        "aes-128-gcm": ScoringWeights.ENCRYPTION_TYPE_AES_128_GCM.value,
-        "chacha20-poly1305": ScoringWeights.ENCRYPTION_TYPE_CHACHA20_POLY1305.value,
-        "zero": ScoringWeights.ENCRYPTION_TYPE_ZERO.value
+        "none": ScoringWeights.ENCRYPTION_TYPE_NONE.value, # Use .value
+        "auto": ScoringWeights.ENCRYPTION_TYPE_AUTO.value, # Use .value
+        "aes-128-gcm": ScoringWeights.ENCRYPTION_TYPE_AES_128_GCM.value, # Use .value
+        "chacha20-poly1305": ScoringWeights.ENCRYPTION_TYPE_CHACHA20_POLY1305.value, # Use .value
+        "zero": ScoringWeights.ENCRYPTION_TYPE_ZERO.value # Use .value
     }.get(encryption_type, 0)
 
 def _calculate_sni_score(query: Dict) -> float:
     score = 0
     sni = query.get('sni', [None])[0]
     if sni:
-        score += ScoringWeights.SNI_PRESENT.value
+        score += ScoringWeights.SNI_PRESENT.value # Use .value
         if sni.endswith(('.com', '.net', '.org', '.info', '.xyz')):
-            score += ScoringWeights.COMMON_SNI_BONUS.value
+            score += ScoringWeights.COMMON_SNI_BONUS.value # Use .value
     return score
 
 def _calculate_alpn_score(query: Dict) -> float:
     score = 0
     alpn = query.get('alpn', [None])[0]
     if alpn:
-        score += ScoringWeights.ALPN_PRESENT.value
+        score += ScoringWeights.ALPN_PRESENT.value # Use .value
         alpn_protocols = alpn.split(',')
-        score += min(ScoringWeights.NUM_ALPN_PROTOCOLS.value, len(alpn_protocols) * (ScoringWeights.NUM_ALPN_PROTOCOLS.value / 2))
+        score += min(ScoringWeights.NUM_ALPN_PROTOCOLS.value, len(alpn_protocols) * (ScoringWeights.NUM_ALPN_PROTOCOLS.value / 2)) # Use .value
     return score
 
 def _calculate_path_score(query: Dict) -> float:
     score = 0
     path = query.get('path', [None])[0]
     if path:
-        score += ScoringWeights.PATH_PRESENT.value
+        score += ScoringWeights.PATH_PRESENT.value # Use .value
         complexity = len(re.findall(r'[^a-zA-Z0-9]', path)) + (len(path) / 10)
-        score += min(ScoringWeights.PATH_COMPLEXITY.value, complexity * (ScoringWeights.PATH_COMPLEXITY.value / 5))
+        score += min(ScoringWeights.PATH_COMPLEXITY.value, complexity * (ScoringWeights.PATH_COMPLEXITY.value / 5)) # Use .value
     return score
 
 def _calculate_headers_score(query: Dict, sni: Optional[str]) -> float:
     score = 0
     headers = query.get('headers', [None])[0]
     if headers:
-        score += ScoringWeights.HEADERS_PRESENT.value
+        score += ScoringWeights.HEADERS_PRESENT.value # Use .value
         try:
             headers_dict = dict(item.split(":") for item in headers.split("&"))
-            score += min(ScoringWeights.NUM_HEADERS.value, len(headers_dict) * (ScoringWeights.NUM_HEADERS.value / 2))
+            score += min(ScoringWeights.NUM_HEADERS.value, len(headers_dict) * (ScoringWeights.NUM_HEADERS.value / 2)) # Use .value
             host_header = headers_dict.get('Host', None)
             if host_header:
-                score += ScoringWeights.HOST_HEADER.value
+                score += ScoringWeights.HOST_HEADER.value # Use .value
                 if sni and host_header == sni:
-                    score += ScoringWeights.HOST_SNI_MATCH.value
+                    score += ScoringWeights.HOST_SNI_MATCH.value # Use .value
         except Exception:
             pass
     return score
@@ -379,59 +379,59 @@ def _calculate_utls_score(query: Dict) -> float:
     score = 0
     utls = query.get('utls', query.get('fp', [None]))[0] # fp fallback for utls
     if utls:
-        score += ScoringWeights.UTLS_PRESENT.value
+        score += ScoringWeights.UTLS_PRESENT.value # Use .value
         utls_score = {
-            "chrome": ScoringWeights.UTLS_VALUE_CHROME.value,
-            "firefox": ScoringWeights.UTLS_VALUE_FIREFOX.value,
-            "ios": ScoringWeights.UTLS_VALUE_IOS.value,
-            "safari": ScoringWeights.UTLS_VALUE_SAFARI,
-            "randomized": ScoringWeights.UTLS_VALUE_RANDOMIZED.value,
-            "random": ScoringWeights.UTLS_VALUE_RANDOM.value,
-            "edge": ScoringWeights.UTLS_VALUE_EDGE.value if hasattr(ScoringWeights, 'UTLS_VALUE_EDGE') else ScoringWeights.UTLS_VALUE_CHROME.value # Edge fallback
+            "chrome": ScoringWeights.UTLS_VALUE_CHROME.value, # Use .value
+            "firefox": ScoringWeights.UTLS_VALUE_FIREFOX.value, # Use .value
+            "ios": ScoringWeights.UTLS_VALUE_IOS.value, # Use .value
+            "safari": ScoringWeights.UTLS_VALUE_SAFARI.value, # Use .value
+            "randomized": ScoringWeights.UTLS_VALUE_RANDOMIZED.value, # Use .value
+            "random": ScoringWeights.UTLS_VALUE_RANDOM.value, # Use .value
+            "edge": ScoringWeights.UTLS_VALUE_EDGE.value if hasattr(ScoringWeights, 'UTLS_VALUE_EDGE') else ScoringWeights.UTLS_VALUE_CHROME.value # Use .value # Edge fallback
         }.get(utls.lower(), 0)
         if utls_score is not None:
             score += utls_score
     return score
 
 def _calculate_udp_score(protocol: str) -> float:
-    return ScoringWeights.UDP_SUPPORT.value if protocol in ("tuic://", "hy2://") else 0
+    return ScoringWeights.UDP_SUPPORT.value if protocol in ("tuic://", "hy2://") else 0 # Use .value
 
 def _calculate_port_score(port: Optional[int]) -> float:
     if port:
         return {
-            80: ScoringWeights.PORT_80.value,
-            443: ScoringWeights.PORT_443.value
-        }.get(port, ScoringWeights.PORT_OTHER.value)
+            80: ScoringWeights.PORT_80.value, # Use .value
+            443: ScoringWeights.PORT_443.value # Use .value
+        }.get(port, ScoringWeights.PORT_OTHER.value) # Use .value
     return 0
 
 def _calculate_uuid_score(parsed: urlparse, query: Dict) -> float:
     score = 0
     uuid_val = parsed.username or query.get('id', [None])[0]
     if uuid_val and parsed.scheme == 'vless':
-        score += ScoringWeights.UUID_PRESENT.value
-        score += min(ScoringWeights.UUID_LENGTH.value, len(uuid_val) * (ScoringWeights.UUID_LENGTH.value / 36))
+        score += ScoringWeights.UUID_PRESENT.value # Use .value
+        score += min(ScoringWeights.UUID_LENGTH.value, len(uuid_val) * (ScoringWeights.UUID_LENGTH.value / 36)) # Use .value
     return score
 
 def _calculate_trojan_password_score(parsed: urlparse) -> float:
     score = 0
     password = parsed.password
     if password:
-        score += ScoringWeights.TROJAN_PASSWORD_PRESENT.value
-        score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value, len(password) * (ScoringWeights.TROJAN_PASSWORD_LENGTH.value / 16))
+        score += ScoringWeights.TROJAN_PASSWORD_PRESENT.value # Use .value
+        score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value, len(password) * (ScoringWeights.TROJAN_PASSWORD_LENGTH.value / 16)) # Use .value
     return score
 
 
 def _calculate_early_data_score(query: Dict) -> float:
-    return ScoringWeights.EARLY_DATA_SUPPORT.value if query.get('earlyData', [None])[0] == "1" else 0
+    return ScoringWeights.EARLY_DATA_SUPPORT.value if query.get('earlyData', [None])[0] == "1" else 0 # Use .value
 
 def _calculate_parameter_consistency_score(query: Dict, sni: Optional[str], host_header: Optional[str]) -> float:
     score = 0
     if sni and host_header and sni != host_header:
-        score -= (ScoringWeights.PARAMETER_CONSISTENCY.value / 2)
+        score -= (ScoringWeights.PARAMETER_CONSISTENCY.value / 2) # Use .value
     return score
 
 def _calculate_ipv6_score(parsed: urlparse) -> float:
-    return ScoringWeights.IPV6_ADDRESS.value if ":" in parsed.hostname else 0
+    return ScoringWeights.IPV6_ADDRESS.value if ":" in parsed.hostname else 0 # Use .value
 
 def _calculate_hidden_param_score(query: Dict) -> float:
     score = 0
@@ -442,9 +442,9 @@ def _calculate_hidden_param_score(query: Dict) -> float:
     )
     for key, value in query.items():
         if key not in known_params:
-            score += ScoringWeights.HIDDEN_PARAM.value
+            score += ScoringWeights.HIDDEN_PARAM.value # Use .value
             if value and value[0]:
-                score += min(ScoringWeights.RARITY_BONUS.value, ScoringWeights.RARITY_BONUS.value / len(value[0]))
+                score += min(ScoringWeights.RARITY_BONUS.value, ScoringWeights.RARITY_BONUS.value / len(value[0])) # Use .value
     return score
 
 def _calculate_buffer_size_score(query: Dict) -> float:
@@ -453,38 +453,38 @@ def _calculate_buffer_size_score(query: Dict) -> float:
     if buffer_size:
         buffer_size = buffer_size.lower()
         score_val = {
-            "unlimited": ScoringWeights.BUFFER_SIZE_UNLIMITED.value,
-            "small": ScoringWeights.BUFFER_SIZE_SMALL.value,
-            "medium": ScoringWeights.BUFFER_SIZE_MEDIUM.value,
-            "large": ScoringWeights.BUFFER_SIZE_LARGE.value,
-            "-1": ScoringWeights.BUFFER_SIZE_UNLIMITED.value,
-            "0": ScoringWeights.BUFFER_SIZE_UNLIMITED.value,
+            "unlimited": ScoringWeights.BUFFER_SIZE_UNLIMITED.value, # Use .value
+            "small": ScoringWeights.BUFFER_SIZE_SMALL.value, # Use .value
+            "medium": ScoringWeights.BUFFER_SIZE_MEDIUM.value, # Use .value
+            "large": ScoringWeights.BUFFER_SIZE_LARGE.value, # Use .value
+            "-1": ScoringWeights.BUFFER_SIZE_UNLIMITED.value, # Use .value
+            "0": ScoringWeights.BUFFER_SIZE_UNLIMITED.value, # Use .value
         }.get(buffer_size, 0)
         if score_val is not None:
             score += score_val
     return score
 
 def _calculate_tcp_optimization_score(query: Dict) -> float:
-    return ScoringWeights.TCP_OPTIMIZATION.value if query.get('tcpFastOpen', [None])[0] == "true" else 0
+    return ScoringWeights.TCP_OPTIMIZATION.value if query.get('tcpFastOpen', [None])[0] == "true" else 0 # Use .value
 
 def _calculate_quic_param_score(query: Dict) -> float:
-    return ScoringWeights.QUIC_PARAM.value if query.get('maxIdleTime', [None])[0] else 0
+    return ScoringWeights.QUIC_PARAM.value if query.get('maxIdleTime', [None])[0] else 0 # Use .value
 
 
 def _calculate_cdn_usage_score(sni: Optional[str]) -> float:
-    return ScoringWeights.CDN_USAGE.value if sni and ".cdn." in sni else 0
+    return ScoringWeights.CDN_USAGE.value if sni and ".cdn." in sni else 0 # Use .value
 
 def _calculate_mtu_size_score(query: Dict) -> float:
     return 0.0
 
 def _calculate_obfs_score(query: Dict) -> float:
-    return ScoringWeights.OBFS.value if query.get('obfs', [None])[0] else 0
+    return ScoringWeights.OBFS.value if query.get('obfs', [None])[0] else 0 # Use .value
 
 def _calculate_debug_param_score(query: Dict) -> float:
-    return ScoringWeights.DEBUG_PARAM.value if query.get('debug', [None])[0] == "true" else 0
+    return ScoringWeights.DEBUG_PARAM.value if query.get('debug', [None])[0] == "true" else 0 # Use .value
 
 def _calculate_comment_score(query: Dict) -> float:
-    return ScoringWeights.COMMENT.value if query.get('comment', [None])[0] else 0
+    return ScoringWeights.COMMENT.value if query.get('comment', [None])[0] else 0 # Use .value
 
 def _calculate_client_compatibility_score(query: Dict) -> float:
     return 0.0
@@ -553,7 +553,7 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
     if not protocol:
         return 0.0
 
-    score += ScoringWeights.PROTOCOL_BASE.value
+    score += ScoringWeights.PROTOCOL_BASE.value # Use .value
     score += _calculate_config_length_score(config)
     score += _calculate_security_score(query)
     score += _calculate_transport_score(query)
@@ -584,7 +584,7 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
         except:
             pass
     score += _calculate_hidden_param_score(query)
-    score += response_time * ScoringWeights.RESPONSE_TIME.value
+    score += response_time * ScoringWeights.RESPONSE_TIME.value # Use .value
     buffer_size_score = _calculate_buffer_size_score(query)
     if buffer_size_score is not None:
         score += buffer_size_score
@@ -594,7 +594,7 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
     quic_param_score = _calculate_quic_param_score(query)
     if quic_param_score is not None:
         score += quic_param_score
-    score += ScoringWeights.STREAM_ENCRYPTION.value
+    score += ScoringWeights.STREAM_ENCRYPTION.value # Use .value
     score += _calculate_cdn_usage_score(sni)
     mtu_size_score = _calculate_mtu_size_score(query) # always 0
     if mtu_size_score is not None:
@@ -823,53 +823,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     return proxies_all
 
 
-async def verify_proxies_availability_http(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
-    """Verifies proxy availability via HTTP GET request through proxy."""
-    available_proxies_http = []
-    verified_count_http = 0
-    non_verified_count_http = 0
-
-    logger.info("Начинается проверка доступности прокси через HTTP...")
-
-    http_semaphore = asyncio.Semaphore(MAX_CONCURRENT_HTTP_CHECKS) #  Лимит concurrency HTTP checks
-
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as session: # Используем ClientSession
-        tasks = []
-        for proxy_item in proxies:
-            config = proxy_item['config']
-            tasks.append(_verify_proxy_http(config, session, http_semaphore, proxy_item, proxy_config.TEST_URL_FOR_PROXY_CHECK))
-
-        results = await asyncio.gather(*tasks)
-
-        for result in results:
-            if result:
-                is_available, proxy_item = result
-                if is_available:
-                    available_proxies_http.append(proxy_item)
-                    verified_count_http += 1
-                else:
-                    non_verified_count_http += 1
-
-    logger.info(f"Проверка доступности HTTP завершена. Доступно: {len(available_proxies_http)} из {len(proxies)} прокси.")
-    return available_proxies_http, verified_count_http, non_verified_count_http
-
-
-async def _verify_proxy_http(config: str, session: aiohttp.ClientSession, http_semaphore: asyncio.Semaphore, proxy_item: Dict, test_url: str) -> Tuple[bool, Dict]:
-    """Verifies HTTP доступность прокси."""
-    try:
-        async with http_semaphore:
-            async with asyncio.timeout(10): # Таймаут HTTP проверки
-                proxy_url = f"http://{urlparse(config).hostname}:{urlparse(config).port}" # Формируем URL прокси для aiohttp
-                async with session.get(test_url, proxy=proxy_url, allow_redirects=False) as response: # allow_redirects=False для более строгой проверки
-                    if response.status == 200:
-                        logger.debug(f"HTTP проверка: Прокси {config} прошел проверку.")
-                        return True, proxy_item
-                    else:
-                        logger.debug(f"HTTP проверка не удалась для {config}, статус: {response.status}")
-                        return False, proxy_item
-    except (aiohttp.ClientError, asyncio.TimeoutError, Exception) as e:
-        logger.debug(f"Ошибка HTTP проверки для {config}: {type(e).__name__} - {e}")
-        return False, proxy_item
+# Removed verify_proxies_availability_http and _verify_proxy_http functions
 
 
 def save_final_configs(proxies: List[Dict], output_file: str):
@@ -894,8 +848,8 @@ def main():
 
     async def runner():
         proxies = await process_all_channels(channels, proxy_config)
-        verified_proxies, verified_count, non_verified_count = await verify_proxies_availability_http(proxies, proxy_config) # Directly call HTTP check
-        save_final_configs(verified_proxies, proxy_config.OUTPUT_FILE)
+        # verified_proxies, verified_count, non_verified_count = await verify_proxies_availability_http(proxies, proxy_config) # Removed HTTP check
+        save_final_configs(proxies, proxy_config.OUTPUT_FILE) # Save all proxies directly
 
         total_channels = len(channels)
         enabled_channels = sum(1 for channel in channels)
@@ -917,8 +871,8 @@ def main():
         logger.info(f"Всего уникальных конфигураций: {total_unique_configs}")
         logger.info(f"Всего успешных загрузок: {total_successes}")
         logger.info(f"Всего неудачных загрузок: {total_fails}")
-        logger.info(f"Прокси прошли проверку (HTTP): {verified_count}") # Обновлено: показывает количество прокси, прошедших HTTP проверку
-        logger.info(f"Прокси не прошли проверку (HTTP): {non_verified_count}") # Обновлено: показывает количество прокси, не прошедших HTTP проверку
+        # logger.info(f"Прокси прошли проверку (HTTP): {verified_count}") # Removed HTTP check stats
+        # logger.info(f"Прокси не прошли проверку (HTTP): {non_verified_count}") # Removed HTTP check stats
         logger.info("Статистика по протоколам:")
         for protocol, count in protocol_stats.items():
             logger.info(f"  {protocol}: {count}")
