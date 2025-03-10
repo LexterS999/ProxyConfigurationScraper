@@ -674,33 +674,17 @@ def is_valid_ipv4(hostname: str) -> bool:
         return False
 
 def create_profile_key(config: str) -> str:
-    """Creates a unique key for proxy profile to identify duplicates."""
+    """Creates a unique key for proxy profile to identify duplicates using regex for stricter matching."""
     try:
-        parsed = urlparse(config)
-        query = parse_qs(parsed.query)
-
-        # Normalize query parameters for consistent key generation - sort parameters
-        normalized_query_str = urlencode(sorted(query.items()))
-
-        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan)://.*?@([\w\d\.\:]+):(\d+)")
-        match = core_pattern.match(config)
-
+        match = DUPLICATE_PROFILE_REGEX.match(config)
         if match:
-            protocol, host_port, port = match.groups()
-            host = host_port.split(':')[0] if ':' in host_port else host_port
-            key_parts = [
-                protocol,
-                host,
-                port,
-                normalized_query_str # Включаем нормализованные query параметры
-            ]
-            return "|".join(key_parts)
+            protocol, host, port = match.groups()
+            return f"{protocol}://{host}:{port}"  # Stricter key: protocol, host, port only
         else:
-            return config # Если не удалось распарсить, используем полную конфигурацию как ключ (менее идеально, но лучше, чем ничего)
-
+            return config # Fallback to full config if regex doesn't match (less ideal, but prevents errors)
     except Exception as e:
         logger.error(f"Ошибка создания ключа профиля для {config}: {e}")
-        raise ValueError(f"Не удалось создать ключ профиля: {config}") from e
+        return config # Fallback to full config in case of error
 
 
 DUPLICATE_PROFILE_REGEX = re.compile(
@@ -749,7 +733,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             if not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
                 continue
 
-            protocol = next((p for p in ALLOWED_PROTOCOLS if line.startswith(p)), None)
+            protocol = next((p for p in ALLOWED_PROTOCOлы if line.startswith(p)), None)
             if not protocol:
                 continue
             try:
