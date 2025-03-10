@@ -8,7 +8,7 @@ import subprocess
 import json
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
 from dataclasses import dataclass
 from collections import defaultdict
 import logging
@@ -18,6 +18,7 @@ from enum import Enum
 import shutil
 import uuid
 import zipfile
+import hashlib # Import for hash-based cache
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(process)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -95,16 +96,16 @@ class ScoringWeights(Enum):
                     try:
                         ScoringWeights[name].value = value
                     except KeyError:
-                        logger.warning(f"Unknown scoring weight in file: {name}. Weight ignored.")
+                        logger.warning(f"Неизвестный вес скоринга в файле: {name}. Вес проигнорирован.")
                     except ValueError:
-                        logger.error(f"Invalid weight value for {name}: {value}. Using default.")
+                        logger.error(f"Неверное значение веса для {name}: {value}. Используется значение по умолчанию.")
         except FileNotFoundError:
-            logger.warning(f"Scoring weights file not found: {file_path}. Using defaults.")
+            logger.warning(f"Файл весов скоринга не найден: {file_path}. Используются значения по умолчанию.")
             ScoringWeights._create_default_weights_file(file_path)
         except json.JSONDecodeError:
-            logger.error(f"Error reading JSON weights file: {file_path}. Using defaults.")
+            logger.error(f"Ошибка чтения JSON файла весов: {file_path}. Используются значения по умолчанию.")
         except Exception as e:
-            logger.error(f"Unexpected error loading scoring weights from {file_path}: {e}. Using defaults.")
+            logger.error(f"Непредвиденная ошибка при загрузке весов скоринга из {file_path}: {e}. Используются значения по умолчанию.")
 
     @staticmethod
     def _create_default_weights_file(file_path: str) -> None:
@@ -113,9 +114,9 @@ class ScoringWeights(Enum):
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(default_weights, f, indent=4)
-            logger.info(f"Created default scoring weights file: {file_path}")
+            logger.info(f"Создан файл весов скоринга по умолчанию: {file_path}")
         except Exception as e:
-            logger.error(f"Error creating default scoring weights file: {e}")
+            logger.error(f"Ошибка создания файла весов скоринга по умолчанию: {e}")
 
 ScoringWeights.load_weights_from_json()
 
@@ -134,9 +135,9 @@ HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com"
-
-
 MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS = 60
+CHANNEL_CACHE_DIR = "cache/channels" # Директория для кэша каналов
+CHANNEL_CACHE_TTL_HOURS = 1 # Время жизни кэша в часах
 
 
 @dataclass
@@ -163,13 +164,13 @@ class ChannelConfig:
 
     def _validate_url(self, url: str) -> str:
         if not url:
-            raise ValueError("URL cannot be empty.")
+            raise ValueError("URL не может быть пустым.")
         if not isinstance(url, str):
-            raise ValueError(f"URL must be a string, got: {type(url).__name__}")
+            raise ValueError(f"URL должен быть строкой, получено: {type(url).__name__}")
         url = url.strip()
-        valid_protocols = ('http://', 'https://', 'ssconf://', 'trojan://')
+        valid_protocols = ('http://', 'https://', 'trojan://', 'vless://', 'tuic://', 'hy2://') # Убрали ssconf://
         if not any(url.startswith(proto) for proto in valid_protocols):
-            raise ValueError(f"Invalid URL protocol. Expected: {', '.join(valid_protocols)}, got: {url[:url.find('://') + 3] if '://' in url else url[:10]}...")
+            raise ValueError(f"Неверный протокол URL. Ожидается: {', '.join(valid_protocols)}, получено: {url[:url.find('://') + 3] if '://' in url else url[:10]}...")
         return url
 
     def calculate_overall_score(self):
@@ -182,7 +183,7 @@ class ChannelConfig:
             self.metrics.overall_score = max(0, self.metrics.overall_score)
 
         except Exception as e:
-            logger.error(f"Error calculating score for {self.url}: {str(e)}")
+            logger.error(f"Ошибка при расчете скора для {self.url}: {str(e)}")
             self.metrics.overall_score = 0.0
 
     def _calculate_success_ratio(self) -> float:
@@ -199,8 +200,8 @@ class ChannelConfig:
         return self.metrics.avg_response_time * ScoringWeights.RESPONSE_TIME.value if self.metrics.avg_response_time > 0 else 0
 
     def update_channel_stats(self, success: bool, response_time: float = 0):
-        assert isinstance(success, bool), f"Argument 'success' must be bool, got {type(success)}"
-        assert isinstance(response_time, (int, float)), f"Argument 'response_time' must be a number, got {type(response_time)}"
+        assert isinstance(success, bool), f"Аргумент 'success' должен быть bool, получено {type(success)}"
+        assert isinstance(response_time, (int, float)), f"Аргумент 'response_time' должен быть числом, получено {type(response_time)}"
 
         if success:
             self.metrics.success_count += 1
@@ -213,6 +214,34 @@ class ChannelConfig:
             else:
                 self.metrics.avg_response_time = response_time
         self.calculate_overall_score()
+
+    def get_cached_content(self) -> Optional[str]:
+        """Получает кэшированный контент канала, если он есть и не истек TTL."""
+        cache_file_path = os.path.join(CHANNEL_CACHE_DIR, f"{hashlib.md5(self.url.encode()).hexdigest()}.cache") # Используем хеш URL для имени файла
+        if not os.path.exists(cache_file_path):
+            return None
+
+        cache_modified_time = datetime.fromtimestamp(os.path.getmtime(cache_file_path))
+        if (datetime.now() - cache_modified_time).total_seconds() > CHANNEL_CACHE_TTL_HOURS * 3600:
+            return None
+
+        try:
+            with open(cache_file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            logger.error(f"Ошибка чтения кэш-файла {cache_file_path}: {e}")
+            return None
+
+    def save_content_to_cache(self, content: str) -> None:
+        """Сохраняет контент канала в кэш."""
+        os.makedirs(CHANNEL_CACHE_DIR, exist_ok=True)
+        cache_file_path = os.path.join(CHANNEL_CACHE_DIR, f"{hashlib.md5(self.url.encode()).hexdigest()}.cache")
+        try:
+            with open(cache_file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения кэша в {cache_file_path}: {e}")
+
 
 class ProxyConfig:
     def __init__(self):
@@ -227,12 +256,12 @@ class ProxyConfig:
                         try:
                             initial_urls.append(ChannelConfig(url))
                         except ValueError as e:
-                            logger.warning(f"Invalid URL in {ALL_URLS_FILE}: {url} - {e}")
+                            logger.warning(f"Неверный URL в {ALL_URLS_FILE}: {url} - {e}")
         except FileNotFoundError:
-            logger.warning(f"URLs file not found: {ALL_URLS_FILE}. Creating empty file.")
+            logger.warning(f"Файл URL не найден: {ALL_URLS_FILE}. Создается пустой файл.")
             open(ALL_URLS_FILE, 'w', encoding='utf-8').close()
         except Exception as e:
-            logger.error(f"Error reading {ALL_URLS_FILE}: {e}")
+            logger.error(f"Ошибка чтения {ALL_URLS_FILE}: {e}")
 
         self.SOURCE_URLS = self._remove_duplicate_urls(initial_urls)
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
@@ -241,20 +270,18 @@ class ProxyConfig:
     def _normalize_url(self, url: str) -> str:
         try:
             if not url:
-                raise ValueError("URL cannot be empty for normalization.")
+                raise ValueError("URL не может быть пустым для нормализации.")
             url = url.strip()
-            if url.startswith('ssconf://'):
-                url = url.replace('ssconf://', 'https://', 1)
             parsed = urlparse(url)
             if not parsed.scheme:
-                raise ValueError(f"Missing scheme in URL: '{url}'. Expected 'http://' or 'https://'.")
+                raise ValueError(f"Отсутствует схема в URL: '{url}'. Ожидается 'http://' или 'https://'.")
             if not parsed.netloc:
-                raise ValueError(f"Missing netloc (domain or IP) in URL: '{url}'.")
+                raise ValueError(f"Отсутствует netloc (домен или IP) в URL: '{url}'.")
 
             path = parsed.path.rstrip('/')
             return f"{parsed.scheme}://{parsed.netloc}{path}"
         except Exception as e:
-            logger.error(f"URL normalization error: {str(e)}")
+            logger.error(f"Ошибка нормализации URL: {str(e)}")
             raise
 
     def _remove_duplicate_urls(self, channel_configs: List[ChannelConfig]) -> List[ChannelConfig]:
@@ -263,7 +290,7 @@ class ProxyConfig:
             unique_configs = []
             for config in channel_configs:
                 if not isinstance(config, ChannelConfig):
-                    logger.warning(f"Invalid config skipped: {config}")
+                    logger.warning(f"Неверная конфигурация пропущена: {config}")
                     continue
                 try:
                     normalized_url = self._normalize_url(config.url)
@@ -274,11 +301,11 @@ class ProxyConfig:
                     continue
             if not unique_configs:
                 self.save_empty_config_file()
-                logger.error("No valid sources found. Created empty config file.")
+                logger.error("Не найдено валидных источников. Создан пустой файл конфигурации.")
                 return []
             return unique_configs
         except Exception as e:
-            logger.error(f"Error removing duplicate URLs: {str(e)}")
+            logger.error(f"Ошибка удаления дубликатов URL: {str(e)}")
             self.save_empty_config_file()
             return []
 
@@ -291,7 +318,7 @@ class ProxyConfig:
                 f.write("")
             return True
         except Exception as e:
-            logger.error(f"Error saving empty config file: {str(e)}")
+            logger.error(f"Ошибка сохранения пустого файла конфигурации: {str(e)}")
             return False
 
 def _calculate_config_length_score(config: str) -> float:
@@ -565,7 +592,7 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
         parsed = urlparse(config)
         query = parse_qs(parsed.query)
     except Exception as e:
-        logger.error(f"Error parsing URL {config}: {e}")
+        logger.error(f"Ошибка парсинга URL {config}: {e}")
         return 0.0
 
     protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
@@ -650,30 +677,37 @@ def generate_custom_name(config: str) -> str:
     """Generates a custom name for proxy profile from config URL."""
     protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
     if not protocol:
-        return "UNKNOWN"
+        return "Неизвестный Протокол"
 
     try:
         parsed = urlparse(config)
         query = parse_qs(parsed.query)
-        name_parts = [protocol.split("://")[0].upper()]
+        name_parts = [protocol.split("://")[0].upper()] # Протокол всегда в начале
 
-        if parsed.scheme in ("vless"):
-            transport_type = query.get("type", ["NONE"])[0].upper()
-            security_type = query.get("security", ["NONE"])[0].upper()
-            name_parts.append(transport_type)
-            name_parts.append(security_type)
-        elif parsed.scheme in ("tuic", "hy2"):
+        if parsed.scheme == "vless":
+            transport_type = query.get("type", ["tcp"])[0].upper()
+            security_type = query.get("security", ["none"])[0].upper()
+            encryption_type = query.get("encryption", ["none"])[0].upper()
+            name_parts.extend([f"Транспорт: {transport_type}", f"Безопасность: {security_type}", f"Шифрование: {encryption_type}"])
+
+        elif parsed.scheme == "trojan":
+            transport_type = query.get("type", ["tcp"])[0].upper()
+            security_type = query.get("security", ["tls"])[0].upper() # Trojan defaults to TLS
+            encryption_type = query.get("encryption", ["none"])[0].upper()
+            name_parts.extend([f"Транспорт: {transport_type}", f"Безопасность: {security_type}", f"Шифрование: {encryption_type}"])
+
+        elif parsed.scheme in ("tuic", "hy2"): # Для tuic и hy2 просто протокол и транспорт (UDP)
             name_parts.append(parsed.scheme.upper())
-        elif parsed.scheme in ("trojan"):
-            transport_type = query.get("type", ["NONE"])[0].upper()
-            security_type = query.get("security", ["NONE"])[0].upper()
-            name_parts.append(transport_type)
-            name_parts.append(security_type)
+            transport_type = "UDP"
+            name_parts.append(f"Транспорт: {transport_type}")
 
-        return " - ".join(filter(lambda x: x != "NONE" and x, name_parts))
+        # Финальная сборка, убираем "NONE" и пустые строки, форматируем разделителем
+        return " - ".join(part for part in name_parts if part and part.replace(":", "").strip().upper() != "NONE")
+
     except Exception as e:
-        logger.error(f"Error creating custom name for {config}: {e}")
-        return "UNKNOWN"
+        logger.error(f"Ошибка создания пользовательского имени для {config}: {e}")
+        return "Неизвестный Прокси"
+
 
 def is_valid_ipv4(hostname: str) -> bool:
     """Checks if hostname is a valid IPv4 address."""
@@ -691,6 +725,9 @@ def create_profile_key(config: str) -> str:
         parsed = urlparse(config)
         query = parse_qs(parsed.query)
 
+        # Normalize query parameters for consistent key generation - sort parameters
+        normalized_query_str = urlencode(sorted(query.items()))
+
         core_pattern = re.compile(r"^(vless|tuic|hy2|trojan)://.*?@([\w\d\.\:]+):(\d+)")
         match = core_pattern.match(config)
 
@@ -701,36 +738,16 @@ def create_profile_key(config: str) -> str:
                 protocol,
                 host,
                 port,
+                normalized_query_str # Включаем нормализованные query параметры
             ]
-
-            if CHECK_USERNAME or protocol == 'trojan':
-                user = parsed.username
-                password = parsed.password
-                id_value = query.get('id', [None])[0]
-                if user:
-                    key_parts.append(f"user:{user}")
-                elif password and protocol == 'trojan':
-                    key_parts.append(f"password:***")
-                elif id_value:
-                    key_parts.append(f"id:{id_value}")
-
-            if CHECK_TLS_REALITY:
-                 key_parts.append(f"security:{query.get('security', [''])[0]}")
-                 key_parts.append(f"encryption:{query.get('encryption', [''])[0]}")
-
-            if CHECK_SNI:
-                key_parts.append(f"sni:{query.get('sni', [''])[0]}")
-
-            if CHECK_CONNECTION_TYPE:
-                key_parts.append(f"type:{query.get('type', [''])[0]}")
-
             return "|".join(key_parts)
         else:
-            return config
+            return config # Если не удалось распарсить, используем полную конфигурацию как ключ (менее идеально, но лучше, чем ничего)
 
     except Exception as e:
-        logger.error(f"Error creating profile key for {config}: {e}")
-        raise ValueError(f"Failed to create profile key: {config}") from e
+        logger.error(f"Ошибка создания ключа профиля для {config}: {e}")
+        raise ValueError(f"Не удалось создать ключ профиля: {config}") from e
+
 
 DUPLICATE_PROFILE_REGEX = re.compile(
     r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)"
@@ -742,30 +759,39 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
     proxies = []
     async with channel_semaphore:
         start_time = asyncio.get_event_loop().time()
-        try:
-            async with session.get(channel.url, timeout=channel.request_timeout) as response:
-                if response.status != 200:
-                    logger.error(f"Channel {channel.url} returned status {response.status}")
-                    channel.check_count += 1
-                    channel.update_channel_stats(success=False)
-                    return proxies
+        text = channel.get_cached_content() # Пытаемся получить кэшированный контент
+        if text:
+            logger.info(f"Используется кэшированный контент для {channel.url}")
+            end_time = asyncio.get_event_loop().time()
+            response_time = end_time - start_time # Время ответа считаем как 0 для кэша
+            channel.update_channel_stats(success=True, response_time=0) # Время ответа 0 для кэша
+        else: # Если кэша нет или истек TTL, загружаем заново
+            try:
+                async with session.get(channel.url, timeout=channel.request_timeout) as response:
+                    if response.status != 200:
+                        logger.error(f"Канал {channel.url} вернул статус {response.status}")
+                        channel.check_count += 1
+                        channel.update_channel_stats(success=False)
+                        return proxies
 
-                text = await response.text()
-                end_time = asyncio.get_event_loop().time()
-                response_time = end_time - start_time
-                logger.info(f"Content from {channel.url} loaded in {response_time:.2f} seconds")
-                channel.update_channel_stats(success=True, response_time=response_time)
+                    text = await response.text()
+                    channel.save_content_to_cache(text) # Сохраняем в кэш после загрузки
+                    end_time = asyncio.get_event_loop().time()
+                    response_time = end_time - start_time
+                    logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд")
+                    channel.update_channel_stats(success=True, response_time=response_time)
 
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            logger.error(f"Error loading from {channel.url}: {type(e).__name__} - {e}")
-            channel.check_count += 1
-            channel.update_channel_stats(success=False)
-            return proxies
-        except Exception as e:
-            logger.exception(f"Unexpected error loading from {channel.url}: {e}")
-            channel.check_count += 1
-            channel.update_channel_stats(success=False)
-            return proxies
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.error(f"Ошибка загрузки из {channel.url}: {type(e).__name__} - {e}")
+                channel.check_count += 1
+                channel.update_channel_stats(success=False)
+                return proxies
+            except Exception as e:
+                logger.exception(f"Непредвиденная ошибка при загрузке из {channel.url}: {e}")
+                channel.check_count += 1
+                channel.update_channel_stats(success=False)
+                return proxies
+
 
         lines = text.splitlines()
         valid_configs_from_channel = 0
@@ -798,26 +824,23 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
 
                 if profile_id:
                     if not is_valid_uuid(profile_id):
-                        logger.debug(f"Profile {line} skipped due to invalid UUID format: {profile_id}")
+                        logger.debug(f"Профиль {line} пропущен из-за неверного формата UUID: {profile_id}")
                         continue
                 if not is_valid_proxy_url(line): # Используем новую функцию проверки URL прокси
-                    logger.debug(f"Profile {line} skipped due to invalid proxy URL format.")
+                    logger.debug(f"Профиль {line} пропущен из-за неверного формата URL прокси.")
                     continue
 
 
             except ValueError as e:
-                logger.debug(f"URL parsing error {line}: {e}")
+                logger.debug(f"Ошибка парсинга URL {line}: {e}")
                 continue
 
-            match = DUPLICATE_PROFILE_REGEX.match(line)
-            if match:
-                duplicate_key = f"{match.group(1)}://{match.group(2)}:{match.group(3)}"
-                if duplicate_key in existing_profiles_regex:
-                    continue
-                existing_profiles_regex.add(duplicate_key)
-            else:
-                logger.warning(f"Failed to create duplicate filter key for: {line}")
+            profile_key = create_profile_key(line) # Используем улучшенный create_profile_key
+            if profile_key in existing_profiles_regex:
+                logger.debug(f"Дубликат профиля найден и пропущен: {line}")
                 continue
+            existing_profiles_regex.add(profile_key)
+
 
             score = compute_profile_score(line, response_time=channel.metrics.avg_response_time)
 
@@ -828,10 +851,10 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
         channel.metrics.valid_configs += valid_configs_from_channel
         for p in proxies:
             channel.metrics.protocol_counts[p["protocol"]] += 1
-        channel.metrics.unique_configs = len(set(create_profile_key(l["config"]) for l in proxies))
+        channel.metrics.unique_configs = len(existing_profiles_regex) # Уникальность теперь считаем по ключам
 
         channel.check_count += 1
-        logger.info(f"Channel {channel.url}: Found {valid_configs_from_channel} valid configurations.")
+        logger.info(f"Канал {channel.url}: Найдено {valid_configs_from_channel} валидных конфигураций.")
         return proxies
 
 
@@ -839,7 +862,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     """Processes all channels to extract and verify proxy configurations."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     proxies_all: List[Dict] = []
-    existing_profiles_regex = set()
+    existing_profiles_regex = set() # Set для хранения ключей уникальных профилей
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
         tasks = [process_channel(channel, session, channel_semaphore, existing_profiles_regex, proxy_config) for channel in channels]
@@ -847,7 +870,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
         for result in results:
             if isinstance(result, Exception):
-                logger.error(f"Exception processing channel: {result}")
+                logger.error(f"Ошибка при обработке канала: {result}")
             else:
                 proxies_all.extend(result)
 
@@ -871,7 +894,7 @@ async def verify_proxies_availability_tcp_handshake(proxies: List[Dict], proxy_c
     verified_count_tcp = 0
     non_verified_count_tcp = 0
 
-    logger.info("Starting proxy availability check via TCP handshake...")
+    logger.info("Начинается проверка доступности прокси через TCP handshake...")
 
     tcp_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS)
 
@@ -885,7 +908,7 @@ async def verify_proxies_availability_tcp_handshake(proxies: List[Dict], proxy_c
             tasks.append(_verify_proxy_tcp_handshake(hostname, port, tcp_semaphore, proxy_item))
         else:
             non_verified_count_tcp += 1
-            logger.warning(f"Could not determine host and port for proxy {config}. Skipping TCP check.")
+            logger.warning(f"Не удалось определить хост и порт для прокси {config}. Проверка TCP пропущена.")
 
     results = await asyncio.gather(*tasks)
 
@@ -898,7 +921,7 @@ async def verify_proxies_availability_tcp_handshake(proxies: List[Dict], proxy_c
             else:
                 non_verified_count_tcp += 1
 
-    logger.info(f"TCP handshake availability check complete. Available: {len(available_proxies_tcp)} of {len(proxies)} proxies.")
+    logger.info(f"Проверка доступности TCP handshake завершена. Доступно: {len(available_proxies_tcp)} из {len(proxies)} прокси.")
     return available_proxies_tcp, verified_count_tcp, non_verified_count_tcp
 
 
@@ -910,10 +933,10 @@ async def _verify_proxy_tcp_handshake(hostname: str, port: int, tcp_semaphore: a
                 reader, writer = await asyncio.open_connection(hostname, port)
                 writer.close()
                 await writer.wait_closed()
-                logger.debug(f"TCP handshake: Proxy {hostname}:{port} passed.")
+                logger.debug(f"TCP handshake: Прокси {hostname}:{port} прошел проверку.")
                 return True, proxy_item
     except (TimeoutError, ConnectionRefusedError, OSError) as e:
-        logger.debug(f"TCP handshake failed for {hostname}:{port}: {type(e).__name__} - {e}")
+        logger.debug(f"TCP handshake не удался для {hostname}:{port}: {type(e).__name__} - {e}")
         return False, proxy_item
 
 
@@ -923,7 +946,7 @@ async def verify_proxies_availability_http(proxies: List[Dict], proxy_config: "P
     verified_count_http = 0
     non_verified_count_http = 0
 
-    logger.info("Starting proxy availability check via HTTP...")
+    logger.info("Начинается проверка доступности прокси через HTTP...")
 
     http_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS) # Используем тот же лимит concurrency, можно сделать отдельный
 
@@ -944,7 +967,7 @@ async def verify_proxies_availability_http(proxies: List[Dict], proxy_config: "P
                 else:
                     non_verified_count_http += 1
 
-    logger.info(f"HTTP availability check complete. Available: {len(available_proxies_http)} of {len(proxies)} proxies.")
+    logger.info(f"Проверка доступности HTTP завершена. Доступно: {len(available_proxies_http)} из {len(proxies)} прокси.")
     return available_proxies_http, verified_count_http, non_verified_count_http
 
 
@@ -954,15 +977,15 @@ async def _verify_proxy_http(config: str, session: aiohttp.ClientSession, http_s
         async with http_semaphore:
             async with asyncio.timeout(10): # Таймаут HTTP проверки
                 proxy_url = f"http://{urlparse(config).hostname}:{urlparse(config).port}" # Формируем URL прокси для aiohttp
-                async with session.get(test_url, proxy=proxy_url) as response: # Используем proxy параметр aiohttp
+                async with session.get(test_url, proxy=proxy_url, allow_redirects=False) as response: # allow_redirects=False для более строгой проверки
                     if response.status == 200:
-                        logger.debug(f"HTTP check: Proxy {config} passed.")
+                        logger.debug(f"HTTP проверка: Прокси {config} прошел проверку.")
                         return True, proxy_item
                     else:
-                        logger.debug(f"HTTP check failed for {config}, status: {response.status}")
+                        logger.debug(f"HTTP проверка не удалась для {config}, статус: {response.status}")
                         return False, proxy_item
     except (aiohttp.ClientError, asyncio.TimeoutError, Exception) as e:
-        logger.debug(f"HTTP check error for {config}: {type(e).__name__} - {e}")
+        logger.debug(f"Ошибка HTTP проверки для {config}: {type(e).__name__} - {e}")
         return False, proxy_item
 
 
@@ -978,9 +1001,9 @@ def save_final_configs(proxies: List[Dict], output_file: str):
                     profile_name = generate_custom_name(config)
                     final_line = f"{config}# {profile_name}\n"
                     f.write(final_line)
-        logger.info(f"Final configurations saved to {output_file}")
+        logger.info(f"Финальные конфигурации сохранены в {output_file}")
     except Exception as e:
-        logger.error(f"Error saving configurations: {str(e)}")
+        logger.error(f"Ошибка сохранения конфигураций: {str(e)}")
 
 def main():
     proxy_config = ProxyConfig()
@@ -1003,20 +1026,20 @@ def main():
             for protocol, count in channel.metrics.protocol_counts.items():
                 protocol_stats[protocol] += count
 
-        logger.info("================== STATISTICS ==================")
-        logger.info(f"Total channels: {total_channels}")
-        logger.info(f"Enabled channels: {enabled_channels}")
-        logger.info(f"Disabled channels: {disabled_channels}")
-        logger.info(f"Total valid configurations: {total_valid_configs}")
-        logger.info(f"Total unique configurations: {total_unique_configs}")
-        logger.info(f"Total download successes: {total_successes}")
-        logger.info(f"Total download failures: {total_fails}")
-        logger.info(f"Proxies passed check: {verified_count}") # Обновлено: показывает количество прокси, прошедших ОБЕ проверки (TCP и HTTP)
-        logger.info(f"Proxies failed check: {non_verified_count}") # Обновлено: показывает количество прокси, не прошедших ОБЕ проверки
-        logger.info("Protocol Statistics:")
+        logger.info("================== СТАТИСТИКА ==================")
+        logger.info(f"Всего каналов: {total_channels}")
+        logger.info(f"Включено каналов: {enabled_channels}")
+        logger.info(f"Отключено каналов: {disabled_channels}")
+        logger.info(f"Всего валидных конфигураций: {total_valid_configs}")
+        logger.info(f"Всего уникальных конфигураций: {total_unique_configs}")
+        logger.info(f"Всего успешных загрузок: {total_successes}")
+        logger.info(f"Всего неудачных загрузок: {total_fails}")
+        logger.info(f"Прокси прошли проверку (TCP+HTTP): {verified_count}") # Обновлено: показывает количество прокси, прошедших ОБЕ проверки (TCP и HTTP)
+        logger.info(f"Прокси не прошли проверку (TCP+HTTP): {non_verified_count}") # Обновлено: показывает количество прокси, не прошедших ОБЕ проверки
+        logger.info("Статистика по протоколам:")
         for protocol, count in protocol_stats.items():
             logger.info(f"  {protocol}: {count}")
-        logger.info("================== END STATISTICS ==============")
+        logger.info("================== КОНЕЦ СТАТИСТИКИ ==============")
 
     asyncio.run(runner())
 
