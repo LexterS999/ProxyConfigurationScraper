@@ -673,7 +673,7 @@ def compute_profile_score(config: str, response_time: float = 0.0) -> float:
         logger.error(f"Ошибка разбора URL {config}: {e}")
         return 0.0
 
-    protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
+    protocol = next((p for p in ALLOWED_PROTOКОЛЫ if config.startswith(p)), None)
     if not protocol:
         return 0.0
 
@@ -741,7 +741,7 @@ def create_profile_key(config: str, check_username=CHECK_USERNAME, check_tls_rea
         parsed = urlparse(config)
         query = parse_qs(parsed.query)
 
-        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan)://.*?@([\w\d\.\:\[\]]+):(\d+)", re.IPV6) # Regex для host:port, поддержка IPv6 в скобках
+        core_pattern = re.compile(r"^(vless|tuic|hy2|trojan)://.*?@([\w\d\.\:\[\]]+):(\d+)") # Regex для host:port, поддержка IPv6 в скобках
         match = core_pattern.match(config)
 
         if match:
@@ -783,7 +783,7 @@ def create_profile_key(config: str, check_username=CHECK_USERNAME, check_tls_rea
         raise ValueError(f"Не удалось создать ключ профиля для: {config}. Ошибка: {e}") from e
 
 DUPLICATE_PROFILE_REGEX = re.compile(
-    r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)", re.IPV6 # Regex для сопоставления дубликатов, поддержка IPv6
+    r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)" # Regex для сопоставления дубликатов, поддержка IPv6
 )
 
 
@@ -992,7 +992,7 @@ def main():
 
         total_channels = len(channels)
         enabled_channels = sum(1 for channel in channels) # Все каналы считаются 'включенными' после инициализации ProxyConfig
-        disabled_channels = total_channels - enabled_channels # В текущей логике всегда будет 0
+        disabled_channels = total_channels - enabled_channels # В текущей логике всегда 0
         total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
         total_unique_configs = sum(channel.metrics.unique_configs for channel in channels)
         total_successes = sum(channel.metrics.success_count for channel in channels)
