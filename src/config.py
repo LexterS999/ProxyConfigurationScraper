@@ -979,7 +979,7 @@ def main():
 
     async def runner():
         proxies = await process_all_channels(channels, proxy_config)
-        verified_proxies, verified_count, non_verified_count = await verify_proxies_availability(verified_proxies, proxy_config)
+        verified_proxies, verified_count, non_verified_count = await verify_proxies_availability(proxies, proxy_config) # Исправлено: proxies вместо verified_proxies
         save_final_configs(verified_proxies, proxy_config.OUTPUT_FILE)
 
         total_channels = len(channels)
