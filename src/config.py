@@ -703,97 +703,6 @@ def _compute_protocol_score(protocol: str) -> float:
 def _compute_config_features_score(query: Dict, config: str) -> float:
     """Вычисляет оценку на основе различных особенностей конфигурации."""
     score = 0.0
-    score += _calculate_config_length_score(config)
-    score += _calculate_security_score(query)
-    score += _calculate_transport_score(query)
-    score += _calculate_encryption_score(query)
-    score += _calculate_sni_score(query)
-    score += _calculate_alpn_score(query)
-    score += _calculate_path_score(query)
-    sni = query.get('sni', [None])[0]
-    score += _calculate_headers_score(query, sni)
-    tls_fingerprint_score = _calculate_tls_fingerprint_score(query)
-    if tls_fingerprint_score is not None:
-        score += tls_fingerprint_score
-    utls_score_val = _calculate_utls_score(query)
-    if utls_score_val is not None:
-        score += utls_score_val
-    score += _calculate_udp_score(next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None) or "")
-    return score
-
-def _compute_performance_tuning_score(query: Dict) -> float:
-    """Вычисляет оценку, связанную с параметрами настройки производительности."""
-    score = 0.0
-    score += _calculate_early_data_score(query)
-    buffer_size_score = _calculate_buffer_size_score(query)
-    if buffer_size_score is not None:
-        score += buffer_size_score
-    tcp_optimization_score = _calculate_tcp_optimization_score(query)
-    if tcp_optimization_score is not None:
-        score += tcp_optimization_score
-    quic_param_score = _calculate_quic_param_score(query)
-    if quic_param_score is not None:
-        score += quic_param_score
-    score += ScoringWeights.STREAM_ENCRYPTION.value # Предполагается, что STREAM_ENCRYPTION относится к производительности/настройке
-    score += _calculate_obfs_score(query) # Предполагается, что OBFS относится к производительности/настройке
-    return score
-
-def _compute_misc_score_and_penalties(parsed: urlparse, query: Dict, sni: Optional[str], host_header: Optional[str], response_time: float) -> float:
-    """Вычисляет различные оценки и штрафы."""
-    score = 0.0
-    score += _calculate_port_score(parsed.port)
-    score += _calculate_uuid_score(parsed, query)
-    if parsed.scheme == 'trojan://':
-        score += _calculate_trojan_password_score(parsed)
-    score += _calculate_parameter_consistency_score(query, sni, host_header)
-    score += _calculate_ipv6_score(parsed)
-    score += _calculate_hidden_param_score(query)
-    score += response_time * ScoringWeights.RESPONSE_TIME.value
-    score += _calculate_cdn_usage_score(sni)
-    mtu_size_score = _calculate_mtu_size_score(query) # В настоящее время возвращает 0.0
-    if mtu_size_score is not None:
-        score += mtu_size_score
-    score += _calculate_debug_param_score(query)
-    score += _calculate_comment_score(query)
-    client_compatibility_score = _calculate_client_compatibility_score(query) # В настоящее время возвращает 0.0
-    if client_compatibility_score is not None:
-        score += client_compatibility_score
-    session_resumption_score = _calculate_session_resumption_score(query) # В настоящее время возвращает 0.0
-    if session_resumption_score is not None:
-        score += session_resumption_score
-    fallback_type_score = _calculate_fallback_type_score(query) # В настоящее время возвращает 0.0
-    if fallback_type_score is not None:
-        score += fallback_type_score
-    webtransport_score = _calculate_webtransport_score(query) # В настоящее время возвращает 0.0
-    if webtransport_score is not None:
-        score += webtransport_score
-    security_direct_score = _calculate_security_direct_score(query) # В настоящее время возвращает 0.0
-    if security_direct_score is not None:
-        score += security_direct_score
-    tls_version_score = _calculate_tls_version_score(query) # В настоящее время возвращает 0.0
-    if tls_version_score is not None:
-        score += tls_version_score
-    multiplexing_score = _calculate_multiplexing_score(query) # В настоящее время возвращает 0.0
-    if multiplexing_score is not None:
-        score += multiplexing_score
-
-    return score
-
-def compute_profile_score(config: str, response_time: float = 0.0, jitter: float = 0.0, packet_loss: float = 0.0, bandwidth: float = 0.0) -> float:
-    """Вычисляет оценку для заданной конфигурации прокси-профиля, суммируя оценки из разных категорий."""
-    score = 0.0
-    try:
-        parsed = urlparse(config)
-        query = parse_qs(parsed.query)
-    except Exception as e:
-        logger.error(f"Ошибка разбора URL {config}: {e}")
-        return 0.0
-
-    protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
-    if not protocol:
-        return 0.0
-
-    score += _compute_protocol_score(protocol)
     score += _compute_config_features_score(query, config)
     score += _compute_performance_tuning_score(query)
 
@@ -807,7 +716,7 @@ def compute_profile_score(config: str, response_time: float = 0.0, jitter: float
         except:
             pass
 
-    score += _compute_misc_score_and_penalties(parsed, query, sni, host_header, response_time)
+    score += _compute_misc_score_and_penalties(parsed, query, sni, host_header, 0.0) # response_time removed
 
     # Мультипликативные факторы (пример)
     if query.get('security', [''])[0].lower() == 'none' and query.get('encryption', [''])[0].lower() == 'none':
@@ -908,7 +817,7 @@ DUPLICATE_PROFILE_REGEX = re.compile(
 
 async def fetch_with_retry(session: aiohttp.ClientSession, url: str, timeout: int) -> aiohttp.ClientResponse:
     """Функция для загрузки URL."""
-    async with session.get(url, timeout=timeout, trust_env=True) as response: # trust_env=True
+    async with session.get(url, timeout=timeout) as response: # trust_env=True удалено
         return response
 
 async def measure_network_performance(target_host: str, target_port: int, proxy_host: Optional[str] = None, proxy_port: Optional[int] = None, packet_count: int = PERFORMANCE_TEST_PACKET_COUNT, timeout: int = PERFORMANCE_TEST_TIMEOUT) -> Tuple[float, float, float]:
@@ -1014,20 +923,10 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                 logger.warning(f"Не удалось создать ключ фильтра дубликатов для: {line}")
                 continue
 
-            # Измеряем производительность сети
-            try:
-                # Извлекаем данные о прокси из конфигурации
-                proxy_host = hostname
-                proxy_port = port
+            # Измеряем производительность сети (заглушка)
+            jitter, packet_loss, bandwidth = await measure_network_performance(hostname, port, hostname, port)
 
-                # Выполняем тест производительности
-                jitter, packet_loss, bandwidth = await measure_network_performance(hostname, port, proxy_host, proxy_port)
-
-            except Exception as e:
-                logger.error(f"Ошибка при измерении производительности для {line}: {e}")
-                jitter, packet_loss, bandwidth = 0.0, 0.0, 0.0  # Устанавливаем значения по умолчанию
-
-            score = compute_profile_score(line, response_time=channel.metrics.avg_response_time, jitter=jitter, packet_loss=packet_loss, bandwidth=bandwidth)
+            score = compute_profile_score(line, jitter=jitter, packet_loss=packet_loss, bandwidth=bandwidth) # response_time removed from score
 
             if score > MIN_ACCEPTABLE_SCORE:
                 proxies.append({"config": line, "protocol": protocol, "score": score, "jitter": jitter, "packet_loss": packet_loss, "bandwidth": bandwidth})
