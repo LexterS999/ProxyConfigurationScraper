@@ -236,6 +236,7 @@ class ProxyConfig:
 
         self.SOURCE_URLS = self._remove_duplicate_urls(initial_urls)
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
+        self.TEST_URL_FOR_PROXY_CHECK = TEST_URL_FOR_PROXY_CHECK # Добавлено для HTTP проверки
 
     def _normalize_url(self, url: str) -> str:
         try:
@@ -538,6 +539,24 @@ def is_valid_uuid(uuid_string: str) -> bool:
         except ValueError:
             return False
 
+def is_valid_proxy_url(url: str) -> bool:
+    """Проверяет, является ли URL валидным URL прокси одного из разрешенных протоколов."""
+    if not any(url.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
+        return False
+    try:
+        parsed = urlparse(url)
+        if not parsed.hostname or not parsed.port:
+            return False
+        if not is_valid_ipv4(parsed.hostname) and ":" in parsed.hostname: # Добавлена проверка IPv6 в hostname
+            return False
+        if parsed.scheme == 'vless' or parsed.scheme == 'trojan': # Исправлено: scheme is 'vless' or 'trojan'
+            profile_id = parsed.username or parse_qs(parsed.query).get('id', [None])[0]
+            if profile_id and not is_valid_uuid(profile_id):
+                return False
+        return True
+    except ValueError:
+        return False
+
 
 def compute_profile_score(config: str, response_time: float = 0.0) -> float:
     """Computes score for a given proxy profile configuration."""
@@ -781,6 +800,10 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                     if not is_valid_uuid(profile_id):
                         logger.debug(f"Profile {line} skipped due to invalid UUID format: {profile_id}")
                         continue
+                if not is_valid_proxy_url(line): # Используем новую функцию проверки URL прокси
+                    logger.debug(f"Profile {line} skipped due to invalid proxy URL format.")
+                    continue
+
 
             except ValueError as e:
                 logger.debug(f"URL parsing error {line}: {e}")
@@ -832,8 +855,14 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
 
 async def verify_proxies_availability(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
-    """Verifies proxy availability using TCP handshake."""
-    return await verify_proxies_availability_tcp_handshake(proxies, proxy_config)
+    """Verifies proxy availability using TCP handshake and HTTP check."""
+    available_proxies_tcp, verified_count_tcp, non_verified_count_tcp = await verify_proxies_availability_tcp_handshake(proxies, proxy_config)
+    available_proxies_http, verified_count_http, non_verified_count_http = await verify_proxies_availability_http(available_proxies_tcp, proxy_config) # Проверяем HTTP только TCP-прошедшие
+
+    verified_count_total = verified_count_http
+    non_verified_count_total = len(proxies) - verified_count_total
+
+    return available_proxies_http, verified_count_total, non_verified_count_total
 
 
 async def verify_proxies_availability_tcp_handshake(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
@@ -856,7 +885,7 @@ async def verify_proxies_availability_tcp_handshake(proxies: List[Dict], proxy_c
             tasks.append(_verify_proxy_tcp_handshake(hostname, port, tcp_semaphore, proxy_item))
         else:
             non_verified_count_tcp += 1
-            logger.warning(f"Could not determine host and port for proxy {config}. Skipping check.")
+            logger.warning(f"Could not determine host and port for proxy {config}. Skipping TCP check.")
 
     results = await asyncio.gather(*tasks)
 
@@ -885,6 +914,55 @@ async def _verify_proxy_tcp_handshake(hostname: str, port: int, tcp_semaphore: a
                 return True, proxy_item
     except (TimeoutError, ConnectionRefusedError, OSError) as e:
         logger.debug(f"TCP handshake failed for {hostname}:{port}: {type(e).__name__} - {e}")
+        return False, proxy_item
+
+
+async def verify_proxies_availability_http(proxies: List[Dict], proxy_config: "ProxyConfig") -> Tuple[List[Dict], int, int]:
+    """Verifies proxy availability via HTTP GET request through proxy."""
+    available_proxies_http = []
+    verified_count_http = 0
+    non_verified_count_http = 0
+
+    logger.info("Starting proxy availability check via HTTP...")
+
+    http_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS) # Используем тот же лимит concurrency, можно сделать отдельный
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as session: # Используем ClientSession
+        tasks = []
+        for proxy_item in proxies:
+            config = proxy_item['config']
+            tasks.append(_verify_proxy_http(config, session, http_semaphore, proxy_item, proxy_config.TEST_URL_FOR_PROXY_CHECK))
+
+        results = await asyncio.gather(*tasks)
+
+        for result in results:
+            if result:
+                is_available, proxy_item = result
+                if is_available:
+                    available_proxies_http.append(proxy_item)
+                    verified_count_http += 1
+                else:
+                    non_verified_count_http += 1
+
+    logger.info(f"HTTP availability check complete. Available: {len(available_proxies_http)} of {len(proxies)} proxies.")
+    return available_proxies_http, verified_count_http, non_verified_count_http
+
+
+async def _verify_proxy_http(config: str, session: aiohttp.ClientSession, http_semaphore: asyncio.Semaphore, proxy_item: Dict, test_url: str) -> Tuple[bool, Dict]:
+    """Verifies HTTP доступность прокси."""
+    try:
+        async with http_semaphore:
+            async with asyncio.timeout(10): # Таймаут HTTP проверки
+                proxy_url = f"http://{urlparse(config).hostname}:{urlparse(config).port}" # Формируем URL прокси для aiohttp
+                async with session.get(test_url, proxy=proxy_url) as response: # Используем proxy параметр aiohttp
+                    if response.status == 200:
+                        logger.debug(f"HTTP check: Proxy {config} passed.")
+                        return True, proxy_item
+                    else:
+                        logger.debug(f"HTTP check failed for {config}, status: {response.status}")
+                        return False, proxy_item
+    except (aiohttp.ClientError, asyncio.TimeoutError, Exception) as e:
+        logger.debug(f"HTTP check error for {config}: {type(e).__name__} - {e}")
         return False, proxy_item
 
 
@@ -933,8 +1011,8 @@ def main():
         logger.info(f"Total unique configurations: {total_unique_configs}")
         logger.info(f"Total download successes: {total_successes}")
         logger.info(f"Total download failures: {total_fails}")
-        logger.info(f"Proxies passed check: {verified_count}")
-        logger.info(f"Proxies failed check: {non_verified_count}")
+        logger.info(f"Proxies passed check: {verified_count}") # Обновлено: показывает количество прокси, прошедших ОБЕ проверки (TCP и HTTP)
+        logger.info(f"Proxies failed check: {non_verified_count}") # Обновлено: показывает количество прокси, не прошедших ОБЕ проверки
         logger.info("Protocol Statistics:")
         for protocol, count in protocol_stats.items():
             logger.info(f"  {protocol}: {count}")
