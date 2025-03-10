@@ -22,10 +22,7 @@ https://raw.githubusercontent.com/LexterS999/TG-Proxy-Parser/refs/heads/main/con
 https://raw.githubusercontent.com/wuqb2i4f/xray-config-toolkit/refs/heads/main/output/base64/mix
 https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/V2RAY.txt
 https://raw.githubusercontent.com/Barabama/FreeNodes/refs/heads/main/nodes/yudou66.txt
-https://github.com/Vauth/node/raw/main/Main
 https://raw.githubusercontent.com/Surfboardv2ray/v2ray-worker-sub/refs/heads/master/providers/providers
-https://hideshots.eu/sub.txt
-https://xray.abvpn.ru/vless/37208d52-8823-412d-944e-0a8ef08a5079/6397639568.json#abvpn
 https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/one_file_vpn.txt
 https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/two_file_vpn.txt
 https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/three_file_vpn.txt
@@ -33,12 +30,4 @@ https://raw.githubusercontent.com/Leon406/SubCrawler/refs/heads/main/sub/share/v
 https://raw.githubusercontent.com/Leon406/SubCrawler/refs/heads/main/sub/share/hysteria2
 https://raw.githubusercontent.com/Leon406/SubCrawler/refs/heads/main/sub/share/a11
 https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/all
-https://raw.githubusercontent.com/ripaojiedian/freenode/refs/heads/main/sub
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mci1.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mci2.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mci3.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mci4.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mtn1.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mtn2.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mtn3.txt
-https://raw.githubusercontent.com/SEDYY/vless-configs/refs/heads/main/servers.txt
+https://github.com/Vauth/node/raw/main/Main
