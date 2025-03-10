@@ -25,8 +25,8 @@ import urllib.parse
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(process)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-DEFAULT_SCORING_WEIGHTS_FILE = "scoring_weights.json"
-DEFAULT_CHANNEL_SOURCES_FILE = "all_urls.txt" # Added DEFAULT_CHANNEL_SOURCES_FILE
+DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
+DEFAULT_CHANNEL_URLS_FILE = "all_urls.txt" # Changed from JSON to TXT and renamed constant
 
 class ScoringWeightsModel(BaseModel):
     """Data model for scoring weights with validation."""
@@ -109,7 +109,7 @@ class ScoringWeightsModel(BaseModel):
                 weights_data = json.load(f)
                 return cls(**weights_data)
         except FileNotFoundError:
-            logger.warning(f"Scoring weights file not found: {file_path}. Using defaults.") # Updated log message
+            logger.warning(f"Scoring weights file not found: {file_path}. Using defaults.")
             return cls.create_default_weights_file(file_path)
         except json.JSONDecodeError:
             logger.error(f"Error reading JSON weights file: {file_path}. Using defaults.")
@@ -146,7 +146,7 @@ REQUEST_TIMEOUT = 60
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
-ALL_URLS_FILE = "all_urls.txt" # Removed unused ALL_URLS_FILE
+ALL_URLS_FILE = DEFAULT_CHANNEL_URLS_FILE # Используем DEFAULT_CHANNEL_URLS_FILE
 TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com"
 MAX_CONCURRENT_TCP_HANDSHAKE_CHECKS = 60
 
@@ -291,48 +291,21 @@ class ChannelConfig:
 
 class ProxyConfig:
     """Manages proxy configurations, loading, saving, and deduplication."""
-    CONFIG_SOURCES_FILE = DEFAULT_CHANNEL_SOURCES_FILE # Use DEFAULT_CHANNEL_SOURCES_FILE
+    CHANNEL_SOURCES_CONFIG_FILE = "configs/channel_sources.json" # Renamed constant - not directly used now, but kept for potential future config
 
     def __init__(self):
         os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
         self.SOURCE_URLS = self._load_channels_from_sources()
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
 
-    def _load_channel_sources_config(self) -> List[Dict]:
-        """Loads channel sources configuration from JSON file."""
-        try:
-            with open(self.CONFIG_SOURCES_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            logger.warning(f"Channel sources config file not found: {self.CONFIG_SOURCES_FILE}. Using default empty sources.") # Updated log message
-            return []
-        except json.JSONDecodeError:
-            logger.error(f"Error reading JSON config file: {self.CONFIG_SOURCES_FILE}. Using default empty sources.")
-            return []
-
     def _load_channels_from_sources(self) -> List[ChannelConfig]:
-        """Loads channels from various sources defined in configuration."""
+        """Loads channels from the default URL list file (all_urls.txt)."""
         channel_configs = []
-        sources_config = self._load_channel_sources_config()
 
-        for source in sources_config:
-            source_type = source.get('type')
-            source_location = source.get('location')
-            if not source_type or not source_location:
-                logger.warning(f"Invalid channel source config: {source}. Skipping.")
-                continue
-
-            try:
-                if source_type == 'file':
-                    channel_configs.extend(self._load_from_file_source(source_location))
-                elif source_type == 'url':
-                    channel_configs.extend(asyncio.run(self._load_from_url_source(source_location))) # Use asyncio.run here
-                elif source_type == 'directory':
-                    channel_configs.extend(self._load_from_directory_source(source_location))
-                else:
-                    logger.warning(f"Unknown channel source type: {source_type}. Skipping source: {source}")
-            except Exception as e:
-                logger.error(f"Error loading channels from source {source}: {e}")
+        try:
+            channel_configs.extend(self._load_from_file_source(DEFAULT_CHANNEL_URLS_FILE)) # Load directly from all_urls.txt
+        except Exception as e:
+            logger.error(f"Error loading channels from default URL file {DEFAULT_CHANNEL_URLS_FILE}: {e}")
 
         return self._remove_duplicate_urls(channel_configs)
 
@@ -350,40 +323,6 @@ class ProxyConfig:
                             logger.warning(f"Invalid URL in file {file_path}: {url} - {e}")
         except FileNotFoundError:
             logger.warning(f"Channel source file not found: {file_path}")
-        return configs
-
-    async def _load_from_url_source(self, source_url: str) -> List[ChannelConfig]:
-        """Loads channels from a web page URL."""
-        configs = []
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(source_url) as response:
-                    if response.status == 200:
-                        text = await response.text()
-                        lines = text.splitlines()
-                        for line in lines:
-                            url = line.strip()
-                            if url:
-                                try:
-                                    configs.append(ChannelConfig(url))
-                                except ValueError as e:
-                                    logger.warning(f"Invalid URL from source {source_url}: {url} - {e}")
-                    else:
-                        logger.error(f"Failed to fetch channel source from {source_url}, status: {response.status}")
-        except aiohttp.ClientError as e:
-            logger.error(f"Error fetching channel source from {source_url}: {e}")
-        return configs
-
-    def _load_from_directory_source(self, dir_path: str) -> List[ChannelConfig]:
-        """Loads channels from all text files in a directory."""
-        configs = []
-        if not os.path.isdir(dir_path):
-            logger.warning(f"Channel source directory not found: {dir_path}")
-            return configs
-        for filename in os.listdir(dir_path):
-            if filename.endswith(".txt"):
-                file_path = os.path.join(dir_path, filename)
-                configs.extend(self._load_from_file_source(file_path))
         return configs
 
     def _normalize_url(self, url: str) -> str:
