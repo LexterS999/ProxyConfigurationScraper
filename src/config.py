@@ -23,8 +23,9 @@ import numpy as np
 
 
 # --- НАСТРОЙКА ЛОГИРОВАНИЯ ---
-# logging.basicConfig(level=logging.INFO,  # Изменено на INFO
-#                     format='%(asctime)s - %(levelname)s - %(process)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s - %(process)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Создаем свой логгер
 logger = logging.getLogger(__name__)
