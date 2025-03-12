@@ -707,7 +707,7 @@ class Hy2Config:
             pmtud=_get_value(query, 'pmtud') == '1',
             hop_interval=hop_interval,
             password = parsed_url.password,
-            utls = _get_value(query, 'utls = _get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
+            utls = _get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
             obfs = _get_value(query, 'obfs'),
             first_seen = datetime.now()
 
