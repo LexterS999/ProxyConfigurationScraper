@@ -18,55 +18,48 @@ import functools
 import string
 import socket
 import aiodns
-from sklearn.linear_model import LinearRegression  # Для калибровки весов
+from sklearn.linear_model import LinearRegression
 import numpy as np
 
 
-# --- НАСТРОЙКА ЛОГИРОВАНИЯ ---
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s - %(levelname)s - %(process)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Создаем свой логгер
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) # Устанавливаем уровень по умолчанию
+logger.setLevel(logging.INFO)
 
-# Создаем обработчик для записи в файл
 file_handler = logging.FileHandler('proxy_checker.log', encoding='utf-8')
-file_handler.setLevel(logging.WARNING) # Устанавливаем уровень - ВАЖНО: изменено на WARNING для уменьшения verbosity
+file_handler.setLevel(logging.WARNING)
 
-# Создаем форматтер
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(process)s - %(message)s')
 file_handler.setFormatter(formatter)
 
-# Добавляем обработчик к логгеру
 logger.addHandler(file_handler)
 
-# --- ДОБАВЛЕНО: Обработчик для вывода в консоль (с уровнем WARNING) ---
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.WARNING) # Выводим в консоль только WARNING и выше
-console_handler.setFormatter(formatter) # Тот же форматтер
+console_handler.setLevel(logging.WARNING)
+console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
 
-# --- КОНСТАНТЫ ---
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 MIN_ACCEPTABLE_SCORE = 40.0
 MIN_CONFIG_LENGTH = 30
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://"]
 MAX_CONCURRENT_CHANNELS = 200
-MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50  # Макс. параллельных проверок прокси *внутри канала*
-MAX_CONCURRENT_PROXIES_GLOBAL = 500 # Общий лимит на параллельные проверки
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
+MAX_CONCURRENT_PROXIES_GLOBAL = 500
 REQUEST_TIMEOUT = 60
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
-MAX_RETRIES = 3  # Максимальное количество повторных попыток
-RETRY_DELAY_BASE = 2  # Базовая задержка для экспоненциального ожидания (секунды)
-AGE_PENALTY_PER_DAY = 0.1  # Штраф за "старость" профиля (за каждый день)
+MAX_RETRIES = 3
+RETRY_DELAY_BASE = 2
+AGE_PENALTY_PER_DAY = 0.1
 
-# --- ПОЛЬЗОВАТЕЛЬСКИЕ ИСКЛЮЧЕНИЯ ---
+
 class InvalidURLError(ValueError):
     """Неверный формат URL."""
     pass
@@ -84,7 +77,6 @@ class ConfigParseError(ValueError):
   pass
 
 
-# --- КРАСИВОЕ ОФОРМЛЕНИЕ НАИМЕНОВАНИЯ ПРОФИЛЕЙ ---
 class ProfileName(Enum):
     VLESS_FORMAT = "🌌 VLESS - {transport} - {security}"
     VLESS_WS_TLS = "🚀 VLESS - WS - TLS"
@@ -110,7 +102,7 @@ class ChannelMetrics:
     protocol_counts: Dict[str, int] = field(
         default_factory=lambda: defaultdict(int))
     protocol_scores: Dict[str, List[float]] = field(default_factory=lambda: defaultdict(list))
-    first_seen: Optional[datetime] = None  # Добавляем время первого обнаружения
+    first_seen: Optional[datetime] = None
 
 
 class ChannelConfig:
@@ -118,13 +110,33 @@ class ChannelConfig:
     VALID_PROTOCOLS = ["http://", "https://", "vless://", "ss://", "trojan://", "tuic://", "hy2://"]
 
     def __init__(self, url: str, request_timeout: int = REQUEST_TIMEOUT):
+        """
+        Инициализирует объект ChannelConfig.
+
+        Args:
+            url: URL канала для проверки прокси.
+            request_timeout: Время ожидания запроса к каналу в секундах.
+        """
         self.url = self._validate_url(url)
         self.metrics = ChannelMetrics()
         self.request_timeout = request_timeout
         self.check_count = 0
-        self.metrics.first_seen = datetime.now()  # Записываем время создания
+        self.metrics.first_seen = datetime.now()
 
     def _validate_url(self, url: str) -> str:
+        """
+        Проверяет и нормализует URL канала.
+
+        Args:
+            url: URL для проверки.
+
+        Returns:
+            Нормализованный URL.
+
+        Raises:
+            InvalidURLError: Если URL пустой или имеет неверный формат.
+            UnsupportedProtocolError: Если протокол URL не поддерживается.
+        """
         if not isinstance(url, str):
             raise InvalidURLError(f"URL должен быть строкой, получено: {type(url).__name__}")
         url = url.strip()
@@ -137,13 +149,13 @@ class ChannelConfig:
         parsed = urlsplit(url)
         if parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
             raise UnsupportedProtocolError(
-                f"Неверный протокол URL. Ожидается: {', '.join(self.VALID_PROTOCOLS)}, "
+                f"Неверный протокол URL. Ожидается: {', '.join(self.VALID_PROTOКОLS)}, "
                 f"получено: {parsed.scheme}..." if parsed.scheme else f"получено: {url[:10]}..."
             )
         return url
 
     def calculate_overall_score(self):
-        """Вычисляет общий рейтинг канала."""
+        """Вычисляет общий рейтинг канала на основе метрик."""
         try:
             success_ratio = self._calculate_success_ratio()
             recency_bonus = self._calculate_recency_bonus()
@@ -159,16 +171,19 @@ class ChannelConfig:
             self.metrics.overall_score = 0.0
 
     def _calculate_success_ratio(self) -> float:
+        """Вычисляет долю успешных проверок канала."""
         total_checks = self.metrics.success_count + self.metrics.fail_count
         return self.metrics.success_count / total_checks if total_checks > 0 else 0.0
 
     def _calculate_recency_bonus(self) -> float:
+        """Вычисляет бонус за недавние успешные проверки."""
         if self.metrics.last_success_time:
             time_since_last_success = datetime.now() - self.metrics.last_success_time
             return HIGH_FREQUENCY_BONUS if time_since_last_success.total_seconds() <= HIGH_FREQUENCY_THRESHOLD_HOURS * 3600 else 0.0
         return 0.0
 
     def _calculate_response_time_penalty(self) -> float:
+        """Вычисляет штраф за среднее время ответа."""
         if self.metrics.avg_response_time > 0:
             max_response_time_penalty = 20
             penalty = min(self.metrics.avg_response_time / 5 * max_response_time_penalty, max_response_time_penalty)
@@ -177,6 +192,13 @@ class ChannelConfig:
             return 0.0
 
     def update_channel_stats(self, success: bool, response_time: float = 0.0):
+        """
+        Обновляет статистику канала.
+
+        Args:
+            success: True, если проверка канала прошла успешно, иначе False.
+            response_time: Время ответа канала в секундах.
+        """
         if not isinstance(success, bool):
             raise TypeError(f"Аргумент 'success' должен быть bool, получено {type(success)}")
         if not isinstance(response_time, numbers.Real):
@@ -200,11 +222,15 @@ class ChannelConfig:
 
 
 class ProxyConfig:
+    """
+    Управляет конфигурациями прокси, включая загрузку, проверку и сохранение.
+    """
     def __init__(self):
+        """Инициализирует объект ProxyConfig, загружает URL каналов и настраивает окружение."""
         os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
-        self.resolver = None  # Инициализируем в get_event_loop
-        self.failed_channels = [] # Добавляем список для хранения неработающих каналов
-        self.processed_configs = set() # Набор для хранения обработанных конфигов
+        self.resolver = None
+        self.failed_channels = []
+        self.processed_configs = set()
 
         initial_urls = []
         try:
@@ -224,9 +250,21 @@ class ProxyConfig:
 
         self.SOURCE_URLS = self._remove_duplicate_urls(initial_urls)
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
-        self.ALL_URLS_FILE = ALL_URLS_FILE # Сохраняем имя файла
+        self.ALL_URLS_FILE = ALL_URLS_FILE
 
     async def _normalize_url(self, url: str) -> str:
+        """
+        Нормализует URL прокси.
+
+        Args:
+            url: URL прокси для нормализации.
+
+        Returns:
+            Нормализованный URL.
+
+        Raises:
+            InvalidURLError: Если URL пустой или имеет неверный формат.
+        """
         if not url:
             raise InvalidURLError("URL не может быть пустым для нормализации.")
         url = url.strip()
@@ -243,6 +281,15 @@ class ProxyConfig:
         return parsed._replace(path=path).geturl()
 
     def _remove_duplicate_urls(self, channel_configs: List[ChannelConfig]) -> List[ChannelConfig]:
+        """
+        Удаляет дубликаты URL каналов из списка.
+
+        Args:
+            channel_configs: Список объектов ChannelConfig.
+
+        Returns:
+            Список объектов ChannelConfig без дубликатов URL.
+        """
         seen_urls = set()
         unique_configs = []
         for config in channel_configs:
@@ -250,8 +297,7 @@ class ProxyConfig:
                 logger.warning(f"Неверная конфигурация пропущена: {config}")
                 continue
             try:
-                # Ожидаем результат асинхронной функции _normalize_url
-                normalized_url = asyncio.run(self._normalize_url(config.url)) # Исправлено: используем asyncio.run
+                normalized_url = asyncio.run(self._normalize_url(config.url))
                 if normalized_url not in seen_urls:
                     seen_urls.add(normalized_url)
                     unique_configs.append(config)
@@ -266,9 +312,11 @@ class ProxyConfig:
         return unique_configs
 
     def get_enabled_channels(self) -> List[ChannelConfig]:
+        """Возвращает список включенных каналов."""
         return self.SOURCE_URLS
 
     def save_empty_config_file(self) -> bool:
+        """Сохраняет пустой файл конфигурации."""
         try:
             with open(OUTPUT_CONFIG_FILE, 'w', encoding='utf-8') as f:
                 f.write("")
@@ -277,13 +325,14 @@ class ProxyConfig:
             logger.error(f"Ошибка сохранения пустого файла конфигурации: {e}")
             return False
 
-    def set_event_loop(self, loop): # Добавили метод
+    def set_event_loop(self, loop):
+        """Устанавливает event loop для асинхронного DNS resolver."""
         self.resolver = aiodns.DNSResolver(loop=loop)
 
     def remove_failed_channels_from_file(self):
         """Удаляет URL нерабочих каналов из файла all_urls.txt."""
         if not self.failed_channels:
-            return # Если нет нерабочих каналов, ничего не делаем
+            return
 
         try:
             with open(self.ALL_URLS_FILE, 'r', encoding='utf-8') as f_read:
@@ -295,7 +344,7 @@ class ProxyConfig:
                 f_write.writelines(updated_lines)
 
             logger.info(f"Удалены нерабочие каналы из {self.ALL_URLS_FILE}: {', '.join(self.failed_channels)}")
-            self.failed_channels = [] # Очищаем список после удаления
+            self.failed_channels = []
         except FileNotFoundError:
             logger.error(f"Файл не найден: {self.ALL_URLS_FILE}. Невозможно удалить нерабочие каналы.")
         except Exception as e:
@@ -304,18 +353,15 @@ class ProxyConfig:
 
 class ScoringWeights(Enum):
     """
-    Полностью переработанные веса для скоринга.  Разделены на категории.
+    Перечисление весов, используемых для скоринга конфигураций прокси.
     """
-    # --- Общие веса ---
     PROTOCOL_BASE = 20
     CONFIG_LENGTH = 5
     RESPONSE_TIME = -0.1
-    AGE_PENALTY = -0.05 # Добавлен вес для возраста
+    AGE_PENALTY = -0.05
 
-    # --- Веса канала (влияют на рейтинг канала, а не профиля) ---
     CHANNEL_STABILITY = 15
 
-    # --- VLESS-специфичные веса ---
     VLESS_SECURITY_TLS = 15
     VLESS_SECURITY_NONE = -10
     VLESS_TRANSPORT_WS = 10
@@ -330,7 +376,6 @@ class ScoringWeights(Enum):
     VLESS_ALPN_PRESENT = 5
     VLESS_PATH_PRESENT = 3
 
-    # --- SS-специфичные веса ---
     SS_METHOD_CHACHA20_IETF_POLY1305 = 15
     SS_METHOD_AES_256_GCM = 14
     SS_METHOD_AES_128_GCM = 12
@@ -340,7 +385,6 @@ class ScoringWeights(Enum):
     SS_PLUGIN_OBFS_HTTP = 8
     SS_PLUGIN_NONE = 0
 
-    # --- Trojan-специфичные веса ---
     TROJAN_SECURITY_TLS = 15
     TROJAN_TRANSPORT_WS = 10
     TROJAN_TRANSPORT_TCP = 2
@@ -349,7 +393,6 @@ class ScoringWeights(Enum):
     TROJAN_ALPN_PRESENT = 5
     TROJAN_EARLY_DATA = 3
 
-    # --- TUIC-специфичные веса ---
     TUIC_SECURITY_TLS = 15
     TUIC_TRANSPORT_WS = 10
     TUIC_TRANSPORT_UDP = 5
@@ -364,7 +407,6 @@ class ScoringWeights(Enum):
     TUIC_UDP_RELAY_MODE = 7
     TUIC_ZERO_RTT_HANDSHAKE = 6
 
-    # --- HY2-специфичные веса ---
     HY2_SECURITY_TLS = 15
     HY2_TRANSPORT_UDP = 5
     HY2_TRANSPORT_TCP = 2
@@ -375,7 +417,6 @@ class ScoringWeights(Enum):
     HY2_PMTUD_ENABLED = 4
     HY2_HOP_INTERVAL = 2
 
-    # --- Общие для VLESS, SS, Trojan, TUIC, HY2 ---
     COMMON_PORT_443 = 10
     COMMON_PORT_80 = 5
     COMMON_PORT_OTHER = 2
@@ -383,7 +424,6 @@ class ScoringWeights(Enum):
     COMMON_UTLS_FIREFOX = 6
     COMMON_UTLS_RANDOMIZED = 5
     COMMON_UTLS_OTHER = 2
-    COMMON_IPV6 = -5  # Убрал, теперь есть resolve
     COMMON_CDN = 8
     COMMON_OBFS = 4
     COMMON_HEADERS = 3
@@ -392,13 +432,21 @@ class ScoringWeights(Enum):
 
     @staticmethod
     def load_weights_from_json(file_path: str = DEFAULT_SCORING_WEIGHTS_FILE) -> Dict[str, Any]:
-        """Загружает веса из JSON-файла и обновляет значения в ScoringWeights."""
+        """
+        Загружает веса скоринга из JSON-файла.
+
+        Args:
+            file_path: Путь к JSON файлу с весами.
+
+        Returns:
+            Словарь весов скоринга.
+        """
         all_weights_loaded_successfully = True
         loaded_weights = {}
 
         try:
-            if not os.path.exists(file_path): # Проверяем существование
-                ScoringWeights._create_default_weights_file(file_path) # Создаем, если нет
+            if not os.path.exists(file_path):
+                ScoringWeights._create_default_weights_file(file_path)
 
             with open(file_path, 'r', encoding='utf-8') as f:
                 weights_data: Dict[str, Any] = json.load(f)
@@ -422,7 +470,6 @@ class ScoringWeights(Enum):
             all_weights_loaded_successfully = False
 
         if not all_weights_loaded_successfully:
-            # ScoringWeights._create_default_weights_file(file_path) # Убрали, т.к создаем в начале
             loaded_weights = {member.name: member.value for member in ScoringWeights}
 
         return loaded_weights
@@ -430,6 +477,7 @@ class ScoringWeights(Enum):
 
     @staticmethod
     def _create_default_weights_file(file_path: str) -> None:
+        """Создает файл с весами скоринга по умолчанию в формате JSON."""
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         default_weights = {member.name: member.value for member in ScoringWeights}
         try:
@@ -441,7 +489,13 @@ class ScoringWeights(Enum):
 
     @staticmethod
     def save_weights_to_json(weights: Dict[str, float], file_path: str = DEFAULT_SCORING_WEIGHTS_FILE):
-        """Сохраняет веса (после обновления) в JSON файл."""
+        """
+        Сохраняет веса скоринга в JSON-файл.
+
+        Args:
+            weights: Словарь весов для сохранения.
+            file_path: Путь для сохранения JSON файла.
+        """
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(weights, f, indent=4)
@@ -453,12 +507,13 @@ class ScoringWeights(Enum):
     def calibrate_weights(training_data: List[Dict], features: List[str], target: str = 'score',
                           file_path: str = DEFAULT_SCORING_WEIGHTS_FILE):
         """
-        Калибрует веса с использованием линейной регрессии.
+        Калибрует веса скоринга с использованием линейной регрессии.
 
         Args:
-            training_data: Список словарей, где каждый словарь - это данные одного профиля (включая score).
-            features: Список строк - имена признаков (ключи в словарях training_data), которые будут использоваться для обучения.
-            target: Имя целевой переменной ('score' по умолчанию).
+            training_data: Список словарей, где каждый словарь представляет данные профиля для обучения.
+            features: Список названий признаков, используемых для обучения.
+            target: Название целевой переменной (по умолчанию 'score').
+            file_path: Путь для сохранения JSON файла с откалиброванными весами.
         """
         if not training_data:
             logger.warning("No training data provided for weight calibration. Skipping.")
@@ -470,17 +525,15 @@ class ScoringWeights(Enum):
         for profile_data in training_data:
             feature_vector = [profile_data.get(feature, 0) for feature in features]
             X.append(feature_vector)
-            y.append(profile_data.get(target, 0))  # Используем .get() с дефолтным значением
+            y.append(profile_data.get(target, 0))
 
         X = np.array(X)
         y = np.array(y)
 
-        # Проверяем, есть ли у нас достаточно данных для обучения
         if X.shape[0] <= X.shape[1]:
             logger.warning("Not enough data for weight calibration (need more data points than features). Skipping.")
             return
 
-        # Обучение модели
         model = LinearRegression()
         try:
             model.fit(X, y)
@@ -488,15 +541,12 @@ class ScoringWeights(Enum):
             logger.error(f"Error during model fitting: {e}")
             return
 
-        # Обновление весов.  Используем абсолютные значения коэффициентов.
         new_weights = {feature: abs(coef) for feature, coef in zip(features, model.coef_)}
 
-        # Нормализация весов (чтобы сумма была равна 100, например)
         total_weight = sum(new_weights.values())
-        if total_weight > 0:  # Проверка деления на ноль
+        if total_weight > 0:
             normalized_weights = {k: (v / total_weight) * 100 for k, v in new_weights.items()}
 
-            # Сохраняем только те веса, которые есть в features
             saved_weights = {k: v for k,v in normalized_weights.items() if k in features}
             ScoringWeights.save_weights_to_json(saved_weights, file_path)
             logger.info(f"Weights calibrated and saved: {saved_weights}")
@@ -506,15 +556,25 @@ class ScoringWeights(Enum):
 
 
 def _get_value(query: Dict, key: str, default_value: Any = None) -> Any:
-    """Вспомогательная функция для безопасного получения значений из query."""
+    """
+    Безопасно извлекает значение из словаря query.
+
+    Args:
+        query: Словарь, из которого нужно извлечь значение.
+        key: Ключ для поиска значения.
+        default_value: Значение по умолчанию, если ключ не найден.
+
+    Returns:
+        Значение, связанное с ключом, или значение по умолчанию.
+    """
     return query.get(key, (default_value,))[0]
 
-# --- DATACLASSES ДЛЯ КОНФИГУРАЦИЙ ---
 
 @dataclass(frozen=True)
 class VlessConfig:
+    """Конфигурация VLESS прокси."""
     uuid: str
-    address: str  # Теперь хранит IP адрес, а не hostname
+    address: str
     port: int
     security: str
     transport: str
@@ -533,10 +593,19 @@ class VlessConfig:
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "VlessConfig":
-        # РЕЗОЛВИМ АДРЕС ПЕРЕД СОЗДАНИЕМ ОБЪЕКТА
+        """
+        Создает объект VlessConfig из URL.
+
+        Args:
+            parsed_url: Разобранный URL.
+            query: Словарь параметров запроса из URL.
+            resolver: Асинхронный DNS resolver.
+
+        Returns:
+            Объект VlessConfig.
+        """
         address = await resolve_address(parsed_url.hostname, resolver)
 
-        # Обработка headers (парсинг JSON строки)
         headers_str = _get_value(query, "headers")
         headers = None
         if headers_str:
@@ -552,7 +621,7 @@ class VlessConfig:
 
         return cls(
             uuid=parsed_url.username,
-            address=address,  # Передаем IP адрес
+            address=address,
             port=parsed_url.port,
             security=query.get('security', ['none'])[0].lower(),
             transport=query.get('type', ['tcp'])[0].lower(),
@@ -569,9 +638,10 @@ class VlessConfig:
 
 @dataclass(frozen=True)
 class SSConfig:
+    """Конфигурация Shadowsocks прокси."""
     method: str
     password: str
-    address: str  # Теперь хранит IP адрес
+    address: str
     port: int
     plugin: Optional[str] = None
     obfs:Optional[str] = None
@@ -582,12 +652,22 @@ class SSConfig:
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "SSConfig":
-        # РЕЗОЛВИМ АДРЕС ПЕРЕД СОЗДАНИЕМ ОБЪЕКТА
+        """
+        Создает объект SSConfig из URL.
+
+        Args:
+            parsed_url: Разобранный URL.
+            query: Словарь параметров запроса из URL.
+            resolver: Асинхронный DNS resolver.
+
+        Returns:
+            Объект SSConfig.
+        """
         address = await resolve_address(parsed_url.hostname, resolver)
         return cls(
             method=parsed_url.username.lower() if parsed_url.username else 'none',
             password=parsed_url.password,
-            address=address,  # Передаем IP адрес
+            address=address,
             port=parsed_url.port,
             plugin=query.get('plugin', [None])[0],
             obfs = query.get('obfs',[None])[0],
@@ -596,8 +676,9 @@ class SSConfig:
 
 @dataclass(frozen=True)
 class TrojanConfig:
+    """Конфигурация Trojan прокси."""
     password: str
-    address: str # IP
+    address: str
     port: int
     security: str
     transport: str
@@ -614,7 +695,17 @@ class TrojanConfig:
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "TrojanConfig":
-        # РЕЗОЛВИМ ДОМЕН В IP *ПЕРЕД* СОЗДАНИЕМ ОБЪЕКТА
+        """
+        Создает объект TrojanConfig из URL.
+
+        Args:
+            parsed_url: Разобранный URL.
+            query: Словарь параметров запроса из URL.
+            resolver: Асинхронный DNS resolver.
+
+        Returns:
+            Объект TrojanConfig.
+        """
         address = await resolve_address(parsed_url.hostname, resolver)
 
         headers_str = _get_value(query, "headers")
@@ -632,7 +723,7 @@ class TrojanConfig:
 
         return cls(
             password=parsed_url.password,
-            address=address, # Передаем IP
+            address=address,
             port=parsed_url.port,
             security=_get_value(query, 'security', 'tls').lower(),
             transport=_get_value(query, 'type', 'tcp').lower(),
@@ -647,8 +738,9 @@ class TrojanConfig:
 
 @dataclass(frozen=True)
 class TuicConfig:
+    """Конфигурация TUIC прокси."""
     uuid: str
-    address: str # IP
+    address: str
     port: int
     security: str
     transport: str
@@ -668,13 +760,23 @@ class TuicConfig:
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "TuicConfig":
-        # РЕЗОЛВИМ ДОМЕН В IP *ПЕРЕД* СОЗДАНИЕМ ОБЪЕКТА
+        """
+        Создает объект TuicConfig из URL.
+
+        Args:
+            parsed_url: Разобранный URL.
+            query: Словарь параметров запроса из URL.
+            resolver: Асинхронный DNS resolver.
+
+        Returns:
+            Объект TuicConfig.
+        """
         address = await resolve_address(parsed_url.hostname, resolver)
 
         alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
         return cls(
             uuid=parsed_url.username,
-            address=address, #IP
+            address=address,
             port=parsed_url.port,
             security=_get_value(query, 'security', 'tls').lower(),
             transport=_get_value(query, 'type', 'udp').lower(),
@@ -692,7 +794,8 @@ class TuicConfig:
 
 @dataclass(frozen=True)
 class Hy2Config:
-    address: str  # IP
+    """Конфигурация HY2 прокси."""
+    address: str
     port: int
     security: str
     transport: str
@@ -711,20 +814,30 @@ class Hy2Config:
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "Hy2Config":
-      # РЕЗОЛВИМ ДОМЕН В IP *ПЕРЕД* СОЗДАНИЕМ ОБЪЕКТА
-      address = await resolve_address(parsed_url.hostname, resolver)
+        """
+        Создает объект Hy2Config из URL.
 
-      hop_interval = _get_value(query, 'hopInterval')
-      try:
-          hop_interval = int(hop_interval) if hop_interval is not None else None
-      except ValueError:
-          logger.warning(f"Invalid hopInterval value, using None: {hop_interval}")
-          hop_interval = None
+        Args:
+            parsed_url: Разобранный URL.
+            query: Словарь параметров запроса из URL.
+            resolver: Асинхронный DNS resolver.
 
-      alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
+        Returns:
+            Объект Hy2Config.
+        """
+        address = await resolve_address(parsed_url.hostname, resolver)
 
-      return cls(
-            address=address,  # IP
+        hop_interval = _get_value(query, 'hopInterval')
+        try:
+            hop_interval = int(hop_interval) if hop_interval is not None else None
+        except ValueError:
+            logger.warning(f"Invalid hopInterval value, using None: {hop_interval}")
+            hop_interval = None
+
+        alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
+
+        return cls(
+            address=address,
             port=parsed_url.port,
             security=_get_value(query, 'security', 'tls').lower(),
             transport=_get_value(query, 'type', 'udp').lower(),
@@ -742,24 +855,32 @@ class Hy2Config:
 
 
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
-    """Резолвит доменное имя в IP-адрес (с кешированием)."""
-    if is_valid_ipv4(hostname) or is_valid_ipv6(hostname):
-        return hostname  # Уже IP-адрес
+    """
+    Резолвит доменное имя в IP-адрес.
 
-    try:
-        # Используем aiodns для асинхронного разрешения
-        result = await resolver.query(hostname, 'A')
-        return result[0].host # Первый A-рекорд
-    except aiodns.error.DNSError as e:
-        logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}")
-        return hostname  # Возвращаем исходное имя, если не удалось разрешить
-    except Exception as e:
-        logger.warning(f"Неожиданная ошибка при резолвинге {hostname}: {e}") # Добавили обработку
+    Args:
+        hostname: Доменное имя для резолва.
+        resolver: Асинхронный DNS resolver.
+
+    Returns:
+        IP-адрес в виде строки или исходное доменное имя, если резолв не удался.
+    """
+    if is_valid_ipv4(hostname) or is_valid_ipv6(hostname):
         return hostname
 
-# --- ФУНКЦИИ ПОДСЧЕТА ОЧКОВ (без изменений, но нужны для compute_profile_score) ---
+    try:
+        result = await resolver.query(hostname, 'A')
+        return result[0].host
+    except aiodns.error.DNSError as e:
+        logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}")
+        return hostname
+    except Exception as e:
+        logger.warning(f"Неожиданная ошибка при резолвинге {hostname}: {e}")
+        return hostname
+
 
 def _calculate_vless_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
+    """Вычисляет скор для VLESS конфигурации."""
     score = 0
     security = _get_value(query, 'security', 'none').lower()
     score += loaded_weights.get("VLESS_SECURITY_TLS", ScoringWeights.VLESS_SECURITY_TLS.value) if security == 'tls' else loaded_weights.get("VLESS_SECURITY_NONE", ScoringWeights.VLESS_SECURITY_NONE.value)
@@ -785,6 +906,7 @@ def _calculate_vless_score(parsed: urlparse, query: Dict, loaded_weights: Dict) 
     return score
 
 def _calculate_ss_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
+    """Вычисляет скор для Shadowsocks конфигурации."""
     score = 0
     method = parsed.username.lower() if parsed.username else 'none'
     score += {
@@ -807,6 +929,7 @@ def _calculate_ss_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> 
     return score
 
 def _calculate_trojan_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
+    """Вычисляет скор для Trojan конфигурации."""
     score = 0
     security = _get_value(query, 'security', 'none').lower()
     score += loaded_weights.get("TROJAN_SECURITY_TLS", ScoringWeights.TROJAN_SECURITY_TLS.value) if security == 'tls' else 0
@@ -827,6 +950,7 @@ def _calculate_trojan_score(parsed: urlparse, query: Dict, loaded_weights: Dict)
 
 
 def _calculate_tuic_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
+    """Вычисляет скор для TUIC конфигурации."""
     score = 0
     security = _get_value(query, 'security', 'none').lower()
     score += loaded_weights.get("TUIC_SECURITY_TLS", ScoringWeights.TUIC_SECURITY_TLS.value) if security == 'tls' else 0
@@ -857,6 +981,7 @@ def _calculate_tuic_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -
 
 
 def _calculate_hy2_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
+    """Вычисляет скор для HY2 конфигурации."""
     score = 0
     security = _get_value(query, 'security', 'none').lower()
     score += loaded_weights.get("HY2_SECURITY_TLS", ScoringWeights.HY2_SECURITY_TLS.value) if security == 'tls' else 0
@@ -883,6 +1008,7 @@ def _calculate_hy2_score(parsed: urlparse, query: Dict, loaded_weights: Dict) ->
 
 
 def _calculate_common_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
+    """Вычисляет общий скор для всех типов конфигураций."""
     score = 0
     score += {
         443: loaded_weights.get("COMMON_PORT_443", ScoringWeights.COMMON_PORT_443.value),
@@ -922,9 +1048,19 @@ def _calculate_common_score(parsed: urlparse, query: Dict, loaded_weights: Dict)
     return score
 
 
-def compute_profile_score(config: str, channel_response_time: float = 0.0, loaded_weights: Dict = None, channel_score:float = 100.0, first_seen: Optional[datetime] = None) -> float: # Добавил first_seen
+def compute_profile_score(config: str, channel_response_time: float = 0.0, loaded_weights: Dict = None, channel_score:float = 100.0, first_seen: Optional[datetime] = None) -> float:
     """
-    Вычисляет общий рейтинг профиля.
+    Вычисляет общий рейтинг профиля прокси.
+
+    Args:
+        config: URL конфигурации прокси в виде строки.
+        channel_response_time: Среднее время ответа канала, из которого получен прокси.
+        loaded_weights: Словарь весов скоринга.
+        channel_score: Рейтинг канала, из которого получен прокси.
+        first_seen: Время первого обнаружения профиля.
+
+    Returns:
+        Общий рейтинг профиля прокси.
     """
     if loaded_weights is None:
         loaded_weights = ScoringWeights.load_weights_from_json()
@@ -943,13 +1079,11 @@ def compute_profile_score(config: str, channel_response_time: float = 0.0, loade
     score = loaded_weights.get("PROTOCOL_BASE", ScoringWeights.PROTOCOL_BASE.value)
     score += _calculate_common_score(parsed, query, loaded_weights)
     score += channel_response_time * loaded_weights.get("RESPONSE_TIME", ScoringWeights.RESPONSE_TIME.value)
-    # Влияние рейтинга канала
     score *= (channel_score / 100.0)
 
     score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
                  (200.0 / (len(config) + 1)) * loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value))
 
-    # Учет возраста профиля
     if first_seen:
         days_old = (datetime.now() - first_seen).days
         score += days_old * loaded_weights.get("AGE_PENALTY", ScoringWeights.AGE_PENALTY.value)
@@ -974,11 +1108,21 @@ def compute_profile_score(config: str, channel_response_time: float = 0.0, loade
 
 
 def generate_custom_name(parsed: urlparse, query: Dict) -> str:
+    """
+    Генерирует пользовательское имя профиля на основе URL и параметров.
+
+    Args:
+        parsed: Разобранный URL прокси.
+        query: Словарь параметров запроса из URL.
+
+    Returns:
+        Пользовательское имя профиля в виде строки.
+    """
     if parsed.scheme == "vless":
         transport_type = query.get("type", ["tcp"])[0].upper()
         security_type = query.get("security", ["none"])[0].upper()
-        security_str = "" # Initialize default value to fix UnboundLocalError
-        transport_str = "" # Initialize default value to fix UnboundLocalError
+        security_str = ""
+        transport_str = ""
 
         if transport_type == "WS" and security_type == "TLS":
             return ProfileName.VLESS_WS_TLS.value
@@ -998,8 +1142,8 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
     elif parsed.scheme == "trojan":
         transport_type = query.get("type", ["tcp"])[0].upper()
         security_type = query.get("security", ["tls"])[0].upper()
-        security_str = "" # Initialize default value to fix UnboundLocalError
-        transport_str = "" # Initialize default value to fix UnboundLocalError
+        security_str = ""
+        transport_str = ""
         if transport_type == "WS" and security_type == "TLS":
             return ProfileName.TROJAN_WS_TLS.value
         else:
@@ -1012,8 +1156,8 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         transport_type = query.get("type", ["udp"])[0].upper()
         security_type = query.get("security", ["tls"])[0].upper()
         congestion_control = query.get("congestion", ["bbr"])[0].upper()
-        security_str = "" # Initialize default value to fix UnboundLocalError
-        transport_str = "" # Initialize default value to fix UnboundLocalError
+        security_str = ""
+        transport_str = ""
 
         if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
             return ProfileName.TUIC_WS_TLS_BBR.value
@@ -1026,8 +1170,8 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
     elif parsed.scheme == "hy2":
         transport_type = query.get("type", ["udp"])[0].upper()
         security_type = query.get("security", ["tls"])[0].upper()
-        security_str = "" # Initialize default value to fix UnboundLocalError
-        transport_str = "" # Initialize default value to fix UnboundLocalError
+        security_str = ""
+        transport_str = ""
 
         if transport_type == "UDP" and security_type == "TLS":
             return ProfileName.HY2_UDP_TLS.value
@@ -1043,6 +1187,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
 
 @functools.lru_cache(maxsize=None)
 def is_valid_ipv4(hostname: str) -> bool:
+    """Проверяет, является ли hostname валидным IPv4 адресом."""
     if not hostname:
         return False
     try:
@@ -1053,6 +1198,7 @@ def is_valid_ipv4(hostname: str) -> bool:
 
 @functools.lru_cache(maxsize=None)
 def is_valid_ipv6(hostname: str) -> bool:
+    """Проверяет, является ли hostname валидным IPv6 адресом."""
     try:
         ipaddress.IPv6Address(hostname)
         return True
@@ -1060,6 +1206,7 @@ def is_valid_ipv6(hostname: str) -> bool:
         return False
 
 def is_valid_proxy_url(url: str) -> bool:
+    """Проверяет, является ли URL валидным URL прокси."""
     if not any(url.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
         return False
     try:
@@ -1069,18 +1216,16 @@ def is_valid_proxy_url(url: str) -> bool:
             if profile_id and not is_valid_uuid(profile_id):
                 return False
 
-        # Проверяем, что hostname и port присутствуют (для всех, кроме ss)
         if parsed.scheme != "ss":
             if not parsed.hostname or not parsed.port:
                 return False
-        else: # Для ss hostname и port могут быть в userinfo
+        else:
              if not parsed.hostname and not (parsed.username and "@" in parsed.netloc):
                 return False
-             # Доп. проверка для ss://
              if parsed.username:
                  valid_methods = ['chacha20-ietf-poly1305', 'aes-256-gcm', 'aes-128-gcm', 'none']
                  if parsed.username.lower() not in valid_methods:
-                     logger.debug(f"Недопустимый метод шифрования для ss://: {parsed.username}")  # DEBUG, не WARNING
+                     logger.debug(f"Недопустимый метод шифрования для ss://: {parsed.username}")
                      return False
 
         if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
@@ -1092,6 +1237,7 @@ def is_valid_proxy_url(url: str) -> bool:
         return False
 
 def is_valid_uuid(uuid_string: str) -> bool:
+    """Проверяет, является ли строка валидным UUID."""
     try:
         uuid.UUID(uuid_string, version=4)
         return True
@@ -1099,13 +1245,21 @@ def is_valid_uuid(uuid_string: str) -> bool:
         return False
 
 async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Optional[object]:
-    """Парсит строку конфигурации и возвращает объект соответствующего класса."""
+    """
+    Парсит строку конфигурации прокси и возвращает объект конфигурации.
+
+    Args:
+        config_string: Строка конфигурации прокси.
+        resolver: Асинхронный DNS resolver.
+
+    Returns:
+        Объект конфигурации прокси или None в случае ошибки парсинга.
+    """
     try:
         parsed = urlparse(config_string)
 
-        # Проверка: хост должен быть IP-адресом
         if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
-            return None  # Игнорируем профили с доменами, без логирования
+            return None
 
         query = parse_qs(parsed.query)
 
@@ -1133,10 +1287,22 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession,
                           channel_semaphore: asyncio.Semaphore,
-                          unique_configs: Set[object],
                           proxy_config: "ProxyConfig",
                           global_proxy_semaphore: asyncio.Semaphore
                           ) -> List[Dict]:
+    """
+    Обрабатывает один канал, загружает конфигурации прокси и проверяет их.
+
+    Args:
+        channel: Объект ChannelConfig для обработки.
+        session: Асинхронная HTTP сессия aiohttp.
+        channel_semaphore: Семафор для ограничения параллельной обработки каналов.
+        proxy_config: Объект ProxyConfig для доступа к настройкам и ресурсам.
+        global_proxy_semaphore: Семафор для ограничения общего количества параллельных проверок прокси.
+
+    Returns:
+        Список словарей с результатами проверки прокси.
+    """
     proxies = []
     loaded_weights = ScoringWeights.load_weights_from_json()
 
@@ -1150,7 +1316,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             start_time = asyncio.get_event_loop().time()
             try:
                 async with session.get(channel.url, timeout=channel.request_timeout) as response:
-                    response.raise_for_status()  # Генерирует исключение для HTTP ошибок
+                    response.raise_for_status()
                     text = await response.text()
                     end_time = asyncio.get_event_loop().time()
                     response_time = end_time - start_time
@@ -1172,15 +1338,14 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             logger.error(f"Не удалось загрузить данные из {channel.url} после {MAX_RETRIES} попыток.")
             channel.check_count += 1
             channel.update_channel_stats(success=False)
-            proxy_config.failed_channels.append(channel.url) # Добавляем URL в список нерабочих каналов
+            proxy_config.failed_channels.append(channel.url)
             return []
 
-        logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд") # Keep info for channel download
+        logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд")
         channel.update_channel_stats(success=True, response_time=response_time)
 
         lines = text.splitlines()
 
-        # Создаем семафор для ограничения кол-ва одновременных проверок прокси *внутри этого канала*
         proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
         tasks = []
 
@@ -1189,66 +1354,77 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             if len(line) < MIN_CONFIG_LENGTH or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
                 continue
 
-            # Запускаем проверку каждого прокси в отдельной задаче (с ограничением через proxy_semaphore и global_proxy_semaphore)
-            task = asyncio.create_task(process_single_proxy(line, channel, unique_configs, proxy_config,
+            task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
                                                         loaded_weights, proxy_semaphore, global_proxy_semaphore))
             tasks.append(task)
 
-        # Ждем завершения всех задач по проверке прокси для данного канала
         results = await asyncio.gather(*tasks)
         for result in results:
-            if result: # Если результат не None
+            if result:
                 proxies.append(result)
 
 
         channel.metrics.valid_configs += len(proxies)
-        channel.metrics.unique_configs = len(unique_configs) #Спорный момент
         channel.check_count += 1
-        logger.info(f"Канал {channel.url}: Найдено {len(proxies)} валидных конфигураций.") # Keep info for valid configs per channel
+        logger.info(f"Канал {channel.url}: Найдено {len(proxies)} валидных конфигураций.")
         return proxies
 
 
-async def process_single_proxy(line: str, channel: ChannelConfig, unique_configs: Set[object],
+async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_config: ProxyConfig, loaded_weights: Dict,
                               proxy_semaphore: asyncio.Semaphore,
                               global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
-    """Обрабатывает один прокси-конфиг (парсинг, дедупликация, скоринг)."""
-    async with proxy_semaphore, global_proxy_semaphore:  # Ограничиваем *общее* кол-во одновременных проверок и внутри канала
+    """
+    Обрабатывает одну конфигурацию прокси: парсит, скорит и сохраняет результат.
+
+    Args:
+        line: Строка конфигурации прокси.
+        channel: Объект ChannelConfig, из которого получен прокси.
+        proxy_config: Объект ProxyConfig для доступа к настройкам и ресурсам.
+        loaded_weights: Словарь весов скоринга.
+        proxy_semaphore: Семафор для ограничения параллельных проверок прокси внутри канала.
+        global_proxy_semaphore: Семафор для ограничения общего количества параллельных проверок прокси.
+
+    Returns:
+        Словарь с результатами проверки прокси или None, если проверка не удалась или прокси не соответствует критериям.
+    """
+    async with proxy_semaphore, global_proxy_semaphore:
         config_obj = await parse_config(line, proxy_config.resolver)
 
         if config_obj is None:
-            return None # Пропускаем профили с доменами, без логирования
-
-        if config_obj in unique_configs:
-            logger.debug(f"Дубликат профиля найден и пропущен: {line} -  {config_obj}") # Keep debug for duplicate, added config_obj for details
             return None
-        unique_configs.add(config_obj)
 
         score = compute_profile_score(line,
                                       channel_response_time=channel.metrics.avg_response_time,
                                       loaded_weights=loaded_weights,
                                       channel_score=channel.metrics.overall_score,
-                                      first_seen = config_obj.first_seen) # Передаём рейтинг канала и first_seen
+                                      first_seen = config_obj.first_seen)
 
-        if score > MIN_ACCEPTABLE_SCORE:
-            result = {"config": line, "protocol": config_obj.__class__.__name__.replace("Config", "").lower(),
-                      "score": score, "config_obj": config_obj}
-            channel.metrics.protocol_counts[config_obj.__class__.__name__.replace("Config", "").lower()] += 1
-            channel.metrics.protocol_scores[config_obj.__class__.__name__.replace("Config", "").lower()].append(score)
-            return result  # Возвращаем словарь
-        else:
-          return None
+        result = {"config": line, "protocol": config_obj.__class__.__name__.replace("Config", "").lower(),
+                  "score": score, "config_obj": config_obj}
+        channel.metrics.protocol_counts[config_obj.__class__.__name__.replace("Config", "").lower()] += 1
+        channel.metrics.protocol_scores[config_obj.__class__.__name__.replace("Config", "").lower()].append(score)
+        return result
 
 
 async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
+    """
+    Обрабатывает все каналы в списке.
+
+    Args:
+        channels: Список объектов ChannelConfig для обработки.
+        proxy_config: Объект ProxyConfig для доступа к настройкам и ресурсам.
+
+    Returns:
+        Общий список словарей с результатами проверки прокси со всех каналов.
+    """
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
-     # Семафор для ограничения общего кол-ва одновременных проверок прокси
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
-    unique_configs = set()
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
-        tasks = [process_channel(channel, session, channel_semaphore, unique_configs, proxy_config, global_proxy_semaphore) for channel
+        tasks = [process_channel(channel, session, channel_semaphore,
+                                 proxy_config, global_proxy_semaphore) for channel
                  in channels]
         results = await asyncio.gather(*tasks)
 
@@ -1261,7 +1437,15 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
 
 def sort_proxies(proxies: List[Dict]) -> List[Dict]:
-    """Сортирует прокси по убыванию 'полноты' конфигурации."""
+    """
+    Сортирует список прокси по полноте конфигурации.
+
+    Args:
+        proxies: Список словарей прокси.
+
+    Returns:
+        Отсортированный список словарей прокси.
+    """
     def config_completeness(proxy_dict):
         config_obj = proxy_dict['config_obj']
         return sum(1 for field_value in astuple(config_obj) if field_value is not None)
@@ -1270,33 +1454,45 @@ def sort_proxies(proxies: List[Dict]) -> List[Dict]:
 
 
 def save_final_configs(proxies: List[Dict], output_file: str):
+    """
+    Сохраняет финальные конфигурации прокси в выходной файл.
 
-    proxies_sorted = sort_proxies(proxies) # Сортируем
+    Args:
+        proxies: Список словарей с результатами проверки прокси.
+        output_file: Путь к файлу для сохранения конфигураций.
+    """
+    proxies_sorted = sort_proxies(proxies)
     profile_names = set()
 
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
             for proxy in proxies_sorted:
-                if proxy['score'] >= MIN_ACCEPTABLE_SCORE: # Исправлено условие на >=
-                    config = proxy['config'].split('#')[0].strip()
-                    parsed = urlparse(config)
-                    query = parse_qs(parsed.query)
-                    profile_name = generate_custom_name(parsed, query)
+                config = proxy['config'].split('#')[0].strip()
+                parsed = urlparse(config)
+                query = parse_qs(parsed.query)
+                profile_name = generate_custom_name(parsed, query)
 
-                    base_name = profile_name
-                    suffix = 1
-                    while profile_name in profile_names:
-                        profile_name = f"{base_name} ({suffix})"
-                        suffix += 1
-                    profile_names.add(profile_name)
+                base_name = profile_name
+                suffix = 1
+                while profile_name in profile_names:
+                    profile_name = f"{base_name} ({suffix})"
+                    suffix += 1
+                profile_names.add(profile_name)
 
-                    final_line = f"{config}#{profile_name} - Score: {proxy['score']:.2f}\n" # Добавлено отображение score
-                    f.write(final_line)
+                final_line = f"{config}#{profile_name} - Score: {proxy['score']:.2f}\n"
+                f.write(final_line)
         logger.info(f"Финальные конфигурации сохранены в {output_file}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфигураций: {e}")
 
 def update_and_save_weights(channels: List[ChannelConfig], loaded_weights:Dict):
+    """
+    Обновляет и сохраняет веса скоринга на основе статистики каналов.
+
+    Args:
+        channels: Список объектов ChannelConfig.
+        loaded_weights: Словарь весов скоринга.
+    """
     total_success_ratio = sum(channel._calculate_success_ratio() for channel in channels) / len(channels) if channels else 0
     loaded_weights['CHANNEL_STABILITY'] =  min(max(int(total_success_ratio * 100), 0), 100)
 
@@ -1320,56 +1516,58 @@ def update_and_save_weights(channels: List[ChannelConfig], loaded_weights:Dict):
     ScoringWeights.save_weights_to_json(loaded_weights)
 
 def prepare_training_data(proxies: List[Dict]) -> List[Dict]:
-    """Подготавливает данные для обучения модели калибровки весов."""
+    """
+    Подготавливает данные для обучения модели калибровки весов.
+
+    Args:
+        proxies: Список словарей прокси.
+
+    Returns:
+        Список словарей, подготовленных для обучения модели.
+    """
     training_data = []
     for proxy in proxies:
         config = proxy['config']
         parsed = urlparse(config)
         query = parse_qs(parsed.query)
 
-        # Признаки для обучения (пример)
         data = {
-            'score': proxy['score'],  # Целевая переменная
+            'score': proxy['score'],
             'vless_security_tls': 1 if _get_value(query, 'security', 'none').lower() == 'tls' else 0,
             'vless_transport_ws': 1 if _get_value(query, 'type', 'tcp').lower() == 'ws' else 0,
             'vless_encryption_none': 1 if _get_value(query, 'encryption', 'none').lower() == 'none' else 0,
-            # ... добавьте другие признаки, которые вы хотите использовать для обучения ...
         }
         training_data.append(data)
     return training_data
 
 def main():
+    """Основная функция для запуска проверки прокси."""
     proxy_config = ProxyConfig()
     channels = proxy_config.get_enabled_channels()
     loaded_weights = ScoringWeights.load_weights_from_json()
 
     async def runner():
-        loop = asyncio.get_running_loop()  # Получаем текущий event loop
-        proxy_config.set_event_loop(loop) # Передаем loop в ProxyConfig
+        loop = asyncio.get_running_loop()
+        proxy_config.set_event_loop(loop)
 
         proxies = await process_all_channels(channels, proxy_config)
 
-        # --- Калибровка весов ---
         training_data = prepare_training_data(proxies)
-        # Задаем признаки, которые будут использоваться при обучении
         features = [
             'vless_security_tls',
             'vless_transport_ws',
             'vless_encryption_none',
-            # ... другие признаки ...
         ]
         ScoringWeights.calibrate_weights(training_data, features)
-        # --- Конец калибровки ---
 
         save_final_configs(proxies, proxy_config.OUTPUT_FILE)
         update_and_save_weights(channels, loaded_weights)
-        proxy_config.remove_failed_channels_from_file() # Удаляем нерабочие каналы из файла
+        proxy_config.remove_failed_channels_from_file()
 
         total_channels = len(channels)
         enabled_channels = sum(1 for channel in channels)
         disabled_channels = total_channels - enabled_channels
         total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
-        total_unique_configs = sum(channel.metrics.unique_configs for channel in channels)
         total_successes = sum(channel.metrics.success_count for channel in channels)
         total_fails = sum(channel.metrics.fail_count for channel in channels)
 
@@ -1383,7 +1581,6 @@ def main():
         logger.info(f"Включено каналов: {enabled_channels}")
         logger.info(f"Отключено каналов: {disabled_channels}")
         logger.info(f"Всего валидных конфигураций: {total_valid_configs}")
-        logger.info(f"Всего уникальных конфигураций (по URL): {total_unique_configs}")
         logger.info(f"Всего успешных загрузок: {total_successes}")
         logger.info(f"Всего неудачных загрузок: {total_fails}")
         logger.info("Статистика по протоколам:")
@@ -1391,7 +1588,7 @@ def main():
             logger.info(f"  {protocol}: {count}")
         logger.info("================== КОНЕЦ СТАТИСТИКИ ==============")
 
-    asyncio.run(runner()) # Этой строчки не хватало в функции main()
+    asyncio.run(runner())
 
 if __name__ == "__main__":
     main()
