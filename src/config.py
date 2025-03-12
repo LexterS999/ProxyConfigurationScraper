@@ -23,9 +23,30 @@ import numpy as np
 
 
 # --- НАСТРОЙКА ЛОГИРОВАНИЯ ---
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(process)s - %(message)s')
+# logging.basicConfig(level=logging.INFO,  # Изменено на INFO
+#                     format='%(asctime)s - %(levelname)s - %(process)s - %(message)s')
+
+# Создаем свой логгер
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO) # Устанавливаем уровень по умолчанию
+
+# Создаем обработчик для записи в файл
+file_handler = logging.FileHandler('proxy_checker.log', encoding='utf-8')
+file_handler.setLevel(logging.INFO) # Устанавливаем уровень
+
+# Создаем форматтер
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(process)s - %(message)s')
+file_handler.setFormatter(formatter)
+
+# Добавляем обработчик к логгеру
+logger.addHandler(file_handler)
+
+# --- ДОБАВЛЕНО: Обработчик для вывода в консоль (с уровнем WARNING) ---
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING) # Выводим в консоль только WARNING и выше
+console_handler.setFormatter(formatter) # Тот же форматтер
+logger.addHandler(console_handler)
+
 
 # --- КОНСТАНТЫ ---
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
@@ -686,7 +707,7 @@ class Hy2Config:
             pmtud=_get_value(query, 'pmtud') == '1',
             hop_interval=hop_interval,
             password = parsed_url.password,
-            utls = _get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
+            utls = _get_value(query, 'utls = _get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
             obfs = _get_value(query, 'obfs'),
             first_seen = datetime.now()
 
@@ -1323,4 +1344,4 @@ def main():
     asyncio.run(runner()) # Этой строчки не хватало в функции main()
 
 if __name__ == "__main__":
-    main()  
+    main()
