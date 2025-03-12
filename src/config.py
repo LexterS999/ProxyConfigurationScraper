@@ -10,12 +10,12 @@ from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, field  # Импортируем field
+from dataclasses import dataclass, field
 from collections import defaultdict
 import uuid
 import numbers
 import functools
-import string  # Добавляем импорт string
+import string
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO,
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 MIN_ACCEPTABLE_SCORE = 50.0
 MIN_CONFIG_LENGTH = 30
-ALLOWED_PROTOCOLS = ["vless://", "ss://"]
+ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://"]
 MAX_CONCURRENT_CHANNELS = 200
 REQUEST_TIMEOUT = 60
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
@@ -37,12 +37,16 @@ ALL_URLS_FILE = "all_urls.txt"
 
 # --- КРАСИВОЕ ОФОРМЛЕНИЕ НАИМЕНОВАНИЯ ПРОФИЛЕЙ ---
 class ProfileName(Enum):
-    VLESS_FORMAT = "VLESS - {transport} - {security} - {encryption}"
-    VLESS_WS_TLS_CHACHA20 = "VLESS - WS - TLS - CHACHA20"
-    VLESS_TCP_NONE_NONE = "VLESS - TCP - NONE - NONE"
-    SS_FORMAT = "SS - {method}"
-    SS_CHACHA20_IETF_POLY1305 = "SS - CHACHA20-IETF-POLY1305"
-    UNKNOWN_FORMAT = "Неизвестный Протокол"
+    VLESS_FORMAT = "🌌 VLESS - {transport}{security_sep}{security}{encryption_sep}{encryption}"
+    VLESS_WS_TLS_CHACHA20 = "🚀 VLESS - WS - TLS - CHACHA20"
+    SS_FORMAT = "🎭 SS - {method}"
+    SS_CHACHA20_IETF_POLY1305 = "🛡️ SS - CHACHA20-IETF-POLY1305"
+    TROJAN_FORMAT = "🗡️ Trojan - {transport} - {security}"
+    TROJAN_WS_TLS = "⚔️ Trojan - WS - TLS"
+    TUIC_FORMAT = "🐢 TUIC - {transport} - {security} - {congestion_control}"
+    TUIC_WS_TLS_BBR = "🐇 TUIC - WS - TLS - BBR"
+    HY2_FORMAT = "💧 HY2 - {transport} - {security}"
+    HY2_UDP_TLS = "🐳 HY2 - UDP - TLS"
 
 
 @dataclass
@@ -54,12 +58,13 @@ class ChannelMetrics:
     fail_count: int = 0
     success_count: int = 0
     overall_score: float = 0.0
-    protocol_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))  # Исправлено: используем default_factory
+    protocol_counts: Dict[str, int] = field(
+        default_factory=lambda: defaultdict(int))  # Исправлено: используем default_factory
 
 
 class ChannelConfig:
     RESPONSE_TIME_DECAY = 0.7
-    VALID_PROTOCOLS = ["http://", "https://", "vless://", "ss://"]
+    VALID_PROTOCOLS = ["http://", "https://", "vless://", "ss://", "trojan://", "tuic://", "hy2://"]
 
     def __init__(self, url: str, request_timeout: int = REQUEST_TIMEOUT):
         self.url = self._validate_url(url)
@@ -87,11 +92,7 @@ class ChannelConfig:
         return url
 
     def calculate_overall_score(self):
-        """Вычисляет общий рейтинг канала.
-
-        Формула:
-        overall_score = (success_ratio * CHANNEL_STABILITY) + recency_bonus + response_time_penalty
-        """
+        """Вычисляет общий рейтинг канала."""
         try:
             success_ratio = self._calculate_success_ratio()
             recency_bonus = self._calculate_recency_bonus()
@@ -134,7 +135,7 @@ class ChannelConfig:
         if response_time > 0:
             self.metrics.avg_response_time = (
                 (self.metrics.avg_response_time * self.RESPONSE_TIME_DECAY) + (
-                            response_time * (1 - self.RESPONSE_TIME_DECAY))
+                        response_time * (1 - self.RESPONSE_TIME_DECAY))
                 if self.metrics.avg_response_time
                 else response_time
             )
@@ -253,7 +254,42 @@ class ScoringWeights(Enum):
     SS_PLUGIN_OBFS_HTTP = 8
     SS_PLUGIN_NONE = 0  # Если плагина нет
 
-    # --- Общие для VLESS и SS ---
+    # --- Trojan-специфичные веса ---
+    TROJAN_SECURITY_TLS = 15
+    TROJAN_TRANSPORT_WS = 10
+    TROJAN_TRANSPORT_TCP = 2
+    TROJAN_PASSWORD_LENGTH = 5
+    TROJAN_SNI_PRESENT = 7
+    TROJAN_ALPN_PRESENT = 5
+    TROJAN_EARLY_DATA = 3
+
+    # --- TUIC-специфичные веса ---
+    TUIC_SECURITY_TLS = 15
+    TUIC_TRANSPORT_WS = 10
+    TUIC_TRANSPORT_UDP = 5  # UDP изначально поддерживается
+    TUIC_CONGESTION_CONTROL_BBR = 8
+    TUIC_CONGESTION_CONTROL_CUBIC = 5
+    TUIC_CONGESTION_CONTROL_NEW_RENO = 3  # Менее предпочтительный
+    TUIC_UUID_PRESENT = 5
+    TUIC_PASSWORD_LENGTH = 5
+    TUIC_SNI_PRESENT = 7
+    TUIC_ALPN_PRESENT = 5
+    TUIC_EARLY_DATA = 3
+    TUIC_UDP_RELAY_MODE = 7  # Поддержка UDP relay
+    TUIC_ZERO_RTT_HANDSHAKE = 6  # 0-RTT handshake
+
+    # --- HY2-специфичные веса ---
+    HY2_SECURITY_TLS = 15
+    HY2_TRANSPORT_UDP = 5  # UDP изначально поддерживается
+    HY2_TRANSPORT_TCP = 2  # Поддержка TCP (менее желательна)
+    HY2_PASSWORD_LENGTH = 5
+    HY2_SNI_PRESENT = 7
+    HY2_ALPN_PRESENT = 5
+    HY2_EARLY_DATA = 3
+    HY2_PMTUD_ENABLED = 4  # Path MTU Discovery
+    HY2_HOP_INTERVAL = 2  # За каждый интервал
+
+    # --- Общие для VLESS, SS, Trojan, TUIC, HY2 ---
     COMMON_PORT_443 = 10
     COMMON_PORT_80 = 5
     COMMON_PORT_OTHER = 2
@@ -380,6 +416,106 @@ def _calculate_ss_score(parsed: urlparse, query: Dict) -> float:
     return score
 
 
+def _calculate_trojan_score(parsed: urlparse, query: Dict) -> float:
+    """Вычисляет оценку для Trojan-профиля."""
+    score = 0
+
+    # --- Безопасность ---
+    security = _get_value(query, 'security', 'none').lower()  # Должен быть tls
+    score += ScoringWeights.TROJAN_SECURITY_TLS.value if security == 'tls' else 0  # Нет штрафа, просто 0
+
+    # --- Транспорт ---
+    transport = _get_value(query, 'type', 'tcp').lower()
+    score += ScoringWeights.TROJAN_TRANSPORT_WS.value if transport == 'ws' else ScoringWeights.TROJAN_TRANSPORT_TCP.value
+
+    # --- Длина пароля ---
+    score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value,
+                 len(parsed.password or '') / 16 * ScoringWeights.TROJAN_PASSWORD_LENGTH.value) if parsed.password else 0
+
+    # --- Другие параметры Trojan ---
+    if _get_value(query, 'sni'):
+        score += ScoringWeights.TROJAN_SNI_PRESENT.value
+    if _get_value(query, 'alpn'):
+        score += ScoringWeights.TROJAN_ALPN_PRESENT.value
+    if _get_value(query, 'earlyData') == '1':
+        score += ScoringWeights.TROJAN_EARLY_DATA.value
+
+    return score
+
+
+def _calculate_tuic_score(parsed: urlparse, query: Dict) -> float:
+    """Вычисляет оценку для TUIC-профиля."""
+    score = 0
+
+    # --- Безопасность ---
+    security = _get_value(query, 'security', 'none').lower()
+    score += ScoringWeights.TUIC_SECURITY_TLS.value if security == 'tls' else 0
+
+    # --- Транспорт ---
+    transport = _get_value(query, 'type', 'udp').lower()  # Должен быть udp (или ws)
+    score += ScoringWeights.TUIC_TRANSPORT_WS.value if transport == 'ws' else ScoringWeights.TUIC_TRANSPORT_UDP.value
+
+    # --- Управление перегрузкой ---
+    congestion_control = _get_value(query, 'congestion', 'bbr').lower()
+    score += {
+        'bbr': ScoringWeights.TUIC_CONGESTION_CONTROL_BBR.value,
+        'cubic': ScoringWeights.TUIC_CONGESTION_CONTROL_CUBIC.value,
+        'new-reno': ScoringWeights.TUIC_CONGESTION_CONTROL_NEW_RENO.value
+    }.get(congestion_control, 0)
+
+    # --- Другие параметры TUIC ---
+    if parsed.username:  # UUID
+        score += ScoringWeights.TUIC_UUID_PRESENT.value
+    score += min(ScoringWeights.TUIC_PASSWORD_LENGTH.value,
+                 len(parsed.password or '') / 16 * ScoringWeights.TUIC_PASSWORD_LENGTH.value) if parsed.password else 0
+    if _get_value(query, 'sni'):
+        score += ScoringWeights.TUIC_SNI_PRESENT.value
+    if _get_value(query, 'alpn'):
+        score += ScoringWeights.TUIC_ALPN_PRESENT.value
+    if _get_value(query, 'earlyData') == '1':
+        score += ScoringWeights.TUIC_EARLY_DATA.value
+    if _get_value(query, 'udp_relay_mode', 'quic').lower() == 'quic':
+        score += ScoringWeights.TUIC_UDP_RELAY_MODE.value
+    if _get_value(query, 'zero_rtt_handshake') == '1':
+        score += ScoringWeights.TUIC_ZERO_RTT_HANDSHAKE.value
+    return score
+
+
+def _calculate_hy2_score(parsed: urlparse, query: Dict) -> float:
+    """Вычисляет оценку для HY2-профиля."""
+    score = 0
+
+    # --- Безопасность ---
+    security = _get_value(query, 'security', 'none').lower()
+    score += ScoringWeights.HY2_SECURITY_TLS.value if security == 'tls' else 0
+
+    # --- Транспорт ---
+    transport = _get_value(query, 'type', 'udp').lower()
+    score += ScoringWeights.HY2_TRANSPORT_UDP.value if transport == 'udp' else ScoringWeights.HY2_TRANSPORT_TCP.value
+
+    # --- Другие параметры HY2 ---
+    score += min(ScoringWeights.HY2_PASSWORD_LENGTH.value,
+                 len(parsed.password or '') / 16 * ScoringWeights.HY2_PASSWORD_LENGTH.value) if parsed.password else 0
+    if _get_value(query, 'sni'):
+        score += ScoringWeights.HY2_SNI_PRESENT.value
+    if _get_value(query, 'alpn'):
+        score += ScoringWeights.HY2_ALPN_PRESENT.value
+    if _get_value(query, 'earlyData') == '1':
+        score += ScoringWeights.HY2_EARLY_DATA.value
+    if _get_value(query, 'pmtud') == '1':
+        score += ScoringWeights.HY2_PMTUD_ENABLED.value
+
+    # hopInterval (мульти-хоп)
+    hop_interval = _get_value(query, 'hopInterval', None)
+    if hop_interval:
+        try:
+            score += int(hop_interval) * ScoringWeights.HY2_HOP_INTERVAL.value  # Добавляем за каждый hop
+        except ValueError:
+            pass  # Игнорируем, если не число
+
+    return score
+
+
 def _calculate_common_score(parsed: urlparse, query: Dict) -> float:
     """Вычисляет общую оценку, применимую к обоим протоколам."""
     score = 0
@@ -416,14 +552,15 @@ def _calculate_common_score(parsed: urlparse, query: Dict) -> float:
         score += ScoringWeights.COMMON_HEADERS.value
 
     # --- Редкие и скрытые параметры ---
-    known_params = (
+    known_params_general = (
         'security', 'type', 'encryption', 'sni', 'alpn', 'path',
-        'headers', 'fp', 'utls',
-        'earlyData', 'id', 'method', 'plugin',
+        'headers', 'fp', 'utls', 'earlyData', 'id', 'method',
+        'plugin', 'congestion', 'udp_relay_mode', 'zero_rtt_handshake', 'pmtud', 'hopInterval',
         'bufferSize', 'tcpFastOpen', 'obfs', 'debug', 'comment'
     )
+
     for key, value in query.items():
-        if key not in known_params:
+        if key not in known_params_general:
             score += ScoringWeights.COMMON_HIDDEN_PARAM.value
             if value and value[0]:
                 score += min(ScoringWeights.COMMON_RARE_PARAM.value,
@@ -463,6 +600,12 @@ def compute_profile_score(config: str, channel_response_time: float = 0.0) -> fl
         score += _calculate_vless_score(parsed, query)
     elif protocol == "ss://":
         score += _calculate_ss_score(parsed, query)
+    elif protocol == "trojan://":
+        score += _calculate_trojan_score(parsed, query)
+    elif protocol == "tuic://":
+        score += _calculate_tuic_score(parsed, query)
+    elif protocol == "hy2://":
+        score += _calculate_hy2_score(parsed, query)
 
     return round(score, 2)
 
@@ -476,13 +619,20 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
 
         if transport_type == "WS" and security_type == "TLS" and encryption_type == "CHACHA20":
             return ProfileName.VLESS_WS_TLS_CHACHA20.value
-        elif transport_type == "TCP" and security_type == "NONE" and encryption_type == "NONE":
-            return ProfileName.VLESS_TCP_NONE_NONE.value
+        # elif transport_type == "TCP" and security_type == "NONE" and encryption_type == "NONE": # Убрали
+        #     return ProfileName.VLESS_TCP_NONE_NONE.value
         else:
-            return ProfileName.VLESS_FORMAT.value.format(
-                transport=transport_type, security=security_type, encryption=encryption_type
-            )
+            #  "🌌 VLESS - {transport}{security_sep}{security}{encryption_sep}{encryption}"
+            security_sep = " - " if security_type != "NONE" else ""
+            encryption_sep = " - " if encryption_type != "NONE" else ""
 
+            return ProfileName.VLESS_FORMAT.value.format(
+                transport=transport_type,
+                security_sep=security_sep,
+                security=security_type,
+                encryption_sep=encryption_sep,
+                encryption=encryption_type
+            )
 
     elif parsed.scheme == "ss":
         method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")  # Экранируем
@@ -490,8 +640,40 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
             return ProfileName.SS_CHACHA20_IETF_POLY1305.value
         else:
             return ProfileName.SS_FORMAT.value.format(method=method)
+
+    elif parsed.scheme == "trojan":
+        transport_type = query.get("type", ["tcp"])[0].upper()
+        security_type = query.get("security", ["tls"])[0].upper()
+        if transport_type == "WS" and security_type == "TLS":
+            return ProfileName.TROJAN_WS_TLS.value
+        else:
+            return ProfileName.TROJAN_FORMAT.value.format(transport=transport_type, security=security_type)
+
+    elif parsed.scheme == "tuic":
+        transport_type = query.get("type", ["udp"])[0].upper()
+        security_type = query.get("security", ["tls"])[0].upper
+        congestion_control = query.get("congestion", ["bbr"])[0].upper()
+
+        if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
+            return ProfileName.TUIC_WS_TLS_BBR.value
+        else:
+            return ProfileName.TUIC_FORMAT.value.format(
+                transport=transport_type,
+                security=security_type,
+                congestion_control=congestion_control
+            )
+
+    elif parsed.scheme == "hy2":
+        transport_type = query.get("type", ["udp"])[0].upper()
+        security_type = query.get("security", ["tls"])[0].upper()
+
+        if transport_type == "UDP" and security_type == "TLS":
+            return ProfileName.HY2_UDP_TLS.value
+        else:
+            return ProfileName.HY2_FORMAT.value.format(transport=transport_type, security=security_type)
+
     else:
-        return "Неизвестный Протокол"  # Добавили обработку
+        return f"⚠️ Unknown Protocol: {parsed.scheme}" #информативное сообщение
 
 
 @functools.lru_cache(maxsize=None)
@@ -519,7 +701,7 @@ def is_valid_proxy_url(url: str) -> bool:
         return False
     try:
         parsed = urlparse(url)
-        if parsed.scheme == 'vless':
+        if parsed.scheme in ('vless', 'trojan', 'tuic'):
             profile_id = parsed.username or parse_qs(parsed.query).get('id', [None])[0]
             if profile_id and not is_valid_uuid(profile_id):
                 return False
@@ -527,7 +709,10 @@ def is_valid_proxy_url(url: str) -> bool:
             return False
 
         if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
-            return False
+            # Проверяем, является ли hostname доменом, если это не IP адрес
+            if not re.match(r"^[a-zA-Z0-9.-]+$", parsed.hostname):
+                return False
+
         return True
     except ValueError:
         return False
@@ -542,7 +727,7 @@ def is_valid_uuid(uuid_string: str) -> bool:
 
 
 PROFILE_KEY_REGEX = re.compile(
-    r"^(vless|ss)://(?:.*?@)?([^@/:]+):(\d+)"
+    r"^(vless|ss|trojan|tuic|hy2)://(?:.*?@)?([^@/:]+):(\d+)"
 )
 
 
@@ -560,7 +745,7 @@ def create_profile_key(parsed: urlparse, query: Dict) -> Optional[str]:
             netloc = f"{username}:{password}@{parsed.hostname}:{parsed.port}"
             return parsed._replace(netloc=netloc, scheme='ss', path='', params='', query='', fragment='').geturl()
 
-        else:  # vless
+        else:  # vless, trojan, tuic, hy2
             match = PROFILE_KEY_REGEX.match(parsed.geturl())
             if match:
                 protocol, host, port = match.groups()
@@ -620,13 +805,15 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             try:
                 parsed = urlparse(line)
                 query = parse_qs(parsed.query)  # Кешируем результат
-                profile_id = parsed.username or query.get('id', [None])[0] if parsed.scheme == 'vless' else None
+                profile_id = parsed.username or query.get('id', [None])[0] if parsed.scheme in (
+                'vless', 'trojan', 'tuic') else None
 
                 if (len(line) < MIN_CONFIG_LENGTH or
                         not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or
                         not is_valid_proxy_url(line) or
-                        (parsed.scheme == 'vless' and profile_id and not is_valid_uuid(profile_id))):
+                        (parsed.scheme in ('vless', 'trojan', 'tuic') and profile_id and not is_valid_uuid(profile_id))):
                     continue
+
 
             except ValueError as e:
                 logger.debug(f"Ошибка парсинга URL {line}: {e}")
@@ -736,5 +923,6 @@ def main():
 
 
 if __name__ == "__main__":
-    ScoringWeights.load_weights_from_json() # Загружаем веса
+    ScoringWeights.load_weights_from_json()  # Загружаем веса
     main()
+
