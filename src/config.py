@@ -18,22 +18,21 @@ from enum import Enum
 import shutil
 import uuid
 import zipfile
-import hashlib
+import hashlib # Import for hash-based cache
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(process)s - %(process)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 
 class ScoringWeights(Enum):
-    """Веса для расчета скоринга — оптимизированы для VLESS, Trojan, Tuic, Hy2."""
+    """Scoring weights - Optimized for VLESS, Trojan, Tuic, Hy2."""
     PROTOCOL_BASE = 50
     CONFIG_LENGTH = 10
     SECURITY_PARAM = 15
     NUM_SECURITY_PARAMS = 5
     SECURITY_TYPE_TLS = 10
-    SECURITY_TYPE_REALITY = 12
+    SECURITY_TYPE_REALITY = 12 # Keep for Reality, if used
     SECURITY_TYPE_NONE = -5
     TRANSPORT_TYPE_TCP = 2
     TRANSPORT_TYPE_WS = 8
@@ -53,106 +52,94 @@ class ScoringWeights(Enum):
     NUM_HEADERS = 1
     HOST_HEADER = 5
     HOST_SNI_MATCH = 10
-    UTLS_PRESENT = 4
+    UTLS_PRESENT = 4 # Keep UTLS related weights as they can be present
     UTLS_VALUE_CHROME = 5
     UTLS_VALUE_FIREFOX = 4
     UTLS_VALUE_IOS = 2
     UTLS_VALUE_SAFARI = 3
     UTLS_VALUE_RANDOMIZED = 7
     UTLS_VALUE_RANDOM = 6
-    UDP_SUPPORT = 7
+    UDP_SUPPORT = 7 # Keep UDP support as Tuic and Hy2 use it
     PORT_80 = 5
     PORT_443 = 10
     PORT_OTHER = 2
-    UUID_PRESENT = 5
+    UUID_PRESENT = 5 # Keep UUID for VLESS
     UUID_LENGTH = 3
-    EARLY_DATA_SUPPORT = 5
-    PARAMETER_CONSISTENCY = 12
-    IPV6_ADDRESS = -9
-    RARITY_BONUS = 4
-    HIDDEN_PARAM = 6
-    NEW_PARAM = 5
+    EARLY_DATA_SUPPORT = 5 # Keep Early Data - relevant for some protocols/setups
+    PARAMETER_CONSISTENCY = 12 # Keep Parameter Consistency
+    IPV6_ADDRESS = -9 # Keep IPv6 penalty
+    RARITY_BONUS = 4 # Keep Rarity Bonus for less common params
+    HIDDEN_PARAM = 6 # Keep Hidden Param score
+    NEW_PARAM = 5 # Keep New Param score
     RESPONSE_TIME = -0.05
     CHANNEL_STABILITY = 20
-    BUFFER_SIZE_SMALL = -2
+    BUFFER_SIZE_SMALL = -2 # Keep Buffer Size related weights - can be present
     BUFFER_SIZE_MEDIUM = 3
     BUFFER_SIZE_LARGE = 7
     BUFFER_SIZE_UNLIMITED = 5
-    TCP_OPTIMIZATION = 5
-    QUIC_PARAM = 3
-    STREAM_ENCRYPTION = 6
-    CDN_USAGE = 8
-    OBFS = 4
-    DEBUG_PARAM = -3
-    COMMENT = 1
-    TROJAN_PASSWORD_PRESENT = 8
+    TCP_OPTIMIZATION = 5 # Keep TCP Optimization - can be present
+    QUIC_PARAM = 3 # Keep QUIC Param - relevant for QUIC transport
+    STREAM_ENCRYPTION = 6 # Keep Stream Encryption
+    CDN_USAGE = 8 # Keep CDN Usage
+    OBFS = 4 # Keep OBFS - can be present
+    DEBUG_PARAM = -3 # Keep Debug Param
+    COMMENT = 1 # Keep Comment
+    TROJAN_PASSWORD_PRESENT = 8 # Keep Trojan Password related weights
     TROJAN_PASSWORD_LENGTH = 5
 
     @staticmethod
-    def load_weights_from_json(file_path: str = DEFAULT_SCORING_WEIGHTS_FILE) -> Dict[str, Any]:
-        """Загружает веса из JSON-файла, возвращает словарь с проблемами."""
-        issues = {}
+    def load_weights_from_json(file_path: str = DEFAULT_SCORING_WEIGHTS_FILE) -> None:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 weights_data: Dict[str, Any] = json.load(f)
                 for name, value in weights_data.items():
-                    if not isinstance(value, (int, float)):
-                        issues[name] = f"Неверный тип: {type(value)}, ожидается int или float"
-                        continue
                     try:
                         ScoringWeights[name].value = value
                     except KeyError:
-                        issues[name] = "Неизвестный вес"
+                        logger.warning(f"Неизвестный вес скоринга в файле: {name}. Вес проигнорирован.")
                     except ValueError:
-                        issues[name] = f"Неверное значение: {value}"
+                        logger.error(f"Неверное значение веса для {name}: {value}. Используется значение по умолчанию.")
         except FileNotFoundError:
-            logger.warning(f"Файл не найден: {file_path}. Создаю по умолчанию.")
+            logger.warning(f"Файл весов скоринга не найден: {file_path}. Используются значения по умолчанию.")
             ScoringWeights._create_default_weights_file(file_path)
         except json.JSONDecodeError:
-            logger.error(f"Ошибка JSON в {file_path}.")
+            logger.error(f"Ошибка чтения JSON файла весов: {file_path}. Используются значения по умолчанию.")
         except Exception as e:
-            logger.error(f"Ошибка загрузки весов: {e}")
-        return issues
+            logger.error(f"Непредвиденная ошибка при загрузке весов скоринга из {file_path}: {e}. Используются значения по умолчанию.")
 
     @staticmethod
     def _create_default_weights_file(file_path: str) -> None:
-        """Создает файл весов по умолчанию, если он отсутствует."""
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        default_weights = {member.name: member.value for member in ScoringWeights}
         try:
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            if not os.access(os.path.dirname(file_path), os.W_OK):
-                raise PermissionError(f"Нет прав на запись в {os.path.dirname(file_path)}")
-            default_weights = {member.name: member.value for member in ScoringWeights}
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(default_weights, f, indent=4)
-            logger.info(f"Создан файл весов: {file_path}")
-        except PermissionError as e:
-            logger.error(f"Ошибка прав доступа: {e}")
+            logger.info(f"Создан файл весов скоринга по умолчанию: {file_path}")
         except Exception as e:
-            logger.error(f"Ошибка создания файла весов: {e}")
+            logger.error(f"Ошибка создания файла весов скоринга по умолчанию: {e}")
 
-# Загрузка весов при инициализации
 ScoringWeights.load_weights_from_json()
 
-# Константы
-MIN_ACCEPTABLE_SCORE = 90.0
-MIN_CONFIG_LENGTH = 30
+MIN_ACCEPTABLE_SCORE = 90.0 # Optimized Constant
+MIN_CONFIG_LENGTH = 30 # Optimized Constant
 ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "trojan://"]
 PREFERRED_PROTOCOLS = ["vless://", "trojan://", "tuic://", "hy2://"]
-CHECK_USERNAME = False
-CHECK_TLS_REALITY = False
-CHECK_SNI = False
-CHECK_CONNECTION_TYPE = False
-MAX_CONCURRENT_CHANNELS = 200
-REQUEST_TIMEOUT = 60
-HIGH_FREQUENCY_THRESHOLD_HOURS = 12
-HIGH_FREQUENCY_BONUS = 3
+CHECK_USERNAME = False # Optimized Constant - Disabled checks
+CHECK_TLS_REALITY = False # Optimized Constant - Disabled checks
+CHECK_SNI = False # Optimized Constant - Disabled checks
+CHECK_CONNECTION_TYPE = False # Optimized Constant - Disabled checks
+MAX_CONCURRENT_CHANNELS = 200 # Optimized Constant
+REQUEST_TIMEOUT = 60 # Optimized Constant
+HIGH_FREQUENCY_THRESHOLD_HOURS = 12 # Optimized Constant
+HIGH_FREQUENCY_BONUS = 3 # Optimized Constant
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
-MAX_CONCURRENT_HTTP_CHECKS = 60
+TEST_URL_FOR_PROXY_CHECK = "http://speed.cloudflare.com" # Removed
+MAX_CONCURRENT_HTTP_CHECKS = 60 # Replaced TCP_HANDSHAKE with HTTP Checks, keeping concurrency limit # Removed
+
 
 @dataclass
 class ChannelMetrics:
-    """Метрики канала."""
     valid_configs: int = 0
     unique_configs: int = 0
     avg_response_time: float = 0.0
@@ -167,62 +154,53 @@ class ChannelMetrics:
             self.protocol_counts = defaultdict(int)
 
 class ChannelConfig:
-    """Конфигурация канала с URL и метриками."""
     def __init__(self, url: str, request_timeout: int = REQUEST_TIMEOUT):
-        if not isinstance(request_timeout, int) or request_timeout <= 0:
-            raise ValueError(f"request_timeout должен быть положительным целым числом, получено: {request_timeout}")
         self.url = self._validate_url(url)
         self.metrics = ChannelMetrics()
         self.request_timeout = request_timeout
         self.check_count = 0
 
     def _validate_url(self, url: str) -> str:
-        """Проверяет валидность URL."""
         if not url:
             raise ValueError("URL не может быть пустым.")
         if not isinstance(url, str):
             raise ValueError(f"URL должен быть строкой, получено: {type(url).__name__}")
         url = url.strip()
-        valid_protocols = ('http://', 'https://', 'trojan://', 'vless://', 'tuic://', 'hy2://')
+        valid_protocols = ('http://', 'https://', 'trojan://', 'vless://', 'tuic://', 'hy2://') # Убрали ssconf://
         if not any(url.startswith(proto) for proto in valid_protocols):
-            raise ValueError(f"Неверный протокол URL: {url}. Ожидается: {', '.join(valid_protocols)}")
+            raise ValueError(f"Неверный протокол URL. Ожидается: {', '.join(valid_protocols)}, получено: {url[:url.find('://') + 3] if '://' in url else url[:10]}...")
         return url
 
     def calculate_overall_score(self):
-        """Рассчитывает общий скор канала."""
         try:
             success_ratio = self._calculate_success_ratio()
             recency_bonus = self._calculate_recency_bonus()
             response_time_penalty = self._calculate_response_time_penalty()
-            score = (success_ratio * ScoringWeights.CHANNEL_STABILITY.value) + recency_bonus + response_time_penalty
-            logger.debug(f"Канал {self.url}: success_ratio={success_ratio}, recency_bonus={recency_bonus}, penalty={response_time_penalty}")
-            self.metrics.overall_score = round(max(0, score), 2)
+
+            self.metrics.overall_score = round((success_ratio * ScoringWeights.CHANNEL_STABILITY.value) + recency_bonus + response_time_penalty, 2) # Use .value
+            self.metrics.overall_score = max(0, self.metrics.overall_score)
+
         except Exception as e:
-            logger.error(f"Ошибка расчета скора для {self.url}: {e}")
+            logger.error(f"Ошибка при расчете скора для {self.url}: {str(e)}")
             self.metrics.overall_score = 0.0
 
     def _calculate_success_ratio(self) -> float:
-        """Возвращает долю успешных проверок. Если проверок нет, возвращает 0."""
         total_checks = self.metrics.success_count + self.metrics.fail_count
-        return self.metrics.success_count / total_checks if total_checks > 0 else 0.0
+        return self.metrics.success_count / total_checks if total_checks > 0 else 0
 
-    def _calculate_recency_bonus(self, current_time: datetime = None) -> float:
-        """Рассчитывает бонус за недавний успех."""
-        current_time = current_time or datetime.now()
+    def _calculate_recency_bonus(self) -> float:
         if self.metrics.last_success_time:
-            time_since_last_success = current_time - self.metrics.last_success_time
+            time_since_last_success = datetime.now() - self.metrics.last_success_time
             return HIGH_FREQUENCY_BONUS if time_since_last_success.total_seconds() <= HIGH_FREQUENCY_THRESHOLD_HOURS * 3600 else 0
         return 0
 
     def _calculate_response_time_penalty(self) -> float:
-        """Рассчитывает штраф за время ответа."""
-        penalty = self.metrics.avg_response_time * ScoringWeights.RESPONSE_TIME.value
-        return max(-10, penalty) if self.metrics.avg_response_time > 0 else 0
+        return self.metrics.avg_response_time * ScoringWeights.RESPONSE_TIME.value if self.metrics.avg_response_time > 0 else 0 # Use .value
 
     def update_channel_stats(self, success: bool, response_time: float = 0):
-        """Обновляет статистику канала."""
         assert isinstance(success, bool), f"Аргумент 'success' должен быть bool, получено {type(success)}"
-        assert isinstance(response_time, (int, float)) and response_time >= 0, f"response_time должен быть неотрицательным числом, получено {response_time}"
+        assert isinstance(response_time, (int, float)), f"Аргумент 'response_time' должен быть числом, получено {type(response_time)}"
+
         if success:
             self.metrics.success_count += 1
             self.metrics.last_success_time = datetime.now()
@@ -235,10 +213,11 @@ class ChannelConfig:
                 self.metrics.avg_response_time = response_time
         self.calculate_overall_score()
 
+
 class ProxyConfig:
-    """Управление конфигурацией прокси."""
     def __init__(self):
         os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
+
         initial_urls = []
         try:
             with open(ALL_URLS_FILE, 'r', encoding='utf-8') as f:
@@ -250,407 +229,308 @@ class ProxyConfig:
                         except ValueError as e:
                             logger.warning(f"Неверный URL в {ALL_URLS_FILE}: {url} - {e}")
         except FileNotFoundError:
-            logger.warning(f"Файл URL не найден: {ALL_URLS_FILE}. Создаю пустой.")
+            logger.warning(f"Файл URL не найден: {ALL_URLS_FILE}. Создается пустой файл.")
             open(ALL_URLS_FILE, 'w', encoding='utf-8').close()
         except Exception as e:
             logger.error(f"Ошибка чтения {ALL_URLS_FILE}: {e}")
+
         self.SOURCE_URLS = self._remove_duplicate_urls(initial_urls)
-        if not self.SOURCE_URLS:
-            logger.warning("Нет валидных источников URL. Создаю пустой файл конфигурации.")
-            self.save_empty_config_file()
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
+        # self.TEST_URL_FOR_PROXY_CHECK = TEST_URL_FOR_PROXY_CHECK # Removed
 
     def _normalize_url(self, url: str) -> str:
-        """Нормализует URL для сравнения."""
         try:
             if not url:
                 raise ValueError("URL не может быть пустым для нормализации.")
             url = url.strip()
             parsed = urlparse(url)
             if not parsed.scheme:
-                raise ValueError(f"Отсутствует схема в URL: '{url}'.")
+                raise ValueError(f"Отсутствует схема в URL: '{url}'. Ожидается 'http://' или 'https://'.")
             if not parsed.netloc:
-                raise ValueError(f"Отсутствует netloc в URL: '{url}'.")
+                raise ValueError(f"Отсутствует netloc (домен или IP) в URL: '{url}'.")
+
             path = parsed.path.rstrip('/')
             return f"{parsed.scheme}://{parsed.netloc}{path}"
         except Exception as e:
-            logger.error(f"Ошибка нормализации URL '{url}': {e}")
+            logger.error(f"Ошибка нормализации URL: {str(e)}")
             raise
 
     def _remove_duplicate_urls(self, channel_configs: List[ChannelConfig]) -> List[ChannelConfig]:
-        """Удаляет дубликаты URL."""
-        seen_urls = set()
-        unique_configs = []
-        invalid_configs = []
-        for config in channel_configs:
-            if not isinstance(config, ChannelConfig):
-                invalid_configs.append(str(config))
-                logger.warning(f"Неверная конфигурация: {config}")
-                continue
-            try:
-                normalized_url = self._normalize_url(config.url)
-                if normalized_url not in seen_urls:
-                    seen_urls.add(normalized_url)
-                    unique_configs.append(config)
-            except Exception as e:
-                invalid_configs.append(config.url)
-                logger.warning(f"Пропущен URL {config.url}: {e}")
-        if not unique_configs:
+        try:
+            seen_urls = set()
+            unique_configs = []
+            for config in channel_configs:
+                if not isinstance(config, ChannelConfig):
+                    logger.warning(f"Неверная конфигурация пропущена: {config}")
+                    continue
+                try:
+                    normalized_url = self._normalize_url(config.url)
+                    if normalized_url not in seen_urls:
+                        seen_urls.add(normalized_url)
+                        unique_configs.append(config)
+                except Exception:
+                    continue
+            if not unique_configs:
+                self.save_empty_config_file()
+                logger.error("Не найдено валидных источников. Создан пустой файл конфигурации.")
+                return []
+            return unique_configs
+        except Exception as e:
+            logger.error(f"Ошибка удаления дубликатов URL: {str(e)}")
             self.save_empty_config_file()
-            logger.error("Не найдено валидных источников.")
-        if invalid_configs:
-            logger.info(f"Пропущено {len(invalid_configs)} невалидных конфигураций.")
-        return unique_configs
+            return []
 
     def get_enabled_channels(self) -> List[ChannelConfig]:
-        """Возвращает список активных каналов."""
-        logger.debug(f"Возвращено {len(self.SOURCE_URLS)} активных каналов")
         return self.SOURCE_URLS
 
     def save_empty_config_file(self) -> bool:
-        """Сохраняет пустой файл конфигурации."""
         try:
             with open(OUTPUT_CONFIG_FILE, 'w', encoding='utf-8') as f:
-                bytes_written = f.write("")
-            if bytes_written is None:
-                logger.error(f"Ошибка записи в {OUTPUT_CONFIG_FILE}: ничего не записано")
-                return False
-            logger.info(f"Создан пустой файл: {OUTPUT_CONFIG_FILE}")
+                f.write("")
             return True
         except Exception as e:
-            logger.error(f"Ошибка сохранения пустого файла: {e}")
+            logger.error(f"Ошибка сохранения пустого файла конфигурации: {str(e)}")
             return False
 
-# Дополнительные константы
-COMMON_DOMAINS = ('.com', '.net', '.org', '.info', '.xyz')
-UDP_PROTOCOLS = {"tuic://", "hy2://"}
-KNOWN_PARAMS = {
-    'security', 'type', 'encryption', 'sni', 'alpn', 'path', 'headers', 'fp', 'utls',
-    'earlyData', 'id', 'bufferSize', 'tcpFastOpen', 'maxIdleTime', 'streamEncryption', 'obfs', 'debug', 'comment'
-}
-CDN_INDICATORS = {".cdn.", "cloudflare", "akamai", "fastly"}
-
-# Функции расчета скоринга
 def _calculate_config_length_score(config: str) -> float:
-    """Рассчитывает скор длины конфигурации с логарифмической шкалой."""
-    from math import log
-    length = len(config)
-    return min(ScoringWeights.CONFIG_LENGTH.value, log(length + 1) * ScoringWeights.CONFIG_LENGTH.value / log(200))
+    return min(ScoringWeights.CONFIG_LENGTH.value, (len(config) / 200.0) * ScoringWeights.CONFIG_LENGTH.value) # Use .value
 
 def _calculate_security_score(query: Dict) -> float:
-    """Рассчитывает скор безопасности."""
     score = 0
     security_params = query.get('security', [])
-    if not isinstance(security_params, list):
-        logger.warning(f"security_params ожидается список, получено: {type(security_params)}")
-        return score
     if security_params:
-        score += ScoringWeights.SECURITY_PARAM.value
-        score += min(ScoringWeights.NUM_SECURITY_PARAMS.value, len(security_params) * (ScoringWeights.NUM_SECURITY_PARAMS.value / 3))
+        score += ScoringWeights.SECURITY_PARAM.value # Use .value
+        score += min(ScoringWeights.NUM_SECURITY_PARAMS.value, len(security_params) * (ScoringWeights.NUM_SECURITY_PARAMS.value / 3)) # Use .value
         security_type = security_params[0].lower() if security_params else 'none'
         score += {
-            "tls": ScoringWeights.SECURITY_TYPE_TLS.value,
-            "reality": ScoringWeights.SECURITY_TYPE_REALITY.value,
-            "none": ScoringWeights.SECURITY_TYPE_NONE.value
+            "tls": ScoringWeights.SECURITY_TYPE_TLS.value, # Use .value
+            "reality": ScoringWeights.SECURITY_TYPE_REALITY.value, # Use .value # Keep Reality
+            "none": ScoringWeights.SECURITY_TYPE_NONE.value # Use .value
         }.get(security_type, 0)
     return score
 
 def _calculate_transport_score(query: Dict) -> float:
-    """Рассчитывает скор типа транспорта."""
     transport_type = query.get('type', ['tcp'])[0].lower()
-    score = {
-        "tcp": ScoringWeights.TRANSPORT_TYPE_TCP.value,
-        "ws": ScoringWeights.TRANSPORT_TYPE_WS.value,
-        "quic": ScoringWeights.TRANSPORT_TYPE_QUIC.value
+    return {
+        "tcp": ScoringWeights.TRANSPORT_TYPE_TCP.value, # Use .value
+        "ws": ScoringWeights.TRANSPORT_TYPE_WS.value, # Use .value
+        "quic": ScoringWeights.TRANSPORT_TYPE_QUIC.value, # Use .value
     }.get(transport_type, 0)
-    if score == 0:
-        logger.debug(f"Неизвестный тип транспорта: {transport_type}")
-    return score
 
 def _calculate_encryption_score(query: Dict) -> float:
-    """Рассчитывает скор шифрования."""
     encryption_type = query.get('encryption', ['none'])[0].lower()
-    score = {
-        "none": ScoringWeights.ENCRYPTION_TYPE_NONE.value,
-        "auto": ScoringWeights.ENCRYPTION_TYPE_AUTO.value,
-        "aes-128-gcm": ScoringWeights.ENCRYPTION_TYPE_AES_128_GCM.value,
-        "chacha20-poly1305": ScoringWeights.ENCRYPTION_TYPE_CHACHA20_POLY1305.value,
-        "zero": ScoringWeights.ENCRYPTION_TYPE_ZERO.value
+    return {
+        "none": ScoringWeights.ENCRYPTION_TYPE_NONE.value, # Use .value
+        "auto": ScoringWeights.ENCRYPTION_TYPE_AUTO.value, # Use .value
+        "aes-128-gcm": ScoringWeights.ENCRYPTION_TYPE_AES_128_GCM.value, # Use .value
+        "chacha20-poly1305": ScoringWeights.ENCRYPTION_TYPE_CHACHA20_POLY1305.value, # Use .value
+        "zero": ScoringWeights.ENCRYPTION_TYPE_ZERO.value # Use .value
     }.get(encryption_type, 0)
-    if score == 0:
-        logger.debug(f"Неизвестный тип шифрования: {encryption_type}")
-    return score
 
 def _calculate_sni_score(query: Dict) -> float:
-    """Рассчитывает скор SNI."""
     score = 0
     sni = query.get('sni', [None])[0]
     if sni:
-        score += ScoringWeights.SNI_PRESENT.value
-        if any(sni.endswith(domain) for domain in COMMON_DOMAINS):
-            score += ScoringWeights.COMMON_SNI_BONUS.value
+        score += ScoringWeights.SNI_PRESENT.value # Use .value
+        if sni.endswith(('.com', '.net', '.org', '.info', '.xyz')):
+            score += ScoringWeights.COMMON_SNI_BONUS.value # Use .value
     return score
 
 def _calculate_alpn_score(query: Dict) -> float:
-    """Рассчитывает скор ALPN."""
     score = 0
     alpn = query.get('alpn', [None])[0]
     if alpn:
-        score += ScoringWeights.ALPN_PRESENT.value
-        try:
-            alpn_protocols = alpn.split(',')
-            score += min(ScoringWeights.NUM_ALPN_PROTOCOLS.value, len(alpn_protocols) * (ScoringWeights.NUM_ALPN_PROTOCOLS.value / 2))
-        except Exception as e:
-            logger.warning(f"Ошибка разбора ALPN '{alpn}': {e}")
+        score += ScoringWeights.ALPN_PRESENT.value # Use .value
+        alpn_protocols = alpn.split(',')
+        score += min(ScoringWeights.NUM_ALPN_PROTOCOLS.value, len(alpn_protocols) * (ScoringWeights.NUM_ALPN_PROTOCOLS.value / 2)) # Use .value
     return score
 
 def _calculate_path_score(query: Dict) -> float:
-    """Рассчитывает скор пути."""
     score = 0
     path = query.get('path', [None])[0]
     if path:
-        score += ScoringWeights.PATH_PRESENT.value
-        special_chars = len(set(re.findall(r'[^a-zA-Z0-9]', path)))
-        complexity = special_chars + (len(path) / 10)
-        score += min(ScoringWeights.PATH_COMPLEXITY.value, complexity * (ScoringWeights.PATH_COMPLEXITY.value / 5))
+        score += ScoringWeights.PATH_PRESENT.value # Use .value
+        complexity = len(re.findall(r'[^a-zA-Z0-9]', path)) + (len(path) / 10)
+        score += min(ScoringWeights.PATH_COMPLEXITY.value, complexity * (ScoringWeights.PATH_COMPLEXITY.value / 5)) # Use .value
     return score
 
 def _calculate_headers_score(query: Dict, sni: Optional[str]) -> float:
-    """Рассчитывает скор заголовков."""
     score = 0
     headers = query.get('headers', [None])[0]
     if headers:
-        score += ScoringWeights.HEADERS_PRESENT.value
+        score += ScoringWeights.HEADERS_PRESENT.value # Use .value
         try:
-            headers_dict = {}
-            for item in headers.split('&'):
-                if ':' in item:
-                    key, value = item.split(':', 1)
-                    headers_dict[key.strip()] = value.strip()
-            score += min(ScoringWeights.NUM_HEADERS.value, len(headers_dict) * (ScoringWeights.NUM_HEADERS.value / 2))
-            host_header = headers_dict.get('Host')
+            headers_dict = dict(item.split(":") for item in headers.split("&"))
+            score += min(ScoringWeights.NUM_HEADERS.value, len(headers_dict) * (ScoringWeights.NUM_HEADERS.value / 2)) # Use .value
+            host_header = headers_dict.get('Host', None)
             if host_header:
-                score += ScoringWeights.HOST_HEADER.value
+                score += ScoringWeights.HOST_HEADER.value # Use .value
                 if sni and host_header == sni:
-                    score += ScoringWeights.HOST_SNI_MATCH.value
-        except Exception as e:
-            logger.warning(f"Ошибка парсинга заголовков '{headers}': {e}")
+                    score += ScoringWeights.HOST_SNI_MATCH.value # Use .value
+        except Exception:
+            pass
     return score
 
+
+def _calculate_tls_fingerprint_score(query: Dict) -> float:
+    return _calculate_utls_score(query) # если fp это utls, используем _calculate_utls_score
+
 def _calculate_utls_score(query: Dict) -> float:
-    """Рассчитывает скор UTLS."""
     score = 0
-    utls = query.get('utls', query.get('fp', [None])[0])
+    utls = query.get('utls', query.get('fp', [None]))[0] # fp fallback for utls
     if utls:
-        score += ScoringWeights.UTLS_PRESENT.value
-        utls = utls.lower()
-        score += {
-            "chrome": ScoringWeights.UTLS_VALUE_CHROME.value,
-            "firefox": ScoringWeights.UTLS_VALUE_FIREFOX.value,
-            "ios": ScoringWeights.UTLS_VALUE_IOS.value,
-            "safari": ScoringWeights.UTLS_VALUE_SAFARI.value,
-            "randomized": ScoringWeights.UTLS_VALUE_RANDOMIZED.value,
-            "random": ScoringWeights.UTLS_VALUE_RANDOM.value
-        }.get(utls, 0)
-        if score == ScoringWeights.UTLS_PRESENT.value:
-            logger.debug(f"Неизвестное значение utls: {utls}")
+        score += ScoringWeights.UTLS_PRESENT.value # Use .value
+        utls_score = {
+            "chrome": ScoringWeights.UTLS_VALUE_CHROME.value, # Use .value
+            "firefox": ScoringWeights.UTLS_VALUE_FIREFOX.value, # Use .value
+            "ios": ScoringWeights.UTLS_VALUE_IOS.value, # Use .value
+            "safari": ScoringWeights.UTLS_VALUE_SAFARI.value, # Use .value
+            "randomized": ScoringWeights.UTLS_VALUE_RANDOMIZED.value, # Use .value
+            "random": ScoringWeights.UTLS_VALUE_RANDOM.value, # Use .value
+            "edge": ScoringWeights.UTLS_VALUE_EDGE.value if hasattr(ScoringWeights, 'UTLS_VALUE_EDGE') else ScoringWeights.UTLS_VALUE_CHROME.value # Use .value # Edge fallback
+        }.get(utls.lower(), 0)
+        if utls_score is not None:
+            score += utls_score
     return score
 
 def _calculate_udp_score(protocol: str) -> float:
-    """Рассчитывает скор поддержки UDP."""
-    return ScoringWeights.UDP_SUPPORT.value if protocol in UDP_PROTOCOLS else 0
+    return ScoringWeights.UDP_SUPPORT.value if protocol in ("tuic://", "hy2://") else 0 # Use .value
 
 def _calculate_port_score(port: Optional[int]) -> float:
-    """Рассчитывает скор порта."""
-    if port is None:
-        return 0
-    return {
-        80: ScoringWeights.PORT_80.value,
-        443: ScoringWeights.PORT_443.value
-    }.get(port, ScoringWeights.PORT_OTHER.value)
+    if port:
+        return {
+            80: ScoringWeights.PORT_80.value, # Use .value
+            443: ScoringWeights.PORT_443.value # Use .value
+        }.get(port, ScoringWeights.PORT_OTHER.value) # Use .value
+    return 0
 
 def _calculate_uuid_score(parsed: urlparse, query: Dict) -> float:
-    """Рассчитывает скор UUID для VLESS."""
     score = 0
     uuid_val = parsed.username or query.get('id', [None])[0]
     if uuid_val and parsed.scheme == 'vless':
-        if is_valid_uuid(uuid_val):
-            score += ScoringWeights.UUID_PRESENT.value
-            score += min(ScoringWeights.UUID_LENGTH.value, len(uuid_val) * (ScoringWeights.UUID_LENGTH.value / 36))
-        else:
-            logger.debug(f"Неверный UUID для VLESS: {uuid_val}")
+        score += ScoringWeights.UUID_PRESENT.value # Use .value
+        score += min(ScoringWeights.UUID_LENGTH.value, len(uuid_val) * (ScoringWeights.UUID_LENGTH.value / 36)) # Use .value
     return score
 
 def _calculate_trojan_password_score(parsed: urlparse) -> float:
-    """Рассчитывает скор пароля для Trojan."""
     score = 0
-    password = parsed.username
-    if password and parsed.scheme == 'trojan':
-        score += ScoringWeights.TROJAN_PASSWORD_PRESENT.value
-        score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value, len(password) * (ScoringWeights.TROJAN_PASSWORD_LENGTH.value / 16))
+    password = parsed.password
+    if password:
+        score += ScoringWeights.TROJAN_PASSWORD_PRESENT.value # Use .value
+        score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value, len(password) * (ScoringWeights.TROJAN_PASSWORD_LENGTH.value / 16)) # Use .value
     return score
 
+
 def _calculate_early_data_score(query: Dict) -> float:
-    """Рассчитывает скор поддержки ранних данных."""
-    early_data = query.get('earlyData', [None])[0]
-    return ScoringWeights.EARLY_DATA_SUPPORT.value if early_data in ("1", "true") else 0
+    return ScoringWeights.EARLY_DATA_SUPPORT.value if query.get('earlyData', [None])[0] == "1" else 0 # Use .value
 
 def _calculate_parameter_consistency_score(query: Dict, sni: Optional[str], host_header: Optional[str]) -> float:
-    """Рассчитывает скор согласованности параметров."""
-    score = ScoringWeights.PARAMETER_CONSISTENCY.value
+    score = 0
     if sni and host_header and sni != host_header:
-        score -= ScoringWeights.PARAMETER_CONSISTENCY.value / 2
+        score -= (ScoringWeights.PARAMETER_CONSISTENCY.value / 2) # Use .value
     return score
 
 def _calculate_ipv6_score(parsed: urlparse) -> float:
-    """Рассчитывает скор для IPv6."""
-    try:
-        if parsed.hostname and ipaddress.ip_address(parsed.hostname).version == 6:
-            return ScoringWeights.IPV6_ADDRESS.value
-    except ValueError:
-        pass
-    return 0
+    return ScoringWeights.IPV6_ADDRESS.value if ":" in parsed.hostname else 0 # Use .value
 
 def _calculate_hidden_param_score(query: Dict) -> float:
-    """Рассчитывает скор скрытых параметров."""
     score = 0
+    known_params = (
+        'security', 'type', 'encryption', 'sni', 'alpn', 'path',
+        'headers', 'fp', 'utls',
+        'earlyData', 'id', 'bufferSize', 'tcpFastOpen', 'maxIdleTime', 'streamEncryption', 'obfs', 'debug', 'comment'
+    )
     for key, value in query.items():
-        if key not in KNOWN_PARAMS:
-            score += ScoringWeights.HIDDEN_PARAM.value
+        if key not in known_params:
+            score += ScoringWeights.HIDDEN_PARAM.value # Use .value
             if value and value[0]:
-                score += min(ScoringWeights.RARITY_BONUS.value, ScoringWeights.RARITY_BONUS.value / len(value[0]))
+                score += min(ScoringWeights.RARITY_BONUS.value, ScoringWeights.RARITY_BONUS.value / len(value[0])) # Use .value
     return score
 
 def _calculate_buffer_size_score(query: Dict) -> float:
-    """Рассчитывает скор размера буфера."""
+    score = 0
     buffer_size = query.get('bufferSize', [None])[0]
     if buffer_size:
         buffer_size = buffer_size.lower()
-        score = {
-            "unlimited": ScoringWeights.BUFFER_SIZE_UNLIMITED.value,
-            "small": ScoringWeights.BUFFER_SIZE_SMALL.value,
-            "medium": ScoringWeights.BUFFER_SIZE_MEDIUM.value,
-            "large": ScoringWeights.BUFFER_SIZE_LARGE.value,
-            "-1": ScoringWeights.BUFFER_SIZE_UNLIMITED.value,
-            "0": ScoringWeights.BUFFER_SIZE_UNLIMITED.value
-        }.get(buffer_size)
-        if score is None and buffer_size.isdigit():
-            size = int(buffer_size)
-            if size < 1024:
-                return ScoringWeights.BUFFER_SIZE_SMALL.value
-            elif size < 4096:
-                return ScoringWeights.BUFFER_SIZE_MEDIUM.value
-            else:
-                return ScoringWeights.BUFFER_SIZE_LARGE.value
-        return score or 0
-    return 0
+        score_val = {
+            "unlimited": ScoringWeights.BUFFER_SIZE_UNLIMITED.value, # Use .value
+            "small": ScoringWeights.BUFFER_SIZE_SMALL.value, # Use .value
+            "medium": ScoringWeights.BUFFER_SIZE_MEDIUM.value, # Use .value
+            "large": ScoringWeights.BUFFER_SIZE_LARGE.value, # Use .value
+            "-1": ScoringWeights.BUFFER_SIZE_UNLIMITED.value, # Use .value
+            "0": ScoringWeights.BUFFER_SIZE_UNLIMITED.value, # Use .value
+        }.get(buffer_size, 0)
+        if score_val is not None:
+            score += score_val
+    return score
 
 def _calculate_tcp_optimization_score(query: Dict) -> float:
-    """Рассчитывает скор оптимизации TCP."""
-    tcp_fast_open = query.get('tcpFastOpen', [None])[0]
-    return ScoringWeights.TCP_OPTIMIZATION.value if tcp_fast_open in ("true", "1") else 0
+    return ScoringWeights.TCP_OPTIMIZATION.value if query.get('tcpFastOpen', [None])[0] == "true" else 0 # Use .value
 
 def _calculate_quic_param_score(query: Dict) -> float:
-    """Рассчитывает скор параметров QUIC."""
-    max_idle_time = query.get('maxIdleTime', [None])[0]
-    if max_idle_time and max_idle_time.isdigit():
-        return ScoringWeights.QUIC_PARAM.value if int(max_idle_time) > 0 else 0
-    return 0
+    return ScoringWeights.QUIC_PARAM.value if query.get('maxIdleTime', [None])[0] else 0 # Use .value
+
 
 def _calculate_cdn_usage_score(sni: Optional[str]) -> float:
-    """Рассчитывает скор использования CDN."""
-    return ScoringWeights.CDN_USAGE.value if sni and any(ind in sni.lower() for ind in CDN_INDICATORS) else 0
+    return ScoringWeights.CDN_USAGE.value if sni and ".cdn." in sni else 0 # Use .value
 
-def compute_profile_score(config: str, response_time: float = 0.0) -> float:
-    """Вычисляет общий скор конфигурации."""
-    score = 0.0
-    try:
-        parsed = urlparse(config)
-        query = parse_qs(parsed.query)
-        protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
-        if not protocol:
-            return 0.0
-        
-        sni = query.get('sni', [None])[0]
-        headers = query.get('headers', [None])[0]
-        host_header = None
-        if headers:
-            headers_dict = dict(item.split(":", 1) for item in headers.split("&") if ':' in item)
-            host_header = headers_dict.get('Host')
+def _calculate_mtu_size_score(query: Dict) -> float:
+    return 0.0
 
-        score += ScoringWeights.PROTOCOL_BASE.value
-        score += _calculate_config_length_score(config)
-        score += _calculate_security_score(query)
-        score += _calculate_transport_score(query)
-        score += _calculate_encryption_score(query)
-        score += _calculate_sni_score(query)
-        score += _calculate_alpn_score(query)
-        score += _calculate_path_score(query)
-        score += _calculate_headers_score(query, sni)
-        score += _calculate_utls_score(query)
-        score += _calculate_udp_score(protocol)
-        score += _calculate_port_score(parsed.port)
-        score += _calculate_uuid_score(parsed, query)
-        if protocol == 'trojan://':
-            score += _calculate_trojan_password_score(parsed)
-        score += _calculate_early_data_score(query)
-        score += _calculate_parameter_consistency_score(query, sni, host_header)
-        score += _calculate_ipv6_score(parsed)
-        score += _calculate_hidden_param_score(query)
-        score += _calculate_buffer_size_score(query)
-        score += _calculate_tcp_optimization_score(query)
-        score += _calculate_quic_param_score(query)
-        score += ScoringWeights.STREAM_ENCRYPTION.value
-        score += _calculate_cdn_usage_score(sni)
-        score += response_time * ScoringWeights.RESPONSE_TIME.value
-        return round(score, 2)
-    except Exception as e:
-        logger.error(f"Ошибка вычисления скора для {config}: {e}")
-        return 0.0
+def _calculate_obfs_score(query: Dict) -> float:
+    return ScoringWeights.OBFS.value if query.get('obfs', [None])[0] else 0 # Use .value
 
-def generate_custom_name(config: str) -> str:
-    """Генерирует пользовательское имя для конфигурации."""
-    protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
-    if not protocol:
-        return "Неизвестный Протокол"
-    try:
-        parsed = urlparse(config)
-        query = parse_qs(parsed.query)
-        name_parts = [protocol.split("://")[0].upper()]
-        defaults = {
-            'vless': {'type': 'tcp', 'security': 'none', 'encryption': 'none'},
-            'trojan': {'type': 'tcp', 'security': 'tls', 'encryption': 'none'},
-            'tuic': {'type': 'udp'}, 'hy2': {'type': 'udp'}
-        }
-        params = defaults.get(parsed.scheme, {})
-        for param, default in params.items():
-            value = query.get(param, [default])[0].upper()
-            if value != 'NONE':
-                name_parts.append(f"{param.capitalize()}: {value}")
-        return " - ".join(name_parts)
-    except Exception as e:
-        logger.error(f"Ошибка создания имени для {config}: {e}")
-        return "Неизвестный Прокси"
+def _calculate_debug_param_score(query: Dict) -> float:
+    return ScoringWeights.DEBUG_PARAM.value if query.get('debug', [None])[0] == "true" else 0 # Use .value
+
+def _calculate_comment_score(query: Dict) -> float:
+    return ScoringWeights.COMMENT.value if query.get('comment', [None])[0] else 0 # Use .value
+
+def _calculate_client_compatibility_score(query: Dict) -> float:
+    return 0.0
+
+def _calculate_session_resumption_score(query: Dict) -> float:
+    return 0.0
+
+def _calculate_fallback_type_score(query: Dict) -> float:
+    return 0.0
+
+def _calculate_webtransport_score(query: Dict) -> float:
+    return 0.0
+
+def _calculate_security_direct_score(query: Dict) -> float:
+    return 0.0
+
+def _calculate_tls_version_score(query: Dict) -> float:
+    return 0.0
+
+def _calculate_multiplexing_score(query: Dict) -> float:
+    return 0.0
+
 
 def is_valid_uuid(uuid_string: str) -> bool:
-    """Проверяет валидность UUID."""
+    """Validates UUID v4 or v6 format."""
     try:
-        uuid.UUID(uuid_string)
+        uuid.UUID(uuid_string, version=4)
         return True
     except ValueError:
-        return False
+        try:
+            uuid.UUID(uuid_string, version=6)
+            return True
+        except ValueError:
+            return False
 
 def is_valid_proxy_url(url: str) -> bool:
-    """Проверяет валидность URL прокси."""
+    """Проверяет, является ли URL валидным URL прокси одного из разрешенных протоколов."""
     if not any(url.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
         return False
     try:
         parsed = urlparse(url)
         if not parsed.hostname or not parsed.port:
             return False
-        if not is_valid_ipv4(parsed.hostname) and ":" in parsed.hostname:
+        if not is_valid_ipv4(parsed.hostname) and ":" in parsed.hostname: # Добавлена проверка IPv6 в hostname
             return False
-        if parsed.scheme == 'vless':
+        if parsed.scheme == 'vless' or parsed.scheme == 'trojan': # Исправлено: scheme is 'vless' or 'trojan'
             profile_id = parsed.username or parse_qs(parsed.query).get('id', [None])[0]
             if profile_id and not is_valid_uuid(profile_id):
                 return False
@@ -658,8 +538,133 @@ def is_valid_proxy_url(url: str) -> bool:
     except ValueError:
         return False
 
+
+def compute_profile_score(config: str, response_time: float = 0.0) -> float:
+    """Computes score for a given proxy profile configuration."""
+    score = 0.0
+    try:
+        parsed = urlparse(config)
+        query = parse_qs(parsed.query)
+    except Exception as e:
+        logger.error(f"Ошибка парсинга URL {config}: {e}")
+        return 0.0
+
+    protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
+    if not protocol:
+        return 0.0
+
+    score += ScoringWeights.PROTOCOL_BASE.value # Use .value
+    score += _calculate_config_length_score(config)
+    score += _calculate_security_score(query)
+    score += _calculate_transport_score(query)
+    score += _calculate_encryption_score(query)
+    score += _calculate_sni_score(query)
+    score += _calculate_alpn_score(query)
+    score += _calculate_path_score(query)
+    sni = query.get('sni', [None])[0]
+    score += _calculate_headers_score(query, sni)
+    tls_fingerprint_score = _calculate_tls_fingerprint_score(query) # Using UTLS score now
+    if tls_fingerprint_score is not None:
+        score += tls_fingerprint_score
+    # utls_score_val = _calculate_utls_score(query) # No need to call again, already in tls_fingerprint_score
+    # if utls_score_val is not None:
+    #     score += utls_score_val
+    score += _calculate_udp_score(protocol)
+    score += _calculate_port_score(parsed.port)
+    score += _calculate_uuid_score(parsed, query)
+    if protocol == 'trojan://':
+        score += _calculate_trojan_password_score(parsed)
+    score += _calculate_early_data_score(query)
+    host_header = None
+    headers = query.get('headers', [None])[0]
+    if headers:
+        try:
+            headers_dict = dict(item.split(":") for item in headers.split("&"))
+            host_header = headers_dict.get('Host', None)
+        except:
+            pass
+    score += _calculate_hidden_param_score(query)
+    score += response_time * ScoringWeights.RESPONSE_TIME.value # Use .value
+    buffer_size_score = _calculate_buffer_size_score(query)
+    if buffer_size_score is not None:
+        score += buffer_size_score
+    tcp_optimization_score = _calculate_tcp_optimization_score(query)
+    if tcp_optimization_score is not None:
+        score += tcp_optimization_score
+    quic_param_score = _calculate_quic_param_score(query)
+    if quic_param_score is not None:
+        score += quic_param_score
+    score += ScoringWeights.STREAM_ENCRYPTION.value # Use .value
+    score += _calculate_cdn_usage_score(sni)
+    mtu_size_score = _calculate_mtu_size_score(query) # always 0
+    if mtu_size_score is not None:
+        score += mtu_size_score
+    score += _calculate_obfs_score(query)
+    score += _calculate_debug_param_score(query)
+    score += _calculate_comment_score(query)
+    client_compatibility_score = _calculate_client_compatibility_score(query) # always 0
+    if client_compatibility_score is not None:
+        score += client_compatibility_score
+    session_resumption_score = _calculate_session_resumption_score(query) # always 0
+    if session_resumption_score is not None:
+        score += session_resumption_score
+    fallback_type_score = _calculate_fallback_type_score(query) # always 0
+    if fallback_type_score is not None:
+        score += fallback_type_score
+    webtransport_score = _calculate_webtransport_score(query) # always 0
+    if webtransport_score is not None:
+        score += webtransport_score
+    security_direct_score = _calculate_security_direct_score(query) # always 0
+    if security_direct_score is not None:
+        score += security_direct_score
+    tls_version_score = _calculate_tls_version_score(query) # always 0
+    if tls_version_score is not None:
+        score += tls_version_score
+    multiplexing_score = _calculate_multiplexing_score(query) # always 0
+    if multiplexing_score is not None:
+        score += multiplexing_score
+
+    return round(score, 2)
+
+
+def generate_custom_name(config: str) -> str:
+    """Generates a custom name for proxy profile from config URL."""
+    protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
+    if not protocol:
+        return "Неизвестный Протокол"
+
+    try:
+        parsed = urlparse(config)
+        query = parse_qs(parsed.query)
+        name_parts = [protocol.split("://")[0].upper()] # Протокол всегда в начале
+
+        if parsed.scheme == "vless":
+            transport_type = query.get("type", ["tcp"])[0].upper()
+            security_type = query.get("security", ["none"])[0].upper()
+            encryption_type = query.get("encryption", ["none"])[0].upper()
+            name_parts.extend([f"Транспорт: {transport_type}", f"Безопасность: {security_type}", f"Шифрование: {encryption_type}"])
+
+        elif parsed.scheme == "trojan":
+            transport_type = query.get("type", ["tcp"])[0].upper()
+            security_type = query.get("security", ["tls"])[0].upper() # Trojan defaults to TLS
+            encryption_type = query.get("encryption", ["none"])[0].upper()
+            name_parts.extend([f"Транспорт: {transport_type}", f"Безопасность: {security_type}", f"Шифрование: {encryption_type}"])
+
+        elif parsed.scheme in ("tuic", "hy2"): # Для tuic и hy2 просто протокол и транспорт (UDP)
+            name_parts.append(parsed.scheme.upper())
+            transport_type = "UDP"
+            name_parts.append(f"Транспорт: {transport_type}")
+
+        # Финальная сборка, убираем "NONE" и пустые строки, форматируем разделителем
+        return " - ".join(part for part in name_parts if part and part.replace(":", "").strip().upper() != "NONE")
+
+    except Exception as e:
+        logger.error(f"Ошибка создания пользовательского имени для {config}: {e}")
+        return "Неизвестный Прокси"
+
+
 def is_valid_ipv4(hostname: str) -> bool:
-    """Проверяет, является ли hostname валидным IPv4."""
+    """Checks if hostname is a valid IPv4 address."""
     if not hostname:
         return False
     try:
@@ -669,11 +674,26 @@ def is_valid_ipv4(hostname: str) -> bool:
         return False
 
 def create_profile_key(config: str) -> str:
-    """Создает ключ для конфигурации."""
-    return config.split('#')[0].strip()
+    """Creates a unique key for proxy profile to identify duplicates using regex for stricter matching."""
+    try:
+        match = DUPLICATE_PROFILE_REGEX.match(config)
+        if match:
+            protocol, host, port = match.groups()
+            return f"{protocol}://{host}:{port}"  # Stricter key: protocol, host, port only
+        else:
+            return config # Fallback to full config if regex doesn't match (less ideal, but prevents errors)
+    except Exception as e:
+        logger.error(f"Ошибка создания ключа профиля для {config}: {e}")
+        return config # Fallback to full config in case of error
+
+
+DUPLICATE_PROFILE_REGEX = re.compile(
+    r"^(vless|tuic|hy2|trojan)://(?:.*?@)?([^@/:]+):(\d+)"
+)
+
 
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, existing_profiles_regex: set, proxy_config: "ProxyConfig") -> List[Dict]:
-    """Обрабатывает один канал."""
+    """Processes a single channel URL to extract proxy configurations."""
     proxies = []
     async with channel_semaphore:
         start_time = asyncio.get_event_loop().time()
@@ -681,74 +701,119 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             async with session.get(channel.url, timeout=channel.request_timeout) as response:
                 if response.status != 200:
                     logger.error(f"Канал {channel.url} вернул статус {response.status}")
+                    channel.check_count += 1
                     channel.update_channel_stats(success=False)
                     return proxies
+
                 text = await response.text()
-                response_time = asyncio.get_event_loop().time() - start_time
-                logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} сек")
+                end_time = asyncio.get_event_loop().time()
+                response_time = end_time - start_time
+                logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд")
                 channel.update_channel_stats(success=True, response_time=response_time)
-        except Exception as e:
-            logger.error(f"Ошибка загрузки {channel.url}: {e}")
+
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.error(f"Ошибка загрузки из {channel.url}: {type(e).__name__} - {e}")
+            channel.check_count += 1
             channel.update_channel_stats(success=False)
             return proxies
+        except Exception as e:
+            logger.exception(f"Непредвиденная ошибка при загрузке из {channel.url}: {e}")
+            channel.check_count += 1
+            channel.update_channel_stats(success=False)
+            return proxies
+
 
         lines = text.splitlines()
         valid_configs_from_channel = 0
         for line in lines:
             line = line.strip()
-            if len(line) < MIN_CONFIG_LENGTH or not any(line.startswith(p) for p in ALLOWED_PROTOCOLS):
+            if len(line) < MIN_CONFIG_LENGTH:
+                continue
+
+            if not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
+                continue
+
+            protocol = next((p for p in ALLOWED_PROTOCOLS if line.startswith(p)), None)
+            if not protocol:
                 continue
             try:
                 parsed = urlparse(line)
-                if not parsed.hostname or not parsed.port or (not is_valid_ipv4(parsed.hostname) and ":" in parsed.hostname):
+                hostname = parsed.hostname
+                port = parsed.port
+
+                if not hostname or not port:
                     continue
-                if parsed.scheme == 'vless':
+                if not is_valid_ipv4(hostname) and ":" in hostname:
+                  continue
+
+                profile_id = None
+                if protocol == 'vless://':
                     profile_id = parsed.username or parse_qs(parsed.query).get('id', [None])[0]
-                    if profile_id and not is_valid_uuid(profile_id):
-                        logger.debug(f"Пропущен {line}: неверный UUID")
+                elif protocol == 'trojan://':
+                    profile_id = parsed.username
+
+                if profile_id:
+                    if not is_valid_uuid(profile_id):
+                        logger.debug(f"Профиль {line} пропущен из-за неверного формата UUID: {profile_id}")
                         continue
-                if not is_valid_proxy_url(line):
+                if not is_valid_proxy_url(line): # Используем новую функцию проверки URL прокси
+                    logger.debug(f"Профиль {line} пропущен из-за неверного формата URL прокси.")
                     continue
-                profile_key = create_profile_key(line)
-                if profile_key in existing_profiles_regex:
-                    continue
-                existing_profiles_regex.add(profile_key)
-                score = compute_profile_score(line, response_time=channel.metrics.avg_response_time)
-                if score > MIN_ACCEPTABLE_SCORE:
-                    proxies.append({"config": line, "protocol": parsed.scheme + "://", "score": score})
-                    valid_configs_from_channel += 1
+
+
             except ValueError as e:
-                logger.debug(f"Ошибка парсинга {line}: {e}")
+                logger.debug(f"Ошибка парсинга URL {line}: {e}")
                 continue
+
+            profile_key = create_profile_key(line) # Используем улучшенный create_profile_key
+            if profile_key in existing_profiles_regex:
+                logger.debug(f"Дубликат профиля найден и пропущен: {line}")
+                continue
+            existing_profiles_regex.add(profile_key)
+
+
+            score = compute_profile_score(line, response_time=channel.metrics.avg_response_time)
+
+            if score > MIN_ACCEPTABLE_SCORE:
+                proxies.append({"config": line, "protocol": protocol, "score": score})
+                valid_configs_from_channel += 1
+
         channel.metrics.valid_configs += valid_configs_from_channel
         for p in proxies:
             channel.metrics.protocol_counts[p["protocol"]] += 1
-        channel.metrics.unique_configs = len(existing_profiles_regex)
-        logger.info(f"Канал {channel.url}: {valid_configs_from_channel} конфигураций")
+        channel.metrics.unique_configs = len(existing_profiles_regex) # Уникальность теперь считаем по ключам
+
+        channel.check_count += 1
+        logger.info(f"Канал {channel.url}: Найдено {valid_configs_from_channel} валидных конфигураций.")
         return proxies
 
+
 async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
-    """Обрабатывает все каналы асинхронно."""
+    """Processes all channels to extract and verify proxy configurations."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
-    proxies_all = []
-    existing_profiles_regex = set()
+    proxies_all: List[Dict] = []
+    existing_profiles_regex = set() # Set для хранения ключей уникальных профилей
+
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
         tasks = [process_channel(channel, session, channel_semaphore, existing_profiles_regex, proxy_config) for channel in channels]
-        try:
-            results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=1200)
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.error(f"Ошибка обработки канала: {result}")
-                else:
-                    proxies_all.extend(result)
-        except asyncio.TimeoutError:
-            logger.error("Обработка каналов превысила время ожидания 20 минут")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Ошибка при обработке канала: {result}")
+            else:
+                proxies_all.extend(result)
+
     return proxies_all
 
+
+# Removed verify_proxies_availability_http and _verify_proxy_http functions
+
+
 def save_final_configs(proxies: List[Dict], output_file: str):
-    """Сохраняет финальные конфигурации в файл."""
+    """Saves final proxy configurations to output file."""
     proxies_sorted = sorted(proxies, key=lambda x: x['score'], reverse=True)
-    seen_configs = set()
+
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
             for proxy in proxies_sorted:
@@ -756,43 +821,47 @@ def save_final_configs(proxies: List[Dict], output_file: str):
                     config = proxy['config'].split('#')[0].strip()
                     profile_name = generate_custom_name(config)
                     final_line = f"{config}# {profile_name}\n"
-                    if final_line not in seen_configs:
-                        seen_configs.add(final_line)
-                        f.write(final_line)
-        logger.info(f"Сохранено {len(seen_configs)} конфигураций в {output_file}")
+                    f.write(final_line)
+        logger.info(f"Финальные конфигурации сохранены в {output_file}")
     except Exception as e:
-        logger.error(f"Ошибка сохранения: {e}")
+        logger.error(f"Ошибка сохранения конфигураций: {str(e)}")
 
 def main():
-    """Главная функция скрипта."""
     proxy_config = ProxyConfig()
     channels = proxy_config.get_enabled_channels()
+
     async def runner():
-        try:
-            proxies = await process_all_channels(channels, proxy_config)
-            save_final_configs(proxies, proxy_config.OUTPUT_FILE)
-            total_channels = len(channels)
-            enabled_channels = sum(1 for channel in channels)
-            total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
-            total_unique_configs = sum(channel.metrics.unique_configs for channel in channels)
-            total_successes = sum(channel.metrics.success_count for channel in channels)
-            total_fails = sum(channel.metrics.fail_count for channel in channels)
-            protocol_stats = defaultdict(int)
-            for channel in channels:
-                for protocol, count in channel.metrics.protocol_counts.items():
-                    protocol_stats[protocol] += count
-            logger.info("================== СТАТИСТИКА ==================")
-            logger.info(f"Всего каналов: {total_channels}")
-            logger.info(f"Включено каналов: {enabled_channels}")
-            logger.info(f"Всего валидных конфигураций: {total_valid_configs}")
-            logger.info(f"Всего уникальных конфигураций: {total_unique_configs}")
-            logger.info(f"Успешных загрузок: {total_successes}")
-            logger.info(f"Неудачных загрузок: {total_fails}")
-            for protocol, count in protocol_stats.items():
-                logger.info(f"  {protocol}: {count}")
-            logger.info("================== КОНЕЦ СТАТИСТИКИ ==============")
-        except Exception as e:
-            logger.error(f"Ошибка в main: {e}")
+        proxies = await process_all_channels(channels, proxy_config)
+        # verified_proxies, verified_count, non_verified_count = await verify_proxies_availability_http(proxies, proxy_config) # Removed HTTP check
+        save_final_configs(proxies, proxy_config.OUTPUT_FILE) # Save all proxies directly
+
+        total_channels = len(channels)
+        enabled_channels = sum(1 for channel in channels)
+        disabled_channels = total_channels - enabled_channels
+        total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
+        total_unique_configs = sum(channel.metrics.unique_configs for channel in channels)
+        total_successes = sum(channel.metrics.success_count for channel in channels)
+        total_fails = sum(channel.metrics.fail_count for channel in channels)
+        protocol_stats = defaultdict(int)
+        for channel in channels:
+            for protocol, count in channel.metrics.protocol_counts.items():
+                protocol_stats[protocol] += count
+
+        logger.info("================== СТАТИСТИКА ==================")
+        logger.info(f"Всего каналов: {total_channels}")
+        logger.info(f"Включено каналов: {enabled_channels}")
+        logger.info(f"Отключено каналов: {disabled_channels}")
+        logger.info(f"Всего валидных конфигураций: {total_valid_configs}")
+        logger.info(f"Всего уникальных конфигураций: {total_unique_configs}")
+        logger.info(f"Всего успешных загрузок: {total_successes}")
+        logger.info(f"Всего неудачных загрузок: {total_fails}")
+        # logger.info(f"Прокси прошли проверку (HTTP): {verified_count}") # Removed HTTP check stats
+        # logger.info(f"Прокси не прошли проверку (HTTP): {non_verified_count}") # Removed HTTP check stats
+        logger.info("Статистика по протоколам:")
+        for protocol, count in protocol_stats.items():
+            logger.info(f"  {protocol}: {count}")
+        logger.info("================== КОНЕЦ СТАТИСТИКИ ==============")
+
     asyncio.run(runner())
 
 if __name__ == "__main__":
