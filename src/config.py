@@ -580,7 +580,7 @@ def _calculate_common_score(parsed: urlparse, query: Dict, loaded_weights: Dict)
         score += loaded_weights.get("COMMON_IPV6", ScoringWeights.COMMON_IPV6.value)
 
     # --- CDN ---
-    if _get_value(query, 'sni') and '.cdn.' in _get_value, 'sni'):
+    if _get_value(query, 'sni') and '.cdn.' in _get_value(query, 'sni'):
         score += loaded_weights.get("COMMON_CDN", ScoringWeights.COMMON_CDN.value)
 
     # --- OBFS ---
