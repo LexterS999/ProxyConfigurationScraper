@@ -33,7 +33,7 @@ logger.setLevel(logging.INFO) # Устанавливаем уровень по �
 
 # Создаем обработчик для записи в файл
 file_handler = logging.FileHandler('proxy_checker.log', encoding='utf-8')
-file_handler.setLevel(logging.INFO) # Устанавливаем уровень
+file_handler.setLevel(logging.WARNING) # Устанавливаем уровень - ВАЖНО: изменено на WARNING для уменьшения verbosity
 
 # Создаем форматтер
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(process)s - %(message)s')
@@ -1067,6 +1067,11 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
     """Парсит строку конфигурации и возвращает объект соответствующего класса."""
     try:
         parsed = urlparse(config_string)
+
+        # Проверка: хост должен быть IP-адресом
+        if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
+            return None  # Игнорируем профили с доменами в хосте
+
         query = parse_qs(parsed.query)
 
         if parsed.scheme == "vless":
@@ -1134,7 +1139,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             channel.update_channel_stats(success=False)
             return []
 
-        logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд")
+        logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд") # Keep info for channel download
         channel.update_channel_stats(success=True, response_time=response_time)
 
         lines = text.splitlines()
@@ -1163,7 +1168,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
         channel.metrics.valid_configs += len(proxies)
         channel.metrics.unique_configs = len(unique_configs) #Спорный момент
         channel.check_count += 1
-        logger.info(f"Канал {channel.url}: Найдено {len(proxies)} валидных конфигураций.")
+        logger.info(f"Канал {channel.url}: Найдено {len(proxies)} валидных конфигураций.") # Keep info for valid configs per channel
         return proxies
 
 
@@ -1176,10 +1181,10 @@ async def process_single_proxy(line: str, channel: ChannelConfig, unique_configs
         config_obj = await parse_config(line, proxy_config.resolver)
 
         if config_obj is None:
-            return None
+            return None # Пропускаем профили с доменами, без логирования
 
         if config_obj in unique_configs:
-            logger.debug(f"Дубликат профиля найден и пропущен: {line}")
+            logger.debug(f"Дубликат профиля найден и пропущен: {line}") # Keep debug for duplicate
             return None
         unique_configs.add(config_obj)
 
