@@ -489,25 +489,26 @@ def _get_value(query: Dict, key: str, default_value: Any = None) -> Any:
 @dataclass(frozen=True)
 class VlessConfig:
     uuid: str
-    address: str
+    address: str  # Теперь хранит IP адрес, а не hostname
     port: int
     security: str
     transport: str
     encryption: str
     sni: Optional[str] = None
-    alpn: Optional[Tuple[str, ...]] = None  # Изменено: List[str] -> Tuple[str, ...]
+    alpn: Optional[Tuple[str, ...]] = None
     path: Optional[str] = None
     early_data: Optional[bool] = None
     utls: Optional[str] = None
     obfs: Optional[str] = None
     headers: Optional[Dict[str,str]] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now) # Добавил
+    first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
         return hash(astuple(self))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "VlessConfig":
+        # РЕЗОЛВИМ АДРЕС ПЕРЕД СОЗДАНИЕМ ОБЪЕКТА
         address = await resolve_address(parsed_url.hostname, resolver)
 
         # Обработка headers (парсинг JSON строки)
@@ -520,15 +521,13 @@ class VlessConfig:
                     raise ValueError("Headers must be a JSON object")
             except (json.JSONDecodeError, ValueError) as e:
                 logger.warning(f"Invalid headers format: {headers_str} - {e}. Ignoring headers.")
-                headers = None # Игнорируем если ошибка
+                headers = None
 
-
-        # Изменено: Сортируем и преобразуем в tuple
         alpn = tuple(sorted(query.get('alpn', []))) if 'alpn' in query else None
 
         return cls(
             uuid=parsed_url.username,
-            address=address,
+            address=address,  # Передаем IP адрес
             port=parsed_url.port,
             security=query.get('security', ['none'])[0].lower(),
             transport=query.get('type', ['tcp'])[0].lower(),
@@ -537,7 +536,7 @@ class VlessConfig:
             alpn=alpn,
             path=query.get('path', [None])[0],
             early_data=_get_value(query, 'earlyData') == '1',
-            utls=query.get('utls', [None])[0] or query.get('fp', [None])[0],
+            utls=_get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
             obfs = query.get('obfs',[None])[0],
             headers=headers,
             first_seen = datetime.now()
@@ -547,22 +546,23 @@ class VlessConfig:
 class SSConfig:
     method: str
     password: str
-    address: str
+    address: str  # Теперь хранит IP адрес
     port: int
     plugin: Optional[str] = None
     obfs:Optional[str] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now) #Добавил
+    first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
         return hash(astuple(self))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "SSConfig":
+        # РЕЗОЛВИМ АДРЕС ПЕРЕД СОЗДАНИЕМ ОБЪЕКТА
         address = await resolve_address(parsed_url.hostname, resolver)
         return cls(
             method=parsed_url.username.lower() if parsed_url.username else 'none',
             password=parsed_url.password,
-            address=address,
+            address=address,  # Передаем IP адрес
             port=parsed_url.port,
             plugin=query.get('plugin', [None])[0],
             obfs = query.get('obfs',[None])[0],
@@ -572,24 +572,26 @@ class SSConfig:
 @dataclass(frozen=True)
 class TrojanConfig:
     password: str
-    address: str
+    address: str # IP
     port: int
     security: str
     transport: str
     sni: Optional[str] = None
-    alpn: Optional[Tuple[str, ...]] = None  # Изменено: List[str] -> Tuple[str, ...]
+    alpn: Optional[Tuple[str, ...]] = None
     early_data: Optional[bool] = None
     utls: Optional[str] = None
     obfs: Optional[str] = None
     headers: Optional[Dict[str,str]] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now) # Добавил
+    first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
         return hash(astuple(self))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "TrojanConfig":
+        # РЕЗОЛВИМ ДОМЕН В IP *ПЕРЕД* СОЗДАНИЕМ ОБЪЕКТА
         address = await resolve_address(parsed_url.hostname, resolver)
+
         headers_str = _get_value(query, "headers")
         headers = None
         if headers_str:
@@ -601,12 +603,11 @@ class TrojanConfig:
                 logger.warning(f"Invalid headers format, ignoring: {headers_str}")
                 headers = None
 
-        # Изменено: Сортируем и преобразуем в tuple
         alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
 
         return cls(
             password=parsed_url.password,
-            address=address,
+            address=address, # Передаем IP
             port=parsed_url.port,
             security=_get_value(query, 'security', 'tls').lower(),
             transport=_get_value(query, 'type', 'tcp').lower(),
@@ -618,36 +619,37 @@ class TrojanConfig:
             headers=headers,
             first_seen=datetime.now()
         )
+
 @dataclass(frozen=True)
 class TuicConfig:
     uuid: str
-    address: str
+    address: str # IP
     port: int
     security: str
     transport: str
     congestion_control: str
     sni: Optional[str] = None
-    alpn: Optional[Tuple[str, ...]] = None  # Изменено: List[str] -> Tuple[str, ...]
+    alpn: Optional[Tuple[str, ...]] = None
     early_data: Optional[bool] = None
     udp_relay_mode: Optional[str] = None
     zero_rtt_handshake: Optional[bool] = None
     utls: Optional[str] = None
     password: Optional[str] = None
     obfs: Optional[str] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now) #Добавил
+    first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
         return hash(astuple(self))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "TuicConfig":
+        # РЕЗОЛВИМ ДОМЕН В IP *ПЕРЕД* СОЗДАНИЕМ ОБЪЕКТА
         address = await resolve_address(parsed_url.hostname, resolver)
 
-        # Изменено: Сортируем и преобразуем в tuple
         alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
         return cls(
             uuid=parsed_url.username,
-            address=address,
+            address=address, #IP
             port=parsed_url.port,
             security=_get_value(query, 'security', 'tls').lower(),
             transport=_get_value(query, 'type', 'udp').lower(),
@@ -665,27 +667,28 @@ class TuicConfig:
 
 @dataclass(frozen=True)
 class Hy2Config:
-    address: str
+    address: str  # IP
     port: int
     security: str
     transport: str
     sni: Optional[str] = None
-    alpn: Optional[Tuple[str, ...]] = None  # Изменено: List[str] -> Tuple[str, ...]
+    alpn: Optional[Tuple[str, ...]] = None
     early_data: Optional[bool] = None
     pmtud: Optional[bool] = None
     hop_interval: Optional[int] = None
     password: Optional[str] = None
     utls: Optional[str] = None
     obfs: Optional[str] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now) #Добавил
+    first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
         return hash(astuple(self))
 
-
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "Hy2Config":
+      # РЕЗОЛВИМ ДОМЕН В IP *ПЕРЕД* СОЗДАНИЕМ ОБЪЕКТА
       address = await resolve_address(parsed_url.hostname, resolver)
+
       hop_interval = _get_value(query, 'hopInterval')
       try:
           hop_interval = int(hop_interval) if hop_interval is not None else None
@@ -693,11 +696,10 @@ class Hy2Config:
           logger.warning(f"Invalid hopInterval value, using None: {hop_interval}")
           hop_interval = None
 
-      # Изменено: Сортируем и преобразуем в tuple
       alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
 
       return cls(
-            address=address,
+            address=address,  # IP
             port=parsed_url.port,
             security=_get_value(query, 'security', 'tls').lower(),
             transport=_get_value(query, 'type', 'udp').lower(),
@@ -717,7 +719,7 @@ class Hy2Config:
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
     """Резолвит доменное имя в IP-адрес (с кешированием)."""
     if is_valid_ipv4(hostname) or is_valid_ipv6(hostname):
-        return hostname
+        return hostname  # Уже IP-адрес
 
     try:
         # Используем aiodns для асинхронного разрешения
@@ -725,7 +727,7 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
         return result[0].host # Первый A-рекорд
     except aiodns.error.DNSError as e:
         logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}")
-        return hostname  # Возвращаем исходное имя
+        return hostname  # Возвращаем исходное имя, если не удалось разрешить
     except Exception as e:
         logger.warning(f"Неожиданная ошибка при резолвинге {hostname}: {e}") # Добавили обработку
         return hostname
