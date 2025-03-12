@@ -1269,7 +1269,7 @@ def main():
         # --- Конец калибровки ---
 
         save_final_configs(proxies, proxy_config.OUTPUT_FILE)
-        update_and_save_weights(channels, loaded_update_and_save_weights(channels, loaded_weights)
+        update_and_save_weights(channels, loaded_weights) # Исправленная строка
 
         total_channels = len(channels)
         enabled_channels = sum(1 for channel in channels)
