@@ -180,7 +180,7 @@ class ChannelConfig:
 class ProxyConfig:
     def __init__(self):
         os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
-        self.resolver = aiodns.DNSResolver() # Создаём резолвер
+        self.resolver = None  # Инициализируем в get_event_loop
 
         initial_urls = []
         try:
@@ -252,7 +252,8 @@ class ProxyConfig:
             logger.error(f"Ошибка сохранения пустого файла конфигурации: {e}")
             return False
 
-
+    def set_event_loop(self, loop): # Добавили метод
+        self.resolver = aiodns.DNSResolver(loop=loop)
 
 class ScoringWeights(Enum):
     """
@@ -349,6 +350,9 @@ class ScoringWeights(Enum):
         loaded_weights = {}
 
         try:
+            if not os.path.exists(file_path): # Проверяем существование
+                ScoringWeights._create_default_weights_file(file_path) # Создаем, если нет
+
             with open(file_path, 'r', encoding='utf-8') as f:
                 weights_data: Dict[str, Any] = json.load(f)
                 for name, value in weights_data.items():
@@ -371,7 +375,7 @@ class ScoringWeights(Enum):
             all_weights_loaded_successfully = False
 
         if not all_weights_loaded_successfully:
-            ScoringWeights._create_default_weights_file(file_path)
+            # ScoringWeights._create_default_weights_file(file_path) # Убрали, т.к создаем в начале
             loaded_weights = {member.name: member.value for member in ScoringWeights}
 
         return loaded_weights
@@ -688,6 +692,9 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
     except aiodns.error.DNSError as e:
         logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}")
         return hostname  # Возвращаем исходное имя
+    except Exception as e:
+        logger.warning(f"Неожиданная ошибка при резолвинге {hostname}: {e}") # Добавили обработку
+        return hostname
 
 # --- ФУНКЦИИ ПОДСЧЕТА ОЧКОВ (без изменений, но нужны для compute_profile_score) ---
 
@@ -1001,7 +1008,7 @@ def is_valid_proxy_url(url: str) -> bool:
              if parsed.username:
                  valid_methods = ['chacha20-ietf-poly1305', 'aes-256-gcm', 'aes-128-gcm', 'none']
                  if parsed.username.lower() not in valid_methods:
-                     logger.warning(f"Недопустимый метод шифрования для ss://: {parsed.username}")
+                     logger.debug(f"Недопустимый метод шифрования для ss://: {parsed.username}")  # DEBUG, не WARNING
                      return False
 
         if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
@@ -1254,6 +1261,9 @@ def main():
     loaded_weights = ScoringWeights.load_weights_from_json()
 
     async def runner():
+        loop = asyncio.get_running_loop()  # Получаем текущий event loop
+        proxy_config.set_event_loop(loop) # Передаем loop в ProxyConfig
+
         proxies = await process_all_channels(channels, proxy_config)
 
         # --- Калибровка весов ---
@@ -1269,7 +1279,7 @@ def main():
         # --- Конец калибровки ---
 
         save_final_configs(proxies, proxy_config.OUTPUT_FILE)
-        update_and_save_weights(channels, loaded_weights) # Исправленная строка
+        update_and_save_weights(channels, loaded_weights)
 
         total_channels = len(channels)
         enabled_channels = sum(1 for channel in channels)
