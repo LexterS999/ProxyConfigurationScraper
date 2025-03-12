@@ -13,3 +13,8 @@ https://raw.githubusercontent.com/MhdiTaheri/V2rayCollector/main/sub/trojan
 https://raw.githubusercontent.com/LexterS999/TG-Proxy-Parser/refs/heads/main/config-tg.txt
 https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/V2RAY.txt
 https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/all
+https://raw.githubusercontent.com/shabane/kamaji/master/hub/vless.txt
+https://raw.githubusercontent.com/shabane/kamaji/master/hub/tested/vless.txt
+https://raw.githubusercontent.com/shabane/kamaji/master/hub/tested/trojan.txt
+https://raw.githubusercontent.com/shabane/kamaji/master/hub/US.txt
+https://raw.githubusercontent.com/LalatinaHub/Mineral/refs/heads/master/result/nodes
