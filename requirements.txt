@@ -6,3 +6,5 @@ asyncio
 aiohttp
 scapy
 aiodns
+sklearn
+numpy
