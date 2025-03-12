@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Константы
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
-MIN_ACCEPTABLE_SCORE = 40.0  # Изменено: минимальный балл для записи в файл
+MIN_ACCEPTABLE_SCORE = 40.0
 MIN_CONFIG_LENGTH = 30
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://"]
 MAX_CONCURRENT_CHANNELS = 200
@@ -37,9 +37,8 @@ ALL_URLS_FILE = "all_urls.txt"
 
 # --- КРАСИВОЕ ОФОРМЛЕНИЕ НАИМЕНОВАНИЯ ПРОФИЛЕЙ ---
 class ProfileName(Enum):
-    VLESS_FORMAT = "🌌 VLESS - {transport}{security_sep}{security}{encryption_sep}{encryption}"
-    VLESS_WS_TLS_CHACHA20 = "🚀 VLESS - WS - TLS - CHACHA20"
-    # VLESS_TCP_NONE_NONE = "🐌 VLESS - TCP - NONE - NONE"  # Убрали
+    VLESS_FORMAT = "🌌 VLESS - {transport} - {security}"
+    VLESS_WS_TLS = "🚀 VLESS - WS - TLS"
     SS_FORMAT = "🎭 SS - {method}"
     SS_CHACHA20_IETF_POLY1305 = "🛡️ SS - CHACHA20-IETF-POLY1305"
     TROJAN_FORMAT = "🗡️ Trojan - {transport} - {security}"
@@ -48,7 +47,6 @@ class ProfileName(Enum):
     TUIC_WS_TLS_BBR = "🐇 TUIC - WS - TLS - BBR"
     HY2_FORMAT = "💧 HY2 - {transport} - {security}"
     HY2_UDP_TLS = "🐳 HY2 - UDP - TLS"
-    # UNKNOWN_FORMAT = "❓ Неизвестный Протокол"  # Убрали
 
 
 @dataclass
@@ -61,7 +59,7 @@ class ChannelMetrics:
     success_count: int = 0
     overall_score: float = 0.0
     protocol_counts: Dict[str, int] = field(
-        default_factory=lambda: defaultdict(int))  # Исправлено: используем default_factory
+        default_factory=lambda: defaultdict(int))
     protocol_scores: Dict[str, List[float]] = field(default_factory=lambda: defaultdict(list))
 
 
@@ -102,10 +100,6 @@ class ChannelConfig:
             recency_bonus = self._calculate_recency_bonus()
             response_time_penalty = self._calculate_response_time_penalty()
 
-            # Нормализация к 100-балльной системе.
-            # Максимальный бонус за недавнюю активность ограничен HIGH_FREQUENCY_BONUS.
-            # Время отклика может только уменьшать оценку (penalty), поэтому вычитаем его.
-
             max_possible_score = (ScoringWeights.CHANNEL_STABILITY.value + HIGH_FREQUENCY_BONUS)
             self.metrics.overall_score = round(
                 ((success_ratio * ScoringWeights.CHANNEL_STABILITY.value) + recency_bonus - response_time_penalty)
@@ -127,11 +121,8 @@ class ChannelConfig:
         return 0.0
 
     def _calculate_response_time_penalty(self) -> float:
-          # Преобразуем время отклика в "штрафные баллы" (инвертируем, чтобы большее время давало больший штраф)
         if self.metrics.avg_response_time > 0:
-            # Шкалируем, чтобы штраф был в пределах [0, 20].
-            # Например, если среднее время отклика 5 секунд, штраф будет -10.
-            max_response_time_penalty = 20 # Максимальный штраф за время
+            max_response_time_penalty = 20
             penalty = min(self.metrics.avg_response_time / 5 * max_response_time_penalty, max_response_time_penalty)
             return penalty
 
@@ -637,7 +628,7 @@ def compute_profile_score(config: str, channel_response_time: float = 0.0, loade
     score += _calculate_common_score(parsed, query, loaded_weights)  # Общие веса
     score += channel_response_time * loaded_weights.get("RESPONSE_TIME", ScoringWeights.RESPONSE_TIME.value)  # Время отклика (штраф)
 
-    # Учитываем длину конфигурации, но инвертируем, чтобы более короткие получали БОЛЬШИЙ вес
+    # Учитываем длину конфигурации
     score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
                  (200.0 / (len(config) + 1)) * loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value))
 
@@ -662,31 +653,24 @@ def compute_profile_score(config: str, channel_response_time: float = 0.0, loade
 
 
 def generate_custom_name(parsed: urlparse, query: Dict) -> str:
-    """Генерирует кастомное имя для профиля прокси."""
+    """Генерирует кастомное имя для профиля прокси, избегая 'NONE' и числовых значений."""
     if parsed.scheme == "vless":
         transport_type = query.get("type", ["tcp"])[0].upper()
         security_type = query.get("security", ["none"])[0].upper()
-        encryption_type = query.get("encryption", ["none"])[0].upper()
 
-        if transport_type == "WS" and security_type == "TLS" and encryption_type == "CHACHA20":
-            return ProfileName.VLESS_WS_TLS_CHACHA20.value
-        # elif transport_type == "TCP" and security_type == "NONE" and encryption_type == "NONE": # Убрали
-        #     return ProfileName.VLESS_TCP_NONE_NONE.value
+        if transport_type == "WS" and security_type == "TLS":
+            return ProfileName.VLESS_WS_TLS.value
         else:
-            #  "🌌 VLESS - {transport}{security_sep}{security}{encryption_sep}{encryption}"
-            security_sep = " - " if security_type != "NONE" else ""
-            encryption_sep = " - " if encryption_type != "NONE" else ""
+            #  "🌌 VLESS - {transport} - {security}"
+            security_str = "" if security_type == "NONE" else security_type
+            transport_str = "" if transport_type == "NONE" else transport_type #Добавил
 
-            return ProfileName.VLESS_FORMAT.value.format(
-                transport=transport_type,
-                security_sep=security_sep,
-                security=security_type,
-                encryption_sep=encryption_sep,
-                encryption=encryption_type
-            )
+            parts = [part for part in [transport_str, security_str] if part] # Добавил
+            return "🌌 VLESS - " + " - ".join(parts) # Добавил
+
 
     elif parsed.scheme == "ss":
-        method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")  # Экранируем
+        method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")
         if method == "CHACHA20-IETF-POLY1305":
             return ProfileName.SS_CHACHA20_IETF_POLY1305.value
         else:
@@ -698,7 +682,9 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if transport_type == "WS" and security_type == "TLS":
             return ProfileName.TROJAN_WS_TLS.value
         else:
-            return ProfileName.TROJAN_FORMAT.value.format(transport=transport_type, security=security_type)
+            security_str = "" if security_type == "NONE" else security_type  # Добавил
+            parts = [part for part in [transport_type, security_str] if part] # Добавил
+            return "🗡️ Trojan - " + " - ".join(parts) # Добавил
 
     elif parsed.scheme == "tuic":
         transport_type = query.get("type", ["udp"])[0].upper()
@@ -708,11 +694,10 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
             return ProfileName.TUIC_WS_TLS_BBR.value
         else:
-            return ProfileName.TUIC_FORMAT.value.format(
-                transport=transport_type,
-                security=security_type,
-                congestion_control=congestion_control
-            )
+            security_str = "" if security_type == "NONE" else security_type # Добавил
+
+            parts = [part for part in [transport_type, security_str, congestion_control] if part]  # Добавил
+            return "🐢 TUIC - " + " - ".join(parts)  # Добавил
 
     elif parsed.scheme == "hy2":
         transport_type = query.get("type", ["udp"])[0].upper()
@@ -721,10 +706,12 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if transport_type == "UDP" and security_type == "TLS":
             return ProfileName.HY2_UDP_TLS.value
         else:
-            return ProfileName.HY2_FORMAT.value.format(transport=transport_type, security=security_type)
+            security_str = "" if security_type == "NONE" else security_type  # Добавил
+            parts = [part for part in [transport_type, security_str] if part] # Добавил
+            return "💧 HY2 - " + " - ".join(parts) # Добавил
 
     else:
-        return f"⚠️ Unknown Protocol: {parsed.scheme}"  # информативное сообщение
+        return f"⚠️ Unknown Protocol: {parsed.scheme}"
 
 
 @functools.lru_cache(maxsize=None)
@@ -925,6 +912,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
 def save_final_configs(proxies: List[Dict], output_file: str):
     proxies_sorted = sorted(proxies, key=lambda x: x['score'], reverse=True)
+    profile_names = set()  # Добавляем множество для отслеживания уникальных имён
 
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
@@ -934,11 +922,21 @@ def save_final_configs(proxies: List[Dict], output_file: str):
                     parsed = urlparse(config)
                     query = parse_qs(parsed.query)
                     profile_name = generate_custom_name(parsed, query)
-                    final_line = f"{config}# {profile_name} - Score: {proxy['score']:.2f}\n" # Добавил score
+
+                    # Проверяем уникальность имени и добавляем, если нужно, числовой суффикс
+                    base_name = profile_name
+                    suffix = 1
+                    while profile_name in profile_names:
+                        profile_name = f"{base_name} ({suffix})"
+                        suffix += 1
+                    profile_names.add(profile_name)
+
+                    final_line = f"{config}#{profile_name}\n"
                     f.write(final_line)
         logger.info(f"Финальные конфигурации сохранены в {output_file}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфигураций: {e}")
+
 
 
 def update_and_save_weights(channels: List[ChannelConfig], loaded_weights:Dict):
@@ -1017,5 +1015,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # ScoringWeights.load_weights_from_json()  # Загружаем веса -  уже в main()
     main()
