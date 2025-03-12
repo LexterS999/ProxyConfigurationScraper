@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Константы
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
-MIN_ACCEPTABLE_SCORE = 50.0
+MIN_ACCEPTABLE_SCORE = 40.0  # Изменено: минимальный балл для записи в файл
 MIN_CONFIG_LENGTH = 30
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://"]
 MAX_CONCURRENT_CHANNELS = 200
@@ -39,6 +39,7 @@ ALL_URLS_FILE = "all_urls.txt"
 class ProfileName(Enum):
     VLESS_FORMAT = "🌌 VLESS - {transport}{security_sep}{security}{encryption_sep}{encryption}"
     VLESS_WS_TLS_CHACHA20 = "🚀 VLESS - WS - TLS - CHACHA20"
+    # VLESS_TCP_NONE_NONE = "🐌 VLESS - TCP - NONE - NONE"  # Убрали
     SS_FORMAT = "🎭 SS - {method}"
     SS_CHACHA20_IETF_POLY1305 = "🛡️ SS - CHACHA20-IETF-POLY1305"
     TROJAN_FORMAT = "🗡️ Trojan - {transport} - {security}"
@@ -47,6 +48,7 @@ class ProfileName(Enum):
     TUIC_WS_TLS_BBR = "🐇 TUIC - WS - TLS - BBR"
     HY2_FORMAT = "💧 HY2 - {transport} - {security}"
     HY2_UDP_TLS = "🐳 HY2 - UDP - TLS"
+    # UNKNOWN_FORMAT = "❓ Неизвестный Протокол"  # Убрали
 
 
 @dataclass
@@ -60,6 +62,7 @@ class ChannelMetrics:
     overall_score: float = 0.0
     protocol_counts: Dict[str, int] = field(
         default_factory=lambda: defaultdict(int))  # Исправлено: используем default_factory
+    protocol_scores: Dict[str, List[float]] = field(default_factory=lambda: defaultdict(list))
 
 
 class ChannelConfig:
@@ -91,6 +94,7 @@ class ChannelConfig:
             )
         return url
 
+
     def calculate_overall_score(self):
         """Вычисляет общий рейтинг канала."""
         try:
@@ -98,10 +102,15 @@ class ChannelConfig:
             recency_bonus = self._calculate_recency_bonus()
             response_time_penalty = self._calculate_response_time_penalty()
 
-            self.metrics.overall_score = max(0, round(
-                (success_ratio * ScoringWeights.CHANNEL_STABILITY.value) +
-                recency_bonus + response_time_penalty, 2
-            ))
+            # Нормализация к 100-балльной системе.
+            # Максимальный бонус за недавнюю активность ограничен HIGH_FREQUENCY_BONUS.
+            # Время отклика может только уменьшать оценку (penalty), поэтому вычитаем его.
+
+            max_possible_score = (ScoringWeights.CHANNEL_STABILITY.value + HIGH_FREQUENCY_BONUS)
+            self.metrics.overall_score = round(
+                ((success_ratio * ScoringWeights.CHANNEL_STABILITY.value) + recency_bonus - response_time_penalty)
+                / max_possible_score * 100, 2)
+
 
         except Exception as e:
             logger.error(f"Ошибка при расчете рейтинга для {self.url}: {e}")
@@ -118,7 +127,17 @@ class ChannelConfig:
         return 0.0
 
     def _calculate_response_time_penalty(self) -> float:
-        return self.metrics.avg_response_time * ScoringWeights.RESPONSE_TIME.value if self.metrics.avg_response_time > 0 else 0.0
+          # Преобразуем время отклика в "штрафные баллы" (инвертируем, чтобы большее время давало больший штраф)
+        if self.metrics.avg_response_time > 0:
+            # Шкалируем, чтобы штраф был в пределах [0, 20].
+            # Например, если среднее время отклика 5 секунд, штраф будет -10.
+            max_response_time_penalty = 20 # Максимальный штраф за время
+            penalty = min(self.metrics.avg_response_time / 5 * max_response_time_penalty, max_response_time_penalty)
+            return penalty
+
+        else:
+            return 0.0
+
 
     def update_channel_stats(self, success: bool, response_time: float = 0.0):
         if not isinstance(success, bool):
@@ -165,6 +184,7 @@ class ProxyConfig:
 
         self.SOURCE_URLS = self._remove_duplicate_urls(initial_urls)
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
+
 
     def _normalize_url(self, url: str) -> str:
         if not url:
@@ -215,6 +235,7 @@ class ProxyConfig:
         except Exception as e:
             logger.error(f"Ошибка сохранения пустого файла конфигурации: {e}")
             return False
+
 
 
 class ScoringWeights(Enum):
@@ -305,32 +326,42 @@ class ScoringWeights(Enum):
     COMMON_HIDDEN_PARAM = 2  # Бонус за скрытые параметры
 
     @staticmethod
-    def load_weights_from_json(file_path: str = DEFAULT_SCORING_WEIGHTS_FILE) -> None:
-        all_weights_loaded_successfully = True  # Флаг
+    def load_weights_from_json(file_path: str = DEFAULT_SCORING_WEIGHTS_FILE) -> Dict[str, Any]:
+        """Загружает веса из JSON-файла и обновляет значения в ScoringWeights."""
+        all_weights_loaded_successfully = True
+        loaded_weights = {}
+
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 weights_data: Dict[str, Any] = json.load(f)
                 for name, value in weights_data.items():
                     try:
-                        if not isinstance(value, (int, float)):  # Проверка типа
-                            raise ValueError(f"Неверное значение веса (должно быть числом) для {name}: {value}")
-                        ScoringWeights[name].value = value
-                    except (KeyError, ValueError) as e:
-                        logger.warning(f"Ошибка при загрузке веса {name}: {e}. Вес проигнорирован.")
-                        all_weights_loaded_successfully = False  # Устанавливаем флаг
+                        if not isinstance(value, (int, float)):
+                            raise ValueError(f"Invalid weight value (must be a number) for {name}: {value}")
+                        # Не обновляем ScoringWeights здесь, а сохраняем для дальнейшего использования
+                        loaded_weights[name] = value
+                    except (ValueError) as e:
+                        logger.warning(f"Error loading weight {name}: {e}. Weight ignored.")
+                        all_weights_loaded_successfully = False
         except FileNotFoundError:
-            logger.warning(f"Файл весов скоринга не найден: {file_path}. Используются значения по умолчанию.")
-            all_weights_loaded_successfully = False  # Устанавливаем флаг
+            logger.warning(f"Scoring weights file not found: {file_path}. Using default values.")
+            all_weights_loaded_successfully = False
         except json.JSONDecodeError:
-            logger.error(f"Ошибка чтения JSON файла весов: {file_path}. Используются значения по умолчанию.")
+            logger.error(f"Error reading JSON scoring weights file: {file_path}. Using default values.")
             all_weights_loaded_successfully = False
         except Exception as e:
             logger.error(
-                f"Непредвиденная ошибка при загрузке весов скоринга из {file_path}: {e}. Используются значения по умолчанию.")
+                f"Unexpected error loading scoring weights from {file_path}: {e}. Using default values.")
             all_weights_loaded_successfully = False
 
+
         if not all_weights_loaded_successfully:
-            ScoringWeights._create_default_weights_file(file_path)  # Создаем файл, если были ошибки
+            ScoringWeights._create_default_weights_file(file_path)
+            # Загружаем значения по умолчанию, если не удалось загрузить из файла
+            loaded_weights = {member.name: member.value for member in ScoringWeights}
+
+        return loaded_weights
+
 
     @staticmethod
     def _create_default_weights_file(file_path: str) -> None:
@@ -339,10 +370,19 @@ class ScoringWeights(Enum):
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(default_weights, f, indent=4)
-            logger.info(f"Создан файл весов скоринга по умолчанию: {file_path}")
+            logger.info(f"Created default scoring weights file: {file_path}")
         except Exception as e:
-            logger.error(f"Ошибка создания файла весов скоринга по умолчанию: {e}")
-            # sys.exit(1)
+            logger.error(f"Error creating default scoring weights file: {e}")
+
+    @staticmethod
+    def save_weights_to_json(weights: Dict[str, float], file_path: str = DEFAULT_SCORING_WEIGHTS_FILE):
+        """Сохраняет веса (после обновления) в JSON файл."""
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(weights, f, indent=4)
+            logger.info(f"Scoring weights saved to {file_path}")
+        except Exception as e:
+            logger.error(f"Error saving scoring weights to {file_path}: {e}")
 
 
 def _get_value(query: Dict, key: str, default_value: Any = None) -> Any:
@@ -350,206 +390,206 @@ def _get_value(query: Dict, key: str, default_value: Any = None) -> Any:
     return query.get(key, (default_value,))[0]
 
 
-def _calculate_vless_score(parsed: urlparse, query: Dict) -> float:
+def _calculate_vless_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
     """Вычисляет оценку для VLESS-профиля."""
     score = 0
 
     # --- Безопасность ---
     security = _get_value(query, 'security', 'none').lower()
-    score += ScoringWeights.VLESS_SECURITY_TLS.value if security == 'tls' else ScoringWeights.VLESS_SECURITY_NONE.value
+    score += loaded_weights.get("VLESS_SECURITY_TLS", ScoringWeights.VLESS_SECURITY_TLS.value) if security == 'tls' else loaded_weights.get("VLESS_SECURITY_NONE", ScoringWeights.VLESS_SECURITY_NONE.value)
 
     # --- Транспорт ---
     transport = _get_value(query, 'type', 'tcp').lower()
-    score += ScoringWeights.VLESS_TRANSPORT_WS.value if transport == 'ws' else ScoringWeights.VLESS_TRANSPORT_TCP.value
+    score += loaded_weights.get("VLESS_TRANSPORT_WS", ScoringWeights.VLESS_TRANSPORT_WS.value) if transport == 'ws' else loaded_weights.get("VLESS_TRANSPORT_TCP", ScoringWeights.VLESS_TRANSPORT_TCP.value)
 
     # --- Шифрование ---
     encryption = _get_value(query, 'encryption', 'none').lower()
     score += {
-        'none': ScoringWeights.VLESS_ENCRYPTION_NONE.value,
-        'auto': ScoringWeights.VLESS_ENCRYPTION_AUTO.value,
-        'aes-128-gcm': ScoringWeights.VLESS_ENCRYPTION_AES_128_GCM.value,
-        'chacha20-poly1305': ScoringWeights.VLESS_ENCRYPTION_CHACHA20_POLY1305.value
+        'none': loaded_weights.get("VLESS_ENCRYPTION_NONE", ScoringWeights.VLESS_ENCRYPTION_NONE.value),
+        'auto': loaded_weights.get("VLESS_ENCRYPTION_AUTO", ScoringWeights.VLESS_ENCRYPTION_AUTO.value),
+        'aes-128-gcm': loaded_weights.get("VLESS_ENCRYPTION_AES_128_GCM", ScoringWeights.VLESS_ENCRYPTION_AES_128_GCM.value),
+        'chacha20-poly1305': loaded_weights.get("VLESS_ENCRYPTION_CHACHA20_POLY1305", ScoringWeights.VLESS_ENCRYPTION_CHACHA20_POLY1305.value)
     }.get(encryption, 0)
 
     # --- Другие параметры VLESS ---
     if parsed.username:
-        score += ScoringWeights.VLESS_UUID_PRESENT.value
+        score += loaded_weights.get("VLESS_UUID_PRESENT", ScoringWeights.VLESS_UUID_PRESENT.value)
     if _get_value(query, 'earlyData') == '1':
-        score += ScoringWeights.VLESS_EARLY_DATA.value
+        score += loaded_weights.get("VLESS_EARLY_DATA", ScoringWeights.VLESS_EARLY_DATA.value)
     if _get_value(query, 'sni'):
-        score += ScoringWeights.VLESS_SNI_PRESENT.value
+        score += loaded_weights.get("VLESS_SNI_PRESENT", ScoringWeights.VLESS_SNI_PRESENT.value)
     if _get_value(query, 'alpn'):
-        score += ScoringWeights.VLESS_ALPN_PRESENT.value
+        score += loaded_weights.get("VLESS_ALPN_PRESENT", ScoringWeights.VLESS_ALPN_PRESENT.value)
     if _get_value(query, 'path'):
-        score += ScoringWeights.VLESS_PATH_PRESENT.value
+        score += loaded_weights.get("VLESS_PATH_PRESENT", ScoringWeights.VLESS_PATH_PRESENT.value)
 
     return score
 
 
-def _calculate_ss_score(parsed: urlparse, query: Dict) -> float:
+def _calculate_ss_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
     """Вычисляет оценку для SS-профиля."""
     score = 0
 
     # --- Метод шифрования ---
     method = parsed.username.lower() if parsed.username else 'none'
     score += {
-        'chacha20-ietf-poly1305': ScoringWeights.SS_METHOD_CHACHA20_IETF_POLY1305.value,
-        'aes-256-gcm': ScoringWeights.SS_METHOD_AES_256_GCM.value,
-        'aes-128-gcm': ScoringWeights.SS_METHOD_AES_128_GCM.value,
-        'none': ScoringWeights.SS_METHOD_NONE.value
+        'chacha20-ietf-poly1305': loaded_weights.get("SS_METHOD_CHACHA20_IETF_POLY1305", ScoringWeights.SS_METHOD_CHACHA20_IETF_POLY1305.value),
+        'aes-256-gcm': loaded_weights.get("SS_METHOD_AES_256_GCM", ScoringWeights.SS_METHOD_AES_256_GCM.value),
+        'aes-128-gcm': loaded_weights.get("SS_METHOD_AES_128_GCM", ScoringWeights.SS_METHOD_AES_128_GCM.value),
+        'none': loaded_weights.get("SS_METHOD_NONE", ScoringWeights.SS_METHOD_NONE.value)
     }.get(method, 0)
 
     # --- Длина пароля ---
-    score += min(ScoringWeights.SS_PASSWORD_LENGTH.value,
-                 len(parsed.password or '') / 16 * ScoringWeights.SS_PASSWORD_LENGTH.value) if parsed.password else 0
+    score += min(loaded_weights.get("SS_PASSWORD_LENGTH", ScoringWeights.SS_PASSWORD_LENGTH.value),
+                 len(parsed.password or '') / 16 * loaded_weights.get("SS_PASSWORD_LENGTH", ScoringWeights.SS_PASSWORD_LENGTH.value)) if parsed.password else 0
 
     # --- Плагин ---
     plugin = _get_value(query, 'plugin', 'none').lower()
     if plugin != 'none':
         score += {
-            'obfs-http': ScoringWeights.SS_PLUGIN_OBFS_HTTP.value,
-            'obfs-tls': ScoringWeights.SS_PLUGIN_OBFS_TLS.value
+            'obfs-http': loaded_weights.get("SS_PLUGIN_OBFS_HTTP", ScoringWeights.SS_PLUGIN_OBFS_HTTP.value),
+            'obfs-tls': loaded_weights.get("SS_PLUGIN_OBFS_TLS", ScoringWeights.SS_PLUGIN_OBFS_TLS.value)
         }.get(plugin, 0)
     else:
-        score += ScoringWeights.SS_PLUGIN_NONE.value
+        score += loaded_weights.get("SS_PLUGIN_NONE", ScoringWeights.SS_PLUGIN_NONE.value)
 
     return score
 
 
-def _calculate_trojan_score(parsed: urlparse, query: Dict) -> float:
+def _calculate_trojan_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
     """Вычисляет оценку для Trojan-профиля."""
     score = 0
 
     # --- Безопасность ---
     security = _get_value(query, 'security', 'none').lower()  # Должен быть tls
-    score += ScoringWeights.TROJAN_SECURITY_TLS.value if security == 'tls' else 0  # Нет штрафа, просто 0
+    score += loaded_weights.get("TROJAN_SECURITY_TLS", ScoringWeights.TROJAN_SECURITY_TLS.value) if security == 'tls' else 0  # Нет штрафа, просто 0
 
     # --- Транспорт ---
     transport = _get_value(query, 'type', 'tcp').lower()
-    score += ScoringWeights.TROJAN_TRANSPORT_WS.value if transport == 'ws' else ScoringWeights.TROJAN_TRANSPORT_TCP.value
+    score += loaded_weights.get("TROJAN_TRANSPORT_WS", ScoringWeights.TROJAN_TRANSPORT_WS.value) if transport == 'ws' else loaded_weights.get("TROJAN_TRANSPORT_TCP", ScoringWeights.TROJAN_TRANSPORT_TCP.value)
 
     # --- Длина пароля ---
-    score += min(ScoringWeights.TROJAN_PASSWORD_LENGTH.value,
-                 len(parsed.password or '') / 16 * ScoringWeights.TROJAN_PASSWORD_LENGTH.value) if parsed.password else 0
+    score += min(loaded_weights.get("TROJAN_PASSWORD_LENGTH", ScoringWeights.TROJAN_PASSWORD_LENGTH.value),
+                 len(parsed.password or '') / 16 * loaded_weights.get("TROJAN_PASSWORD_LENGTH", ScoringWeights.TROJAN_PASSWORD_LENGTH.value)) if parsed.password else 0
 
     # --- Другие параметры Trojan ---
     if _get_value(query, 'sni'):
-        score += ScoringWeights.TROJAN_SNI_PRESENT.value
+        score += loaded_weights.get("TROJAN_SNI_PRESENT", ScoringWeights.TROJAN_SNI_PRESENT.value)
     if _get_value(query, 'alpn'):
-        score += ScoringWeights.TROJAN_ALPN_PRESENT.value
+        score += loaded_weights.get("TROJAN_ALPN_PRESENT", ScoringWeights.TROJAN_ALPN_PRESENT.value)
     if _get_value(query, 'earlyData') == '1':
-        score += ScoringWeights.TROJAN_EARLY_DATA.value
+        score += loaded_weights.get("TROJAN_EARLY_DATA", ScoringWeights.TROJAN_EARLY_DATA.value)
 
     return score
 
 
-def _calculate_tuic_score(parsed: urlparse, query: Dict) -> float:
+def _calculate_tuic_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
     """Вычисляет оценку для TUIC-профиля."""
     score = 0
 
     # --- Безопасность ---
     security = _get_value(query, 'security', 'none').lower()
-    score += ScoringWeights.TUIC_SECURITY_TLS.value if security == 'tls' else 0
+    score += loaded_weights.get("TUIC_SECURITY_TLS", ScoringWeights.TUIC_SECURITY_TLS.value) if security == 'tls' else 0
 
     # --- Транспорт ---
     transport = _get_value(query, 'type', 'udp').lower()  # Должен быть udp (или ws)
-    score += ScoringWeights.TUIC_TRANSPORT_WS.value if transport == 'ws' else ScoringWeights.TUIC_TRANSPORT_UDP.value
+    score += loaded_weights.get("TUIC_TRANSPORT_WS", ScoringWeights.TUIC_TRANSPORT_WS.value) if transport == 'ws' else loaded_weights.get("TUIC_TRANSPORT_UDP", ScoringWeights.TUIC_TRANSPORT_UDP.value)
 
     # --- Управление перегрузкой ---
     congestion_control = _get_value(query, 'congestion', 'bbr').lower()
     score += {
-        'bbr': ScoringWeights.TUIC_CONGESTION_CONTROL_BBR.value,
-        'cubic': ScoringWeights.TUIC_CONGESTION_CONTROL_CUBIC.value,
-        'new-reno': ScoringWeights.TUIC_CONGESTION_CONTROL_NEW_RENO.value
+        'bbr': loaded_weights.get("TUIC_CONGESTION_CONTROL_BBR", ScoringWeights.TUIC_CONGESTION_CONTROL_BBR.value),
+        'cubic': loaded_weights.get("TUIC_CONGESTION_CONTROL_CUBIC", ScoringWeights.TUIC_CONGESTION_CONTROL_CUBIC.value),
+        'new-reno': loaded_weights.get("TUIC_CONGESTION_CONTROL_NEW_RENO", ScoringWeights.TUIC_CONGESTION_CONTROL_NEW_RENO.value)
     }.get(congestion_control, 0)
 
     # --- Другие параметры TUIC ---
     if parsed.username:  # UUID
-        score += ScoringWeights.TUIC_UUID_PRESENT.value
-    score += min(ScoringWeights.TUIC_PASSWORD_LENGTH.value,
-                 len(parsed.password or '') / 16 * ScoringWeights.TUIC_PASSWORD_LENGTH.value) if parsed.password else 0
+        score += loaded_weights.get("TUIC_UUID_PRESENT", ScoringWeights.TUIC_UUID_PRESENT.value)
+    score += min(loaded_weights.get("TUIC_PASSWORD_LENGTH", ScoringWeights.TUIC_PASSWORD_LENGTH.value),
+                 len(parsed.password or '') / 16 * loaded_weights.get("TUIC_PASSWORD_LENGTH", ScoringWeights.TUIC_PASSWORD_LENGTH.value)) if parsed.password else 0
     if _get_value(query, 'sni'):
-        score += ScoringWeights.TUIC_SNI_PRESENT.value
+        score += loaded_weights.get("TUIC_SNI_PRESENT", ScoringWeights.TUIC_SNI_PRESENT.value)
     if _get_value(query, 'alpn'):
-        score += ScoringWeights.TUIC_ALPN_PRESENT.value
+        score += loaded_weights.get("TUIC_ALPN_PRESENT", ScoringWeights.TUIC_ALPN_PRESENT.value)
     if _get_value(query, 'earlyData') == '1':
-        score += ScoringWeights.TUIC_EARLY_DATA.value
+        score += loaded_weights.get("TUIC_EARLY_DATA", ScoringWeights.TUIC_EARLY_DATA.value)
     if _get_value(query, 'udp_relay_mode', 'quic').lower() == 'quic':
-        score += ScoringWeights.TUIC_UDP_RELAY_MODE.value
+        score += loaded_weights.get("TUIC_UDP_RELAY_MODE", ScoringWeights.TUIC_UDP_RELAY_MODE.value)
     if _get_value(query, 'zero_rtt_handshake') == '1':
-        score += ScoringWeights.TUIC_ZERO_RTT_HANDSHAKE.value
+        score += loaded_weights.get("TUIC_ZERO_RTT_HANDSHAKE", ScoringWeights.TUIC_ZERO_RTT_HANDSHAKE.value)
     return score
 
 
-def _calculate_hy2_score(parsed: urlparse, query: Dict) -> float:
+def _calculate_hy2_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
     """Вычисляет оценку для HY2-профиля."""
     score = 0
 
     # --- Безопасность ---
     security = _get_value(query, 'security', 'none').lower()
-    score += ScoringWeights.HY2_SECURITY_TLS.value if security == 'tls' else 0
+    score += loaded_weights.get("HY2_SECURITY_TLS", ScoringWeights.HY2_SECURITY_TLS.value) if security == 'tls' else 0
 
     # --- Транспорт ---
     transport = _get_value(query, 'type', 'udp').lower()
-    score += ScoringWeights.HY2_TRANSPORT_UDP.value if transport == 'udp' else ScoringWeights.HY2_TRANSPORT_TCP.value
+    score += loaded_weights.get("HY2_TRANSPORT_UDP", ScoringWeights.HY2_TRANSPORT_UDP.value) if transport == 'udp' else loaded_weights.get("HY2_TRANSPORT_TCP", ScoringWeights.HY2_TRANSPORT_TCP.value)
 
     # --- Другие параметры HY2 ---
-    score += min(ScoringWeights.HY2_PASSWORD_LENGTH.value,
-                 len(parsed.password or '') / 16 * ScoringWeights.HY2_PASSWORD_LENGTH.value) if parsed.password else 0
+    score += min(loaded_weights.get("HY2_PASSWORD_LENGTH", ScoringWeights.HY2_PASSWORD_LENGTH.value),
+                 len(parsed.password or '') / 16 * loaded_weights.get("HY2_PASSWORD_LENGTH", ScoringWeights.HY2_PASSWORD_LENGTH.value)) if parsed.password else 0
     if _get_value(query, 'sni'):
-        score += ScoringWeights.HY2_SNI_PRESENT.value
+        score += loaded_weights.get("HY2_SNI_PRESENT", ScoringWeights.HY2_SNI_PRESENT.value)
     if _get_value(query, 'alpn'):
-        score += ScoringWeights.HY2_ALPN_PRESENT.value
+        score += loaded_weights.get("HY2_ALPN_PRESENT", ScoringWeights.HY2_ALPN_PRESENT.value)
     if _get_value(query, 'earlyData') == '1':
-        score += ScoringWeights.HY2_EARLY_DATA.value
+        score += loaded_weights.get("HY2_EARLY_DATA", ScoringWeights.HY2_EARLY_DATA.value)
     if _get_value(query, 'pmtud') == '1':
-        score += ScoringWeights.HY2_PMTUD_ENABLED.value
+        score += loaded_weights.get("HY2_PMTUD_ENABLED", ScoringWeights.HY2_PMTUD_ENABLED.value)
 
     # hopInterval (мульти-хоп)
     hop_interval = _get_value(query, 'hopInterval', None)
     if hop_interval:
         try:
-            score += int(hop_interval) * ScoringWeights.HY2_HOP_INTERVAL.value  # Добавляем за каждый hop
+            score += int(hop_interval) * loaded_weights.get("HY2_HOP_INTERVAL", ScoringWeights.HY2_HOP_INTERVAL.value)  # Добавляем за каждый hop
         except ValueError:
             pass  # Игнорируем, если не число
 
     return score
 
 
-def _calculate_common_score(parsed: urlparse, query: Dict) -> float:
+def _calculate_common_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
     """Вычисляет общую оценку, применимую к обоим протоколам."""
     score = 0
 
     # --- Порт ---
     score += {
-        443: ScoringWeights.COMMON_PORT_443.value,
-        80: ScoringWeights.COMMON_PORT_80.value
-    }.get(parsed.port, ScoringWeights.COMMON_PORT_OTHER.value)
+        443: loaded_weights.get("COMMON_PORT_443", ScoringWeights.COMMON_PORT_443.value),
+        80: loaded_weights.get("COMMON_PORT_80", ScoringWeights.COMMON_PORT_80.value)
+    }.get(parsed.port, loaded_weights.get("COMMON_PORT_OTHER", ScoringWeights.COMMON_PORT_OTHER.value))
 
     # --- uTLS ---
     utls = _get_value(query, 'utls', None) or _get_value(query, 'fp', 'none')
     utls = utls.lower()
     score += {
-        'chrome': ScoringWeights.COMMON_UTLS_CHROME.value,
-        'firefox': ScoringWeights.COMMON_UTLS_FIREFOX.value,
-        'randomized': ScoringWeights.COMMON_UTLS_RANDOMIZED.value
-    }.get(utls, ScoringWeights.COMMON_UTLS_OTHER.value)
+        'chrome': loaded_weights.get("COMMON_UTLS_CHROME", ScoringWeights.COMMON_UTLS_CHROME.value),
+        'firefox': loaded_weights.get("COMMON_UTLS_FIREFOX", ScoringWeights.COMMON_UTLS_FIREFOX.value),
+        'randomized': loaded_weights.get("COMMON_UTLS_RANDOMIZED", ScoringWeights.COMMON_UTLS_RANDOMIZED.value)
+    }.get(utls, loaded_weights.get("COMMON_UTLS_OTHER", ScoringWeights.COMMON_UTLS_OTHER.value))
 
     # --- IPv6 ---
     if ':' in parsed.hostname:
-        score += ScoringWeights.COMMON_IPV6.value
+        score += loaded_weights.get("COMMON_IPV6", ScoringWeights.COMMON_IPV6.value)
 
     # --- CDN ---
-    if _get_value(query, 'sni') and '.cdn.' in _get_value(query, 'sni'):
-        score += ScoringWeights.COMMON_CDN.value
+    if _get_value(query, 'sni') and '.cdn.' in _get_value, 'sni'):
+        score += loaded_weights.get("COMMON_CDN", ScoringWeights.COMMON_CDN.value)
 
     # --- OBFS ---
     if _get_value(query, 'obfs'):
-        score += ScoringWeights.COMMON_OBFS.value
+        score += loaded_weights.get("COMMON_OBFS", ScoringWeights.COMMON_OBFS.value)
 
     # --- Заголовки ---
     if _get_value(query, 'headers'):
-        score += ScoringWeights.COMMON_HEADERS.value
+        score += loaded_weights.get("COMMON_HEADERS", ScoringWeights.COMMON_HEADERS.value)
 
     # --- Редкие и скрытые параметры ---
     known_params_general = (
@@ -561,19 +601,22 @@ def _calculate_common_score(parsed: urlparse, query: Dict) -> float:
 
     for key, value in query.items():
         if key not in known_params_general:
-            score += ScoringWeights.COMMON_HIDDEN_PARAM.value
+            score += loaded_weights.get("COMMON_HIDDEN_PARAM", ScoringWeights.COMMON_HIDDEN_PARAM.value)
             if value and value[0]:
-                score += min(ScoringWeights.COMMON_RARE_PARAM.value,
-                             ScoringWeights.COMMON_RARE_PARAM.value / len(value[0]))
+                score += min(loaded_weights.get("COMMON_RARE_PARAM", ScoringWeights.COMMON_RARE_PARAM.value),
+                             loaded_weights.get("COMMON_RARE_PARAM", ScoringWeights.COMMON_RARE_PARAM.value) / len(value[0]))
 
     return score
 
 
-def compute_profile_score(config: str, channel_response_time: float = 0.0) -> float:
+def compute_profile_score(config: str, channel_response_time: float = 0.0, loaded_weights: Dict = None) -> float:
     """
     Вычисляет общий рейтинг профиля (новая, переработанная функция).
     """
     parse_cache: Dict[str, Tuple[urlparse, Dict]] = {}  # Кеш
+
+    if loaded_weights is None:
+        loaded_weights = ScoringWeights.load_weights_from_json()
 
     try:
         if config in parse_cache:
@@ -590,24 +633,32 @@ def compute_profile_score(config: str, channel_response_time: float = 0.0) -> fl
     if not protocol:
         return 0.0
 
-    score = ScoringWeights.PROTOCOL_BASE.value  # Базовый вес за протокол
-    score += _calculate_common_score(parsed, query)  # Общие веса
-    score += channel_response_time * ScoringWeights.RESPONSE_TIME.value  # Время отклика (штраф)
-    score += min(ScoringWeights.CONFIG_LENGTH.value,
-                 (len(config) / 200.0) * ScoringWeights.CONFIG_LENGTH.value)
+    score = loaded_weights.get("PROTOCOL_BASE", ScoringWeights.PROTOCOL_BASE.value)  # Базовый вес за протокол
+    score += _calculate_common_score(parsed, query, loaded_weights)  # Общие веса
+    score += channel_response_time * loaded_weights.get("RESPONSE_TIME", ScoringWeights.RESPONSE_TIME.value)  # Время отклика (штраф)
+
+    # Учитываем длину конфигурации, но инвертируем, чтобы более короткие получали БОЛЬШИЙ вес
+    score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
+                 (200.0 / (len(config) + 1)) * loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value))
+
 
     if protocol == "vless://":
-        score += _calculate_vless_score(parsed, query)
+        score += _calculate_vless_score(parsed, query, loaded_weights)
     elif protocol == "ss://":
-        score += _calculate_ss_score(parsed, query)
+        score += _calculate_ss_score(parsed, query, loaded_weights)
     elif protocol == "trojan://":
-        score += _calculate_trojan_score(parsed, query)
+        score += _calculate_trojan_score(parsed, query, loaded_weights)
     elif protocol == "tuic://":
-        score += _calculate_tuic_score(parsed, query)
+        score += _calculate_tuic_score(parsed, query, loaded_weights)
     elif protocol == "hy2://":
-        score += _calculate_hy2_score(parsed, query)
+        score += _calculate_hy2_score(parsed, query, loaded_weights)
 
-    return round(score, 2)
+     # Нормализация к 100-балльной системе
+    max_possible_score = sum(weight for weight in loaded_weights.values())
+    normalized_score = (score / max_possible_score) * 100 if max_possible_score > 0 else 0.0
+
+    return round(normalized_score, 2)
+
 
 
 def generate_custom_name(parsed: urlparse, query: Dict) -> str:
@@ -651,7 +702,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
 
     elif parsed.scheme == "tuic":
         transport_type = query.get("type", ["udp"])[0].upper()
-        security_type = query.get("security", ["tls"])[0].upper
+        security_type = query.get("security", ["tls"])[0].upper()
         congestion_control = query.get("congestion", ["bbr"])[0].upper()
 
         if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
@@ -673,7 +724,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
             return ProfileName.HY2_FORMAT.value.format(transport=transport_type, security=security_type)
 
     else:
-        return f"⚠️ Unknown Protocol: {parsed.scheme}" #информативное сообщение
+        return f"⚠️ Unknown Protocol: {parsed.scheme}"  # информативное сообщение
 
 
 @functools.lru_cache(maxsize=None)
@@ -764,6 +815,8 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                           proxy_config: "ProxyConfig") -> List[Dict]:
     proxies = []
     profile_score_cache = {}
+    loaded_weights = ScoringWeights.load_weights_from_json()  # Загружаем веса
+
     async with channel_semaphore:
         start_time = asyncio.get_event_loop().time()
         try:
@@ -831,14 +884,17 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                 score = profile_score_cache[profile_key]
             else:
                 score = compute_profile_score(line,
-                                              channel_response_time=channel.metrics.avg_response_time)
+                                              channel_response_time=channel.metrics.avg_response_time,
+                                              loaded_weights=loaded_weights) # Передаем загруженные веса
                 profile_score_cache[profile_key] = score
 
             protocol = next((p for p in ALLOWED_PROTOCOLS if line.startswith(p)), None)
 
+
             if score > MIN_ACCEPTABLE_SCORE:
                 proxies.append({"config": line, "protocol": protocol, "score": score})
                 channel.metrics.protocol_counts[protocol] += 1
+                channel.metrics.protocol_scores[protocol].append(score)  # Сохраняем оценку
                 await asyncio.sleep(0)
 
         channel.metrics.valid_configs += len(proxies)
@@ -878,20 +934,58 @@ def save_final_configs(proxies: List[Dict], output_file: str):
                     parsed = urlparse(config)
                     query = parse_qs(parsed.query)
                     profile_name = generate_custom_name(parsed, query)
-                    final_line = f"{config}# {profile_name}\n"
+                    final_line = f"{config}# {profile_name} - Score: {proxy['score']:.2f}\n" # Добавил score
                     f.write(final_line)
         logger.info(f"Финальные конфигурации сохранены в {output_file}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфигураций: {e}")
 
 
+def update_and_save_weights(channels: List[ChannelConfig], loaded_weights:Dict):
+    """Обновляет веса на основе результатов обработки и сохраняет их."""
+
+    # 1. Обновление CHANNEL_STABILITY (простой пример)
+    total_success_ratio = sum(channel._calculate_success_ratio() for channel in channels) / len(channels) if channels else 0
+    # Преобразуем в проценты и ограничиваем диапазоном [0, 100]
+    loaded_weights['CHANNEL_STABILITY'] =  min(max(int(total_success_ratio * 100), 0), 100)
+
+
+    # 2. Обновление весов на основе популярности протоколов (пример)
+    protocol_counts = defaultdict(int)
+    for channel in channels:
+        for protocol, count in channel.metrics.protocol_counts.items():
+            protocol_counts[protocol] += count
+
+    total_configs = sum(protocol_counts.values())
+    for protocol, count in protocol_counts.items():
+        # Рассчитываем долю протокола от общего числа конфигураций
+        ratio = (count / total_configs) * 100 if total_configs > 0 else 0
+
+        # Пример обновления веса: увеличиваем вес для популярных, уменьшаем для непопулярных
+        if protocol == "vless":
+            loaded_weights['PROTOCOL_BASE'] = min(max(int(ratio * 5), 0), 100)  # Примерный расчёт
+        # ... аналогично для других протоколов ...
+
+    # 3. Другие обновления (пример с RESPONSE_TIME)
+    all_response_times = [channel.metrics.avg_response_time for channel in channels if channel.metrics.avg_response_time > 0]
+    if all_response_times:
+        avg_response_time_all = sum(all_response_times) / len(all_response_times)
+        # Устанавливаем штраф: чем больше среднее время отклика, тем больше штраф (в пределах разумного)
+        loaded_weights['RESPONSE_TIME'] =  min(max(int(-avg_response_time_all * 2), -50), 0)
+
+    ScoringWeights.save_weights_to_json(loaded_weights)
+
+
 def main():
     proxy_config = ProxyConfig()
     channels = proxy_config.get_enabled_channels()
+    loaded_weights = ScoringWeights.load_weights_from_json()  # Загружаем веса
 
     async def runner():
         proxies = await process_all_channels(channels, proxy_config)
         save_final_configs(proxies, proxy_config.OUTPUT_FILE)
+        update_and_save_weights(channels, loaded_weights) # Обновление весов
+
 
         total_channels = len(channels)
         enabled_channels = sum(1 for channel in channels)
@@ -923,6 +1017,5 @@ def main():
 
 
 if __name__ == "__main__":
-    ScoringWeights.load_weights_from_json()  # Загружаем веса
+    # ScoringWeights.load_weights_from_json()  # Загружаем веса -  уже в main()
     main()
-
