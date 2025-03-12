@@ -203,6 +203,7 @@ class ProxyConfig:
     def __init__(self):
         os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
         self.resolver = None  # Инициализируем в get_event_loop
+        self.failed_channels = [] # Добавляем список для хранения неработающих каналов
 
         initial_urls = []
         try:
@@ -222,7 +223,7 @@ class ProxyConfig:
 
         self.SOURCE_URLS = self._remove_duplicate_urls(initial_urls)
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
-
+        self.ALL_URLS_FILE = ALL_URLS_FILE # Сохраняем имя файла
 
     async def _normalize_url(self, url: str) -> str:
         if not url:
@@ -277,6 +278,28 @@ class ProxyConfig:
 
     def set_event_loop(self, loop): # Добавили метод
         self.resolver = aiodns.DNSResolver(loop=loop)
+
+    def remove_failed_channels_from_file(self):
+        """Удаляет URL нерабочих каналов из файла all_urls.txt."""
+        if not self.failed_channels:
+            return # Если нет нерабочих каналов, ничего не делаем
+
+        try:
+            with open(self.ALL_URLS_FILE, 'r', encoding='utf-8') as f_read:
+                lines = f_read.readlines()
+
+            updated_lines = [line for line in lines if line.strip() not in self.failed_channels]
+
+            with open(self.ALL_URLS_FILE, 'w', encoding='utf-8') as f_write:
+                f_write.writelines(updated_lines)
+
+            logger.info(f"Удалены нерабочие каналы из {self.ALL_URLS_FILE}: {', '.join(self.failed_channels)}")
+            self.failed_channels = [] # Очищаем список после удаления
+        except FileNotFoundError:
+            logger.error(f"Файл не найден: {self.ALL_URLS_FILE}. Невозможно удалить нерабочие каналы.")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении нерабочих каналов из {self.ALL_URLS_FILE}: {e}")
+
 
 class ScoringWeights(Enum):
     """
@@ -953,6 +976,8 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
     if parsed.scheme == "vless":
         transport_type = query.get("type", ["tcp"])[0].upper()
         security_type = query.get("security", ["none"])[0].upper()
+        security_str = "" # Initialize default value to fix UnboundLocalError
+        transport_str = "" # Initialize default value to fix UnboundLocalError
 
         if transport_type == "WS" and security_type == "TLS":
             return ProfileName.VLESS_WS_TLS.value
@@ -972,10 +997,13 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
     elif parsed.scheme == "trojan":
         transport_type = query.get("type", ["tcp"])[0].upper()
         security_type = query.get("security", ["tls"])[0].upper()
+        security_str = "" # Initialize default value to fix UnboundLocalError
+        transport_str = "" # Initialize default value to fix UnboundLocalError
         if transport_type == "WS" and security_type == "TLS":
             return ProfileName.TROJAN_WS_TLS.value
         else:
             security_str = "" if security_type == "NONE" else security_type
+            transport_str = "" if transport_type == "NONE" else transport_type
             parts = [part for part in [transport_str, security_str] if part]
             return "🗡️ Trojan - " + " - ".join(parts)
 
@@ -983,23 +1011,29 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         transport_type = query.get("type", ["udp"])[0].upper()
         security_type = query.get("security", ["tls"])[0].upper()
         congestion_control = query.get("congestion", ["bbr"])[0].upper()
+        security_str = "" # Initialize default value to fix UnboundLocalError
+        transport_str = "" # Initialize default value to fix UnboundLocalError
 
         if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
             return ProfileName.TUIC_WS_TLS_BBR.value
         else:
             security_str = "" if security_type == "NONE" else security_type
-            parts = [part for part in [transport_type, security_str, congestion_control] if part]
+            transport_str = "" if transport_type == "NONE" else transport_type
+            parts = [part for part in [transport_str, security_str, congestion_control] if part]
             return "🐢 TUIC - " + " - ".join(parts)
 
     elif parsed.scheme == "hy2":
         transport_type = query.get("type", ["udp"])[0].upper()
         security_type = query.get("security", ["tls"])[0].upper()
+        security_str = "" # Initialize default value to fix UnboundLocalError
+        transport_str = "" # Initialize default value to fix UnboundLocalError
 
         if transport_type == "UDP" and security_type == "TLS":
             return ProfileName.HY2_UDP_TLS.value
         else:
             security_str = "" if security_type == "NONE" else security_type
-            parts = [part for part in [transport_type, security_str] if part]
+            transport_str = "" if transport_type == "NONE" else transport_type
+            parts = [part for part in [transport_str, security_str] if part]
             return "💧 HY2 - " + " - ".join(parts)
 
     else:
@@ -1070,7 +1104,7 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
 
         # Проверка: хост должен быть IP-адресом
         if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
-            return None  # Игнорируем профили с доменами в хосте
+            return None  # Игнорируем профили с доменами, без логирования
 
         query = parse_qs(parsed.query)
 
@@ -1137,6 +1171,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             logger.error(f"Не удалось загрузить данные из {channel.url} после {MAX_RETRIES} попыток.")
             channel.check_count += 1
             channel.update_channel_stats(success=False)
+            proxy_config.failed_channels.append(channel.url) # Добавляем URL в список нерабочих каналов
             return []
 
         logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд") # Keep info for channel download
@@ -1322,6 +1357,7 @@ def main():
 
         save_final_configs(proxies, proxy_config.OUTPUT_FILE)
         update_and_save_weights(channels, loaded_weights)
+        proxy_config.remove_failed_channels_from_file() # Удаляем нерабочие каналы из файла
 
         total_channels = len(channels)
         enabled_channels = sum(1 for channel in channels)
