@@ -38,7 +38,8 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.WARNING)
+# Correcting the console handler level to INFO to display statistics
+console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
@@ -50,7 +51,7 @@ ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://"]
 MAX_CONCURRENT_CHANNELS = 200
 MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
 MAX_CONCURRENT_PROXIES_GLOBAL = 500
-REQUEST_TIMEOUT = 60
+REQUEST_TIMEOUT = 120 # Increased REQUEST_TIMEOUT to 120 seconds
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
@@ -1322,10 +1323,20 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                     response_time = end_time - start_time
                     success = True
 
-            except (aiohttp.ClientError, asyncio.TimeoutError, aiohttp.ClientResponseError) as e:
+            except aiohttp.ClientResponseError as e: # More specific logging for different errors
                 retries += 1
                 retry_delay = RETRY_DELAY_BASE * (2 ** (retries -1))
-                logger.warning(f"Ошибка загрузки из {channel.url} (попытка {retries}/{MAX_RETRIES}): {type(e).__name__} - {e}. Повтор через {retry_delay} сек.")
+                logger.warning(f"HTTP ошибка при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}): {e.status} {e.message}. Повтор через {retry_delay} сек.")
+                await asyncio.sleep(retry_delay)
+            except asyncio.TimeoutError as e: # More specific logging for different errors
+                retries += 1
+                retry_delay = RETRY_DELAY_BASE * (2 ** (retries -1))
+                logger.warning(f"Таймаут при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}). Повтор через {retry_delay} сек.")
+                await asyncio.sleep(retry_delay)
+            except aiohttp.ClientError as e: # More specific logging for different errors
+                retries += 1
+                retry_delay = RETRY_DELAY_BASE * (2 ** (retries -1))
+                logger.warning(f"Ошибка клиента aiohttp при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}): {type(e).__name__} - {e}. Повтор через {retry_delay} сек.")
                 await asyncio.sleep(retry_delay)
 
             except Exception as e:
