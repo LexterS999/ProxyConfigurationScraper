@@ -226,7 +226,8 @@ class ProxyConfig:
                 logger.warning(f"Неверная конфигурация пропущена: {config}")
                 continue
             try:
-                normalized_url = self._normalize_url(config.url) # Нормализуем
+                # Ожидаем результат асинхронной функции _normalize_url
+                normalized_url = asyncio.run(self._normalize_url(config.url)) # Исправлено: используем asyncio.run
                 if normalized_url not in seen_urls:
                     seen_urls.add(normalized_url)
                     unique_configs.append(config)
@@ -473,7 +474,7 @@ class VlessConfig:
     transport: str
     encryption: str
     sni: Optional[str] = None
-    alpn: Optional[List[str]] = None
+    alpn: Optional[Tuple[str, ...]] = None  # Изменено: List[str] -> Tuple[str, ...]
     path: Optional[str] = None
     early_data: Optional[bool] = None
     utls: Optional[str] = None
@@ -501,6 +502,9 @@ class VlessConfig:
                 headers = None # Игнорируем если ошибка
 
 
+        # Изменено: Сортируем и преобразуем в tuple
+        alpn = tuple(sorted(query.get('alpn', []))) if 'alpn' in query else None
+
         return cls(
             uuid=parsed_url.username,
             address=address,
@@ -509,7 +513,7 @@ class VlessConfig:
             transport=query.get('type', ['tcp'])[0].lower(),
             encryption=query.get('encryption', ['none'])[0].lower(),
             sni=query.get('sni', [None])[0],
-            alpn=sorted(query.get('alpn', [])) if 'alpn' in query else None,  # Сортировка
+            alpn=alpn,
             path=query.get('path', [None])[0],
             early_data=_get_value(query, 'earlyData') == '1',
             utls=query.get('utls', [None])[0] or query.get('fp', [None])[0],
@@ -552,7 +556,7 @@ class TrojanConfig:
     security: str
     transport: str
     sni: Optional[str] = None
-    alpn: Optional[List[str]] = None
+    alpn: Optional[Tuple[str, ...]] = None  # Изменено: List[str] -> Tuple[str, ...]
     early_data: Optional[bool] = None
     utls: Optional[str] = None
     obfs: Optional[str] = None
@@ -576,6 +580,9 @@ class TrojanConfig:
                 logger.warning(f"Invalid headers format, ignoring: {headers_str}")
                 headers = None
 
+        # Изменено: Сортируем и преобразуем в tuple
+        alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
+
         return cls(
             password=parsed_url.password,
             address=address,
@@ -583,7 +590,7 @@ class TrojanConfig:
             security=_get_value(query, 'security', 'tls').lower(),
             transport=_get_value(query, 'type', 'tcp').lower(),
             sni=_get_value(query, 'sni'),
-            alpn=sorted(_get_value(query, 'alpn', []).split(',')) if 'alpn' in query else None,  # Сортировка
+            alpn=alpn,
             early_data=_get_value(query, 'earlyData') == '1',
             utls=_get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
             obfs = _get_value(query, 'obfs'),
@@ -599,7 +606,7 @@ class TuicConfig:
     transport: str
     congestion_control: str
     sni: Optional[str] = None
-    alpn: Optional[List[str]] = None
+    alpn: Optional[Tuple[str, ...]] = None  # Изменено: List[str] -> Tuple[str, ...]
     early_data: Optional[bool] = None
     udp_relay_mode: Optional[str] = None
     zero_rtt_handshake: Optional[bool] = None
@@ -614,6 +621,9 @@ class TuicConfig:
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "TuicConfig":
         address = await resolve_address(parsed_url.hostname, resolver)
+
+        # Изменено: Сортируем и преобразуем в tuple
+        alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
         return cls(
             uuid=parsed_url.username,
             address=address,
@@ -622,7 +632,7 @@ class TuicConfig:
             transport=_get_value(query, 'type', 'udp').lower(),
             congestion_control=_get_value(query, 'congestion', 'bbr').lower(),
             sni=_get_value(query, 'sni'),
-            alpn=sorted(_get_value(query, 'alpn', []).split(',')) if 'alpn' in query else None,  # Сортировка
+            alpn=alpn,
             early_data=_get_value(query, 'earlyData') == '1',
             udp_relay_mode=_get_value(query, 'udp_relay_mode', 'quic').lower(),
             zero_rtt_handshake=_get_value(query, 'zero_rtt_handshake') == '1',
@@ -639,7 +649,7 @@ class Hy2Config:
     security: str
     transport: str
     sni: Optional[str] = None
-    alpn: Optional[List[str]] = None
+    alpn: Optional[Tuple[str, ...]] = None  # Изменено: List[str] -> Tuple[str, ...]
     early_data: Optional[bool] = None
     pmtud: Optional[bool] = None
     hop_interval: Optional[int] = None
@@ -662,13 +672,16 @@ class Hy2Config:
           logger.warning(f"Invalid hopInterval value, using None: {hop_interval}")
           hop_interval = None
 
+      # Изменено: Сортируем и преобразуем в tuple
+      alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
+
       return cls(
             address=address,
             port=parsed_url.port,
             security=_get_value(query, 'security', 'tls').lower(),
             transport=_get_value(query, 'type', 'udp').lower(),
             sni=_get_value(query, 'sni'),
-            alpn=sorted(_get_value(query, 'alpn', []).split(',')) if 'alpn' in query else None, #Сортировка
+            alpn=alpn,
             early_data=_get_value(query, 'earlyData') == '1',
             pmtud=_get_value(query, 'pmtud') == '1',
             hop_interval=hop_interval,
@@ -939,7 +952,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
             return ProfileName.TROJAN_WS_TLS.value
         else:
             security_str = "" if security_type == "NONE" else security_type
-            parts = [part for part in [transport_type, security_str] if part]
+            parts = [part for part in [transport_str, security_str] if part]
             return "🗡️ Trojan - " + " - ".join(parts)
 
     elif parsed.scheme == "tuic":
@@ -1307,7 +1320,7 @@ def main():
             logger.info(f"  {protocol}: {count}")
         logger.info("================== КОНЕЦ СТАТИСТИКИ ==============")
 
-    asyncio.run(runner())
+    asyncio.run(runner()) # Этой строчки не хватало в функции main()
 
 if __name__ == "__main__":
-    main()
+    main()  
