@@ -10,7 +10,7 @@ from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple, Set
-from dataclasses import dataclass, field, astuple
+from dataclasses import dataclass, field, astuple, replace
 from collections import defaultdict
 import uuid
 import numbers
@@ -204,6 +204,7 @@ class ProxyConfig:
         os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
         self.resolver = None  # Инициализируем в get_event_loop
         self.failed_channels = [] # Добавляем список для хранения неработающих каналов
+        self.processed_configs = set() # Набор для хранения обработанных конфигов
 
         initial_urls = []
         try:
@@ -990,7 +991,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
     elif parsed.scheme == "ss":
         method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")
         if method == "CHACHA20-IETF-POLY1305":
-            return ProfileName.SS_CHACHA20_IETF_POLY1305.value
+            return ProfileName.SS_CHACHa20_IETF_POLY1305.value
         else:
             return ProfileName.SS_FORMAT.value.format(method=method)
 
@@ -1219,7 +1220,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig, unique_configs
             return None # Пропускаем профили с доменами, без логирования
 
         if config_obj in unique_configs:
-            logger.debug(f"Дубликат профиля найден и пропущен: {line}") # Keep debug for duplicate
+            logger.debug(f"Дубликат профиля найден и пропущен: {line} -  {config_obj}") # Keep debug for duplicate, added config_obj for details
             return None
         unique_configs.add(config_obj)
 
@@ -1261,7 +1262,12 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
 def sort_proxies(proxies: List[Dict]) -> List[Dict]:
     """Сортирует прокси по убыванию 'полноты' конфигурации."""
-    return sorted(proxies, key=lambda x: len(astuple(x['config_obj'])), reverse=True)
+    def config_completeness(proxy_dict):
+        config_obj = proxy_dict['config_obj']
+        return sum(1 for field_value in astuple(config_obj) if field_value is not None)
+
+    return sorted(proxies, key=config_completeness, reverse=True)
+
 
 def save_final_configs(proxies: List[Dict], output_file: str):
 
@@ -1271,7 +1277,7 @@ def save_final_configs(proxies: List[Dict], output_file: str):
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
             for proxy in proxies_sorted:
-                if proxy['score'] > MIN_ACCEPTABLE_SCORE:
+                if proxy['score'] >= MIN_ACCEPTABLE_SCORE: # Исправлено условие на >=
                     config = proxy['config'].split('#')[0].strip()
                     parsed = urlparse(config)
                     query = parse_qs(parsed.query)
@@ -1284,7 +1290,7 @@ def save_final_configs(proxies: List[Dict], output_file: str):
                         suffix += 1
                     profile_names.add(profile_name)
 
-                    final_line = f"{config}#{profile_name}\n"
+                    final_line = f"{config}#{profile_name} - Score: {proxy['score']:.2f}\n" # Добавлено отображение score
                     f.write(final_line)
         logger.info(f"Финальные конфигурации сохранены в {output_file}")
     except Exception as e:
