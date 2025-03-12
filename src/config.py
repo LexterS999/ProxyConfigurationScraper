@@ -10,11 +10,12 @@ from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field  # Импортируем field
 from collections import defaultdict
 import uuid
 import numbers
 import functools
+import string  # Добавляем импорт string
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO,
@@ -53,7 +54,7 @@ class ChannelMetrics:
     fail_count: int = 0
     success_count: int = 0
     overall_score: float = 0.0
-    protocol_counts: Dict[str, int] = defaultdict(int)
+    protocol_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))  # Исправлено: используем default_factory
 
 
 class ChannelConfig:
@@ -735,4 +736,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ScoringWeights.load_weights_from_json() # Загружаем веса
     main()
