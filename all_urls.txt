@@ -17,7 +17,6 @@ https://raw.githubusercontent.com/shabane/kamaji/master/hub/vless.txt
 https://raw.githubusercontent.com/shabane/kamaji/master/hub/tested/vless.txt
 https://raw.githubusercontent.com/shabane/kamaji/master/hub/tested/trojan.txt
 https://raw.githubusercontent.com/shabane/kamaji/master/hub/US.txt
-https://raw.githubusercontent.com/LalatinaHub/Mineral/refs/heads/master/result/nodes
 https://raw.githubusercontent.com/NiREvil/vless/refs/heads/main/sub/SSTime
 https://robin.nscl.ir
 https://v2.alicivil.workers.dev/?list=4&locations=all&count=250
@@ -74,10 +73,3 @@ https://raw.githubusercontent.com/MhdiTaheri/V2rayCollector/refs/heads/main/sub/
 https://raw.githubusercontent.com/Leon406/SubCrawler/refs/heads/main/sub/share/a11
 https://raw.githubusercontent.com/Leon406/SubCrawler/refs/heads/main/sub/share/hysteria2
 https://raw.githubusercontent.com/Leon406/SubCrawler/refs/heads/main/sub/share/vless
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mci1.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mci2.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mci4.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mtn1.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mtn2.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mtn3.txt
-https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mtn4.txt
