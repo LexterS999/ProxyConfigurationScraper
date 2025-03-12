@@ -21,7 +21,6 @@ https://raw.githubusercontent.com/NiREvil/vless/refs/heads/main/sub/SSTime
 https://robin.nscl.ir
 https://v2.alicivil.workers.dev/?list=4&locations=all&count=250
 https://raw.githubusercontent.com/Proxydaemitelegram/Proxydaemi44/refs/heads/main/Proxydaemi44
-https://raw.githubusercontent.com/FRDYAK/teryak-configs/refs/heads/main/FRDYAK-pashmak
 https://raw.githubusercontent.com/ndsphonemy/proxy-sub/refs/heads/main/speed.txt
 https://join_to_channel_join.json
 https://shadowmere.xyz/api/b64sub
@@ -34,9 +33,8 @@ https://raw.githubusercontent.com/Mosifree/-FREE2CONFIG/refs/heads/main/Reality
 https://raw.githubusercontent.com/Mosifree/-FREE2CONFIG/refs/heads/main/SS
 https://github.com/ALIILAPRO/v2rayNG-Config/blob/main/server.txt
 https://raw.githubusercontent.com/Surfboardv2ray/TGParse/refs/heads/main/splitted/hysteria2
-https://raw.githubusercontent.com/bamdad23/JavidnamanIran/refs/heads/main/latest
 https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/refs/heads/main/channels/protocols/shadowsocks
-https://raw.githubusercontent.com/barry-far/V2ray-Configs/refs/heads/main/Sub1.txt [BR?]
+https://raw.githubusercontent.com/barry-far/V2ray-Configs/refs/heads/main/Sub1.txt
 https://raw.githubusercontent.com/barry-far/V2ray-Configs/refs/heads/main/Splitted-By-Protocol/ss.txt
 https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/refs/heads/main/protocols/shadowsocks
 https://raw.githubusercontent.com/AzadNetCH/Clash/refs/heads/main/AzadNet_iOS.txt
@@ -58,7 +56,6 @@ https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub6.txt
 https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub7.txt
 https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub8.txt
 https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub9.txt
-https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub10.txt
 https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/Config%20list1.txt
 https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/Config%20list2.txt
 https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/Config%20list3.txt
