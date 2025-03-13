@@ -1475,6 +1475,7 @@ def save_final_configs(proxies: List[Dict], output_file: str):
     proxies_sorted = sort_proxies(proxies)
     profile_names = set()
     unique_proxies = defaultdict(set) # Track unique proxies by protocol and (ip, port)
+    unique_proxy_count = 0
 
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
@@ -1490,6 +1491,7 @@ def save_final_configs(proxies: List[Dict], output_file: str):
 
                 if ip_port_tuple not in unique_proxies[protocol]:
                     unique_proxies[protocol].add(ip_port_tuple)
+                    unique_proxy_count += 1
 
                     query = parse_qs(parsed.query)
                     profile_name = generate_custom_name(parsed, query)
@@ -1504,6 +1506,7 @@ def save_final_configs(proxies: List[Dict], output_file: str):
                     final_line = f"{config}#{profile_name} - Score: {proxy['score']:.2f}\n"
                     f.write(final_line)
         logger.info(f"Финальные конфигурации сохранены в {output_file}. Уникальность прокси обеспечена.")
+        logger.info(f"Всего уникальных прокси сохранено: {unique_proxy_count}") # Log unique proxy count
     except Exception as e:
         logger.error(f"Ошибка сохранения конфигураций: {e}")
 
@@ -1567,8 +1570,11 @@ def main():
     proxy_config = ProxyConfig()
     channels = proxy_config.get_enabled_channels()
     loaded_weights = ScoringWeights.load_weights_from_json()
+    statistics_logged = False # Flag to prevent duplicate statistics logging
 
     async def runner():
+        nonlocal statistics_logged # Allow modification of the flag
+
         loop = asyncio.get_running_loop()
         proxy_config.set_event_loop(loop)
 
@@ -1586,29 +1592,31 @@ def main():
         update_and_save_weights(channels, loaded_weights)
         proxy_config.remove_failed_channels_from_file()
 
-        total_channels = len(channels)
-        enabled_channels = sum(1 for channel in channels)
-        disabled_channels = total_channels - enabled_channels
-        total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
-        total_successes = sum(channel.metrics.success_count for channel in channels)
-        total_fails = sum(channel.metrics.fail_count for channel in channels)
+        if not statistics_logged: # Check if statistics have already been logged
+            total_channels = len(channels)
+            enabled_channels = sum(1 for channel in channels)
+            disabled_channels = total_channels - enabled_channels
+            total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
+            total_successes = sum(channel.metrics.success_count for channel in channels)
+            total_fails = sum(channel.metrics.fail_count for channel in channels)
 
-        protocol_stats = defaultdict(int)
-        for channel in channels:
-            for protocol, count in channel.metrics.protocol_counts.items():
-                protocol_stats[protocol] += count
+            protocol_stats = defaultdict(int)
+            for channel in channels:
+                for protocol, count in channel.metrics.protocol_counts.items():
+                    protocol_stats[protocol] += count
 
-        logger.info("================== СТАТИСТИКА ==================")
-        logger.info(f"Всего каналов: {total_channels}")
-        logger.info(f"Включено каналов: {enabled_channels}")
-        logger.info(f"Отключено каналов: {disabled_channels}")
-        logger.info(f"Всего валидных конфигураций: {total_valid_configs}")
-        logger.info(f"Всего успешных загрузок: {total_successes}")
-        logger.info(f"Всего неудачных загрузок: {total_fails}")
-        logger.info("Статистика по протоколам:")
-        for protocol, count in protocol_stats.items():
-            logger.info(f"  {protocol}: {count}")
-        logger.info("================== КОНЕЦ СТАТИСТИКИ ==============")
+            logger.info("================== СТАТИСТИКА ==================")
+            logger.info(f"Всего каналов: {total_channels}")
+            logger.info(f"Включено каналов: {enabled_channels}")
+            logger.info(f"Отключено каналов: {disabled_channels}")
+            logger.info(f"Всего валидных конфигураций: {total_valid_configs}")
+            logger.info(f"Всего успешных загрузок: {total_successes}")
+            logger.info(f"Всего неудачных загрузок: {total_fails}")
+            logger.info("Статистика по протоколам:")
+            for protocol, count in protocol_stats.items():
+                logger.info(f"  {protocol}: {count}")
+            logger.info("================== КОНЕЦ СТАТИСТИКИ ==============")
+            statistics_logged = True # Set the flag to True after logging
 
     asyncio.run(runner())
 
