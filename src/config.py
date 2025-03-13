@@ -1420,17 +1420,17 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
 
         if host and port:
             if not await is_proxy_reachable_tcp(host, port): # Проверяем TCP-доступность
-                logger.info(f"❌ Прокси {host}:{port} не прошла TCP-проверку и отфильтрована.")
+                logger.debug(f"❌ Прокси {host}:{port} не прошла TCP-проверку и отфильтрована.") # Debug level log
                 return None # Пропускаем прокси, если TCP-проверка не удалась
             else:
-                logger.debug(f"✅ Прокси {host}:{port} прошла TCP-проверку.") # Debug log for TCP success
+                logger.debug(f"✅ Прокси {host}:{port} прошла TCP-проверку.") # Debug level log for TCP success
 
         if proxy_url_for_http_check: # Выполняем HTTP проверку, если есть URL для проверки
             if not await is_proxy_reachable_http(proxy_url_for_http_check):
-                logger.info(f"❌ Прокси {proxy_url_for_http_check} не прошла HTTP-проверку и отфильтрована.")
+                logger.debug(f"❌ Прокси {proxy_url_for_http_check} не прошла HTTP-проверку и отфильтрована.") # Debug level log
                 return None # Пропускаем прокси, если HTTP-проверка не удалась
             else:
-                logger.debug(f"✅ Прокси {proxy_url_for_http_check} прошла HTTP-проверку.") # Debug log for HTTP success
+                logger.debug(f"✅ Прокси {proxy_url_for_http_check} прошла HTTP-проверку.") # Debug level log for HTTP success
 
 
         score = compute_profile_score(
