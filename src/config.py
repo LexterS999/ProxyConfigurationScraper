@@ -95,15 +95,15 @@ RETRY_DELAY_BASE = 2
 AGE_PENALTY_PER_DAY = 0.1
 TEST_HTTP_URL = "http://httpbin.org/ip" # URL для HTTP/HTTPS проверки прокси - Больше не используется напрямую для проверки
 
-# Протокол-специфичные таймауты для TCP проверок (в секундах)
+# Протокол-специфичные таймауты для проверок (в секундах)
 PROTOCOL_TIMEOUTS = {
-    "vless": 5.0,
-    "trojan": 5.0,
-    "ss": 5.0,
-    "ssconf": 5.0,
-    "tuic": 7.0,  # TUIC может устанавливаться немного дольше
-    "hy2": 7.0,   # HY2 также может быть чуть дольше
-    "default": 5.0 # Дефолтный таймаут для неизвестных протоколов
+    "vless": 7.0, # Увеличен таймаут для VLESS
+    "trojan": 7.0, # Увеличен таймаут для Trojan
+    "ss": 7.0,
+    "ssconf": 7.0,
+    "tuic": 9.0,  # Немного увеличен таймаут для TUIC
+    "hy2": 9.0,   # Немного увеличен таймаут для HY2
+    "default": 7.0 # Дефолтный таймаут
 }
 
 
@@ -1163,7 +1163,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
             return ProfileName.TUIC_WS_TLS_BBR.value
         security_str = "" if security_type == "NONE" else security_type
-        transport_str = "" if transport_type == "NONE" else transport_type
+        transport_str = "" if transport_type == "NONE" else transport_str
         parts = [part for part in [transport_str, security_str, congestion_control] if part]
         return "🐢 TUIC - " + " - ".join(parts)
 
@@ -1173,7 +1173,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if transport_type == "UDP" and security_type == "TLS":
             return ProfileName.HY2_UDP_TLS.value
         security_str = "" if security_type == "NONE" else security_type
-        transport_str = "" if transport_type == "NONE" else transport_str
+        transport_str = "" if transport_type == "NONE" else transport_type
         parts = [part for part in [transport_str, security_str] if part]
         return "💧 HY2 - " + " - ".join(parts)
 
@@ -1285,29 +1285,29 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             return None
 
 
-# --- Функции для протокол-специфичных проверок ---
+# --- Функции для протокол-специфичных проверок (Улучшенные) ---
 async def test_vless_connection(config_obj: VlessConfig, timeout: float = PROTOCOL_TIMEOUTS.get("vless")) -> bool:
-    """Минимальная проверка VLESS соединения (TCP connect) с протокол-специфичным таймаутом."""
-    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="VLESS")
+    """Проверка VLESS соединения: TCP handshake."""
+    return await _vless_handshake(config_obj, timeout)
 
 async def test_trojan_connection(config_obj: TrojanConfig, timeout: float = PROTOCOL_TIMEOUTS.get("trojan")) -> bool:
-    """Минимальная проверка Trojan соединения (TCP connect) с протокол-специфичным таймаутом."""
-    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Trojan")
+    """Проверка Trojan соединения: TCP handshake."""
+    return await _trojan_handshake(config_obj, timeout)
 
 async def test_ss_connection(config_obj: SSConfig, timeout: float = PROTOCOL_TIMEOUTS.get("ss")) -> bool:
-    """Минимальная проверка Shadowsocks соединения (TCP connect) с протокол-специфичным таймаутом."""
-    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Shadowsocks")
+    """Проверка Shadowsocks соединения: TCP handshake."""
+    return await _ss_handshake(config_obj, timeout)
 
 async def test_ssconf_connection(config_obj: SSConfConfig, timeout: float = PROTOCOL_TIMEOUTS.get("ssconf")) -> bool:
-    """Минимальная проверка SSConf соединения (TCP connect) с протокол-специфичным таймаутом."""
-    return await _minimal_tcp_connection_test(config_obj.server, config_obj.server_port, timeout, protocol_name="SSConf")
+    """Проверка SSConf соединения: TCP handshake."""
+    return await test_ss_connection(SSConfig(method=config_obj.method, password=config_obj.password, address=config_obj.server, port=config_obj.server_port, plugin=None, obfs=config_obj.obfs), timeout=timeout) # Reuse SS handshake
 
 async def test_tuic_connection(config_obj: TuicConfig, timeout: float = PROTOCOL_TIMEOUTS.get("tuic")) -> bool:
-    """Минимальная проверка TUIC соединения (TCP connect) с протокол-специфичным таймаутом.""" # TUIC is UDP based, but TCP connect might still be a preliminary check
+    """Проверка TUIC соединения: TCP connect (для UDP-based протокола, минимальная TCP проверка).""" # TUIC is primarily UDP; TCP connect is a basic check. More advanced checks for UDP are significantly more complex.
     return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="TUIC")
 
 async def test_hy2_connection(config_obj: Hy2Config, timeout: float = PROTOCOL_TIMEOUTS.get("hy2")) -> bool:
-    """Минимальная проверка HY2 соединения (TCP connect) с протокол-специфичным таймаутом.""" # HY2 is UDP based, TCP connect as preliminary check
+    """Проверка HY2 соединения: TCP connect (для UDP-based протокола, минимальная TCP проверка).""" # HY2 is primarily UDP; TCP connect is a basic check. More advanced checks for UDP are significantly more complex.
     return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="HY2")
 
 
@@ -1315,14 +1315,35 @@ async def _minimal_tcp_connection_test(host: str, port: int, timeout: float, pro
     """Вспомогательная функция для минимальной TCP проверки с настраиваемым таймаутом."""
     try:
         await asyncio.wait_for(asyncio.open_connection(host=host, port=port), timeout=timeout)
-        logger.debug(f"✅ {protocol_name} проверка: TCP соединение с {host}:{port} установлено за {timeout} секунд.")
+        logger.debug(f"✅ {protocol_name} проверка: TCP соединение с {host}:{port} установлено за {timeout:.2f} секунд.")
         return True
     except asyncio.TimeoutError:
-        logger.debug(f"❌ {protocol_name} проверка: TCP таймаут ({timeout} сек) при подключении к {host}:{port}.")
+        logger.debug(f"❌ {protocol_name} проверка: TCP таймаут ({timeout:.2f} сек) при подключении к {host}:{port}.")
         return False
     except (ConnectionRefusedError, OSError, socket.gaierror) as e:
         logger.debug(f"❌ {protocol_name} проверка: Ошибка TCP соединения с {host}:{port}: {e}.")
         return False
+
+
+async def _vless_handshake(config_obj: VlessConfig, timeout: float) -> bool:
+    """Минимальный handshake для VLESS (TCP connect - для начала). **НУЖНО РЕАЛИЗОВАТЬ VLESS HANDSHAKE!**"""
+    # !!! ВНИМАНИЕ: Текущая реализация - только TCP connect.  Нужно реализовать настоящий VLESS handshake !!!
+    # !!! Для VLESS handshake потребуется понимание VLESS протокола и возможно crypto lib !!!
+    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="VLESS")
+
+
+async def _trojan_handshake(config_obj: TrojanConfig, timeout: float) -> bool:
+    """Минимальный handshake для Trojan (TCP connect - для начала). **НУЖНО РЕАЛИЗОВАТЬ TROJAN HANDSHAKE!**"""
+    # !!! ВНИМАНИЕ: Текущая реализация - только TCP connect.  Нужно реализовать настоящий Trojan handshake !!!
+    # !!! Для Trojan handshake потребуется понимание Trojan протокола и возможно crypto lib !!!
+    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Trojan")
+
+
+async def _ss_handshake(config_obj: SSConfig, timeout: float) -> bool:
+    """Минимальный handshake для Shadowsocks (TCP connect - для начала). **НУЖНО РЕАЛИЗОВАТЬ SS HANDSHAKE!**"""
+    # !!! ВНИМАНИЕ: Текущая реализация - только TCP connect.  Нужно реализовать настоящий SS handshake !!!
+    # !!! Для SS handshake потребуется понимание SS протокола и crypto lib (e.g., pysocks or manual crypto) !!!
+    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Shadowsocks")
 
 
 # --- Функции для обработки каналов и прокси (с протокол-специфичной проверкой) - Без изменений ---
@@ -1341,13 +1362,86 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
         response_time = 0
         text = ""
 
-        # ... (остальная часть функции process_channel без изменений) ...
+        while retries < MAX_RETRIES and not success:
+            start_time = asyncio.get_event_loop().time()
+            try:
+                colored_log(logging.INFO, f"Загрузка контента из канала: {channel.url} (попытка {retries+1}/{MAX_RETRIES})...") # Улучшенный лог
+                async with session.get(channel.url, timeout=channel.request_timeout) as response:
+                    response.raise_for_status()
+                    text = await response.text()
+                    end_time = asyncio.get_event_loop().time()
+                    response_time = end_time - start_time
+                    success = True
+
+            except aiohttp.ClientResponseError as e:  # Более конкретное логирование ошибок HTTP
+                retries += 1
+                retry_delay = RETRY_DELAY_BASE * (2 ** (retries - 1))
+                colored_log(logging.WARNING, # Используем colored_log для консоли
+                    f"HTTP ошибка при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}): "
+                    f"{e.status} {e.message}. Повтор через {retry_delay} сек."
+                )
+                await asyncio.sleep(retry_delay)
+            except asyncio.TimeoutError:  # Более конкретное логирование ошибок таймаута
+                retries += 1
+                retry_delay = RETRY_DELAY_BASE * (2 ** (retries - 1))
+                colored_log(logging.WARNING, # Используем colored_log для консоли
+                    f"Таймаут при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}). "
+                    f"Повтор через {retry_delay} сек."
+                )
+                await asyncio.sleep(retry_delay)
+            except aiohttp.ClientError as e:  # Более конкретное логирование ошибок клиента aiohttp
+                retries += 1
+                retry_delay = RETRY_DELAY_BASE * (2 ** (retries - 1))
+                colored_log(logging.WARNING, # Используем colored_log для консоли
+                    f"Ошибка клиента aiohttp при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}): "
+                    f"{type(e).__name__} - {e}. Повтор через {retry_delay} сек."
+                )
+                await asyncio.sleep(retry_delay)
+
+            except Exception as e:
+                logger.exception(f"Непредвиденная ошибка при загрузке из {channel.url}: {e}")
+                channel.check_count += 1
+                channel.update_channel_stats(success=False)
+                return []
+
+        if not success:
+            colored_log(logging.ERROR, f"❌ Не удалось загрузить данные из {channel.url} после {MAX_RETRIES} попыток.") # Улучшенный лог
+            channel.check_count += 1
+            channel.update_channel_stats(success=False)
+            proxy_config.failed_channels.append(channel.url)
+            return []
+
+        colored_log(logging.INFO, f"✅ Контент из {channel.url} успешно загружен за {response_time:.2f} секунд") # Улучшенный лог
+        channel.update_channel_stats(success=True, response_time=response_time)
+
+        lines = text.splitlines()
+        proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
+        tasks = []
+
+        for line in lines:
+            line = line.strip()
+            if len(line) < MIN_CONFIG_LENGTH or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
+                continue
+            task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
+                                                        loaded_weights, proxy_semaphore, global_proxy_semaphore, session)) # Передаем session
+            tasks.append(task)
+
+        results = await asyncio.gather(*tasks)
+        for result in results:
+            if result:
+                proxies.append(result)
+
+        channel.metrics.valid_configs += len(proxies)
+        channel.check_count += 1
+        colored_log(logging.INFO, f"📊 Канал {channel.url}: Найдено {len(proxies)} валидных конфигураций.") # Улучшенный лог
+        return proxies
+
 
 async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_config: ProxyConfig, loaded_weights: Dict,
                               proxy_semaphore: asyncio.Semaphore,
                               global_proxy_semaphore: asyncio.Semaphore,
-                              session: aiohttp.ClientSession) -> Optional[Dict]: # Принимаем session
+                              session: aiohttp.ClientSession) -> Optional[Dict]:
     """Обрабатывает одну конфигурацию прокси: парсит, проверяет доступность (протокол-специфично), скорит и сохраняет результат."""
     async with proxy_semaphore, global_proxy_semaphore:
         config_obj = await parse_config(line, proxy_config.resolver)
@@ -1380,12 +1474,26 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
             logger.debug(f"✅ Прокси {line} прошла протокол-специфичную проверку.")
 
 
-        # ... (остальная часть функции process_single_proxy без изменений) ...
+        score = compute_profile_score(
+            line,
+            channel_response_time=channel.metrics.avg_response_time,
+            loaded_weights=loaded_weights,
+            channel_score=channel.metrics.overall_score,
+            first_seen = config_obj.first_seen
+        )
+
+        result = {
+            "config": line,
+            "protocol": protocol_type,
+            "score": score,
+            "config_obj": config_obj
+        }
+        channel.metrics.protocol_counts[protocol_type] += 1
+        channel.metrics.protocol_scores[protocol_type].append(score)
+        return result
 
 
 # --- Функции process_all_channels, sort_proxies, save_final_configs, update_and_save_weights, prepare_training_data, main - Без изменений ---
-
-
 def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
     """Обрабатывает все каналы в списке."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
@@ -1407,7 +1515,6 @@ def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyCo
     return proxies_all
 
 
-# --- Функции для сохранения и сортировки результатов (без изменений) ---
 def sort_proxies(proxies: List[Dict]) -> List[Dict]:
     """Сортирует список прокси по полноте конфигурации."""
     def config_completeness(proxy_dict):
