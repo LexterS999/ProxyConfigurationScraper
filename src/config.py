@@ -184,8 +184,8 @@ class SSConfConfig: # Data class for ssconf protocol
     timeout: int
     method: str
     protocol: str
+    obfs: str # Исправлено: obfs идет перед полями со значениями по умолчанию
     protocol_param: Optional[str] = None
-    obfs: str
     obfs_param: Optional[str] = None
     remarks: Optional[str] = None
     group: Optional[str] = None
