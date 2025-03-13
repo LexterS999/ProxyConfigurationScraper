@@ -11,6 +11,7 @@ import numbers
 import functools
 import string
 import socket
+import base64 # Import for ssconf decode
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
@@ -24,30 +25,59 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(process)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+# --- Настройка улучшенного логирования ---
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)"
+CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
+LOG_FILE = 'proxy_checker.log'
 
-# Логирование в файл (уровень WARNING и выше)
-file_handler = logging.FileHandler('proxy_checker.log', encoding='utf-8')
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)  # Общий уровень логирования
+
+# Логирование в файл (WARNING и выше)
+file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 file_handler.setLevel(logging.WARNING)
-formatter_file = logging.Formatter('%(asctime)s - %(levelname)s - %(process)s - %(message)s')
+formatter_file = logging.Formatter(LOG_FORMAT)
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
-# Логирование в консоль (уровень INFO и выше)
+# Логирование в консоль (INFO и выше) - Улучшенный формат
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
-formatter_console = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s') # Упрощенный формат для консоли
+formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT) # Упрощенный формат для консоли
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
 
+# Дополнительно: функция для цветного вывода в консоль (опционально, для красоты)
+class LogColors:
+    RESET = '\033[0m'
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
 
-# Константы
+def colored_log(level, message):
+    color = LogColors.RESET
+    if level == logging.INFO:
+        color = LogColors.GREEN
+    elif level == logging.WARNING:
+        color = LogColors.YELLOW
+    elif level == logging.ERROR:
+        color = LogColors.RED
+    elif level == logging.CRITICAL:
+        color = LogColors.BOLD + LogColors.RED
+
+    logger.log(level, f"{color}{message}{LogColors.RESET}")
+
+# Теперь используйте colored_log вместо logger.info, logger.warning и т.д. для консольного вывода, если хотите цвет.
+# Для файлового лога цвет не нужен, там будет стандартный формат.
+
+
+# Константы (без изменений)
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 MIN_ACCEPTABLE_SCORE = 40.0
 MIN_CONFIG_LENGTH = 30
@@ -65,7 +95,7 @@ RETRY_DELAY_BASE = 2
 AGE_PENALTY_PER_DAY = 0.1
 
 
-# --- Исключения ---
+# --- Исключения (без изменений) ---
 class InvalidURLError(ValueError):
     """Неверный формат URL."""
     pass
@@ -83,7 +113,7 @@ class ConfigParseError(ValueError):
     pass
 
 
-# --- Enum для имен профилей ---
+# --- Enum для имен профилей (без изменений) ---
 class ProfileName(Enum):
     VLESS_FORMAT = "🌌 VLESS - {transport} - {security}"
     VLESS_WS_TLS = "🚀 VLESS - WS - TLS"
@@ -98,7 +128,7 @@ class ProfileName(Enum):
     HY2_UDP_TLS = "🐳 HY2 - UDP - TLS"
 
 
-# --- Data classes для конфигураций ---
+# --- Data classes для конфигураций (без изменений) ---
 @dataclass(frozen=True)
 class VlessConfig:
     """Конфигурация VLESS прокси."""
@@ -368,7 +398,7 @@ class Hy2Config:
         )
 
 
-# --- Data classes для метрик и конфигураций каналов ---
+# --- Data classes для метрик и конфигураций каналов (без изменений) ---
 @dataclass
 class ChannelMetrics:
     """Метрики канала."""
@@ -581,7 +611,7 @@ class ProxyConfig:
             logger.error(f"Ошибка при удалении нерабочих каналов из {self.ALL_URLS_FILE}: {e}")
 
 
-# --- Enum для весов скоринга ---
+# --- Enum для весов скоринга (без изменений) ---
 class ScoringWeights(Enum):
     """Перечисление весов, используемых для скоринга конфигураций прокси."""
     PROTOCOL_BASE = 20
@@ -772,7 +802,7 @@ class ScoringWeights(Enum):
             logger.warning("Total weight is zero after calibration. Skipping weight update.")
 
 
-# --- Вспомогательные функции ---
+# --- Вспомогательные функции (без изменений) ---
 def _get_value(query: Dict, key: str, default_value: Any = None) -> Any:
     """Безопасно извлекает значение из словаря query."""
     return query.get(key, (default_value,))[0]
@@ -801,7 +831,6 @@ def _parse_hop_interval(hop_interval_str: Optional[str]) -> Optional[int]:
         logger.warning(f"Invalid hopInterval value, using None: {hop_interval_str}")
         return None
 
-import base64 # Import for ssconf decode
 
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
     """Резолвит доменное имя в IP-адрес."""
@@ -818,7 +847,7 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
         return hostname
 
 
-# --- Функции для расчета скоринга ---
+# --- Функции для расчета скоринга (без изменений) ---
 def _calculate_vless_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
     """Вычисляет скор для VLESS конфигурации."""
     score = 0
@@ -1244,7 +1273,7 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             return None
 
 
-# --- Функции для обработки каналов и прокси ---
+# --- Функции для обработки каналов и прокси (с улучшенным логированием) ---
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession,
                           channel_semaphore: asyncio.Semaphore,
                           proxy_config: "ProxyConfig",
@@ -1263,6 +1292,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
         while retries < MAX_RETRIES and not success:
             start_time = asyncio.get_event_loop().time()
             try:
+                colored_log(logging.INFO, f"Загрузка контента из канала: {channel.url} (попытка {retries+1}/{MAX_RETRIES})...") # Улучшенный лог
                 async with session.get(channel.url, timeout=channel.request_timeout) as response:
                     response.raise_for_status()
                     text = await response.text()
@@ -1273,7 +1303,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             except aiohttp.ClientResponseError as e:  # Более конкретное логирование ошибок HTTP
                 retries += 1
                 retry_delay = RETRY_DELAY_BASE * (2 ** (retries - 1))
-                logger.warning(
+                colored_log(logging.WARNING, # Используем colored_log для консоли
                     f"HTTP ошибка при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}): "
                     f"{e.status} {e.message}. Повтор через {retry_delay} сек."
                 )
@@ -1281,7 +1311,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             except asyncio.TimeoutError:  # Более конкретное логирование ошибок таймаута
                 retries += 1
                 retry_delay = RETRY_DELAY_BASE * (2 ** (retries - 1))
-                logger.warning(
+                colored_log(logging.WARNING, # Используем colored_log для консоли
                     f"Таймаут при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}). "
                     f"Повтор через {retry_delay} сек."
                 )
@@ -1289,7 +1319,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             except aiohttp.ClientError as e:  # Более конкретное логирование ошибок клиента aiohttp
                 retries += 1
                 retry_delay = RETRY_DELAY_BASE * (2 ** (retries - 1))
-                logger.warning(
+                colored_log(logging.WARNING, # Используем colored_log для консоли
                     f"Ошибка клиента aiohttp при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}): "
                     f"{type(e).__name__} - {e}. Повтор через {retry_delay} сек."
                 )
@@ -1302,13 +1332,13 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
                 return []
 
         if not success:
-            logger.error(f"Не удалось загрузить данные из {channel.url} после {MAX_RETRIES} попыток.")
+            colored_log(logging.ERROR, f"❌ Не удалось загрузить данные из {channel.url} после {MAX_RETRIES} попыток.") # Улучшенный лог
             channel.check_count += 1
             channel.update_channel_stats(success=False)
             proxy_config.failed_channels.append(channel.url)
             return []
 
-        logger.info(f"Контент из {channel.url} загружен за {response_time:.2f} секунд")
+        colored_log(logging.INFO, f"✅ Контент из {channel.url} успешно загружен за {response_time:.2f} секунд") # Улучшенный лог
         channel.update_channel_stats(success=True, response_time=response_time)
 
         lines = text.splitlines()
@@ -1330,7 +1360,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
 
         channel.metrics.valid_configs += len(proxies)
         channel.check_count += 1
-        logger.info(f"Канал {channel.url}: Найдено {len(proxies)} валидных конфигураций.")
+        colored_log(logging.INFO, f"📊 Канал {channel.url}: Найдено {len(proxies)} валидных конфигураций.") # Улучшенный лог
         return proxies
 
 
@@ -1385,7 +1415,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     return proxies_all
 
 
-# --- Функции для сохранения и сортировки результатов ---
+# --- Функции для сохранения и сортировки результатов (без изменений) ---
 def sort_proxies(proxies: List[Dict]) -> List[Dict]:
     """Сортирует список прокси по полноте конфигурации."""
     def config_completeness(proxy_dict):
@@ -1426,8 +1456,8 @@ def save_final_configs(proxies: List[Dict], output_file: str):
 
                     final_line = f"{config}#{profile_name} - Score: {proxy['score']:.2f}\n"
                     f.write(final_line)
-        logger.info(f"Финальные конфигурации сохранены в {output_file}. Уникальность прокси обеспечена.")
-        logger.info(f"Всего уникальных прокси сохранено: {unique_proxy_count}")  # Лог количества уникальных прокси
+        colored_log(logging.INFO, f"✅ Финальные конфигурации сохранены в {output_file}. Уникальность прокси обеспечена.") # Улучшенный лог
+        colored_log(logging.INFO, f"✨ Всего уникальных прокси сохранено: {unique_proxy_count}")  # Лог количества уникальных прокси
     except Exception as e:
         logger.error(f"Ошибка сохранения конфигураций: {e}")
 
@@ -1485,6 +1515,9 @@ def main():
 
         loop = asyncio.get_running_loop()
         proxy_config.set_event_loop(loop)
+
+        colored_log(logging.INFO, "🚀 Начало проверки прокси...") # Улучшенный лог
+
         proxies = await process_all_channels(channels, proxy_config)
 
         training_data = prepare_training_data(proxies)
@@ -1512,18 +1545,24 @@ def main():
                 for protocol, count in channel.metrics.protocol_counts.items():
                     protocol_stats[protocol] += count
 
-            logger.info("================== СТАТИСТИКА ==================")
-            logger.info(f"Всего каналов: {total_channels}")
-            logger.info(f"Включено каналов: {enabled_channels}")
-            logger.info(f"Отключено каналов: {disabled_channels}")
-            logger.info(f"Всего валидных конфигураций: {total_valid_configs}")
-            logger.info(f"Всего успешных загрузок: {total_successes}")
-            logger.info(f"Всего неудачных загрузок: {total_fails}")
-            logger.info("Статистика по протоколам:")
-            for protocol, count in protocol_stats.items():
-                logger.info(f"  {protocol}: {count}")
-            logger.info("================== КОНЕЦ СТАТИСТИКИ ==============")
+            colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ПРОВЕРКИ ПРОКСИ ====================") # Улучшенный заголовок
+            colored_log(logging.INFO, f"🔄 Всего каналов обработано: {total_channels}")
+            colored_log(logging.INFO, f"✅ Включено каналов: {enabled_channels}")
+            colored_log(logging.INFO, f"❌ Отключено каналов: {disabled_channels}")
+            colored_log(logging.INFO, f"✨ Всего найдено валидных конфигураций: {total_valid_configs}")
+            colored_log(logging.INFO, f"⬆️  Успешных загрузок каналов: {total_successes}")
+            colored_log(logging.INFO, f"⬇️  Неудачных загрузок каналов: {total_fails}")
+
+            colored_log(logging.INFO, "\n breakdown by protocol:") # Подзаголовок
+            if protocol_stats:
+                for protocol, count in protocol_stats.items():
+                    colored_log(logging.INFO, f"   - {protocol}: {count} configs") # Отступ для лучшей читаемости
+            else:
+                colored_log(logging.INFO, "   No protocol statistics available.")
+
+            colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================") # Улучшенный разделитель
             statistics_logged = True  # Устанавливаем флаг после логирования статистики
+            colored_log(logging.INFO, "✅ Проверка прокси завершена.") # Финальное сообщение
 
     asyncio.run(runner())
 
