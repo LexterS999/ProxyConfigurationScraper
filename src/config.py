@@ -11,7 +11,7 @@ import numbers
 import functools
 import string
 import socket
-import base64 # Import for ssconf decode
+import base64
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
@@ -73,19 +73,15 @@ def colored_log(level, message):
 
     logger.log(level, f"{color}{message}{LogColors.RESET}")
 
-# Теперь используйте colored_log вместо logger.info, logger.warning и т.д. для консольного вывода, если хотите цвет.
-# Для файлового лога цвет не нужен, там будет стандартный формат.
-
-
 # Константы (без изменений)
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 MIN_ACCEPTABLE_SCORE = 40.0
 MIN_CONFIG_LENGTH = 30
-ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"] # Добавлен ssconf://
+ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
 MAX_CONCURRENT_CHANNELS = 200
 MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
 MAX_CONCURRENT_PROXIES_GLOBAL = 500
-REQUEST_TIMEOUT = 120  # Увеличено REQUEST_TIMEOUT до 120 секунд
+REQUEST_TIMEOUT = 120
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
@@ -93,6 +89,7 @@ ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2
 AGE_PENALTY_PER_DAY = 0.1
+TEST_HTTP_URL = "http://httpbin.org/ip"
 
 
 # --- Исключения (без изменений) ---
@@ -1273,7 +1270,29 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             return None
 
 
-# --- Функции для обработки каналов и прокси (с улучшенным логированием) ---
+# --- Функции для проверки доступности прокси ---
+async def is_proxy_reachable_tcp(host: str, port: int, timeout: float = 5.0) -> bool:
+    """Проверяет, доступен ли TCP-сервер на заданном хосте и порту."""
+    try:
+        async with asyncio.timeout(timeout):
+            await asyncio.open_connection(host=host, port=port)
+        return True
+    except (asyncio.TimeoutError, ConnectionRefusedError, OSError, socket.gaierror) as e:
+        logger.debug(f"TCP проверка: Прокси {host}:{port} недоступен: {e}") # Логируем как debug
+        return False
+
+async def is_proxy_reachable_http(proxy_url: str, timeout: float = 10.0) -> bool:
+    """Проверяет, работает ли прокси, отправляя HTTP-запрос через него."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+            async with session.get(TEST_HTTP_URL, proxy=proxy_url, timeout=timeout) as response:
+                return response.status in range(200, 300)
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logger.debug(f"HTTP проверка: Прокси {proxy_url} не работает: {e}") # Логируем как debug
+        return False
+
+
+# --- Функции для обработки каналов и прокси (с улучшенной проверкой) ---
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession,
                           channel_semaphore: asyncio.Semaphore,
                           proxy_config: "ProxyConfig",
@@ -1350,7 +1369,7 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
             if len(line) < MIN_CONFIG_LENGTH or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
                 continue
             task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
-                                                        loaded_weights, proxy_semaphore, global_proxy_semaphore))
+                                                        loaded_weights, proxy_semaphore, global_proxy_semaphore, session)) # Передаем session
             tasks.append(task)
 
         results = await asyncio.gather(*tasks)
@@ -1367,12 +1386,46 @@ async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession
 async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_config: ProxyConfig, loaded_weights: Dict,
                               proxy_semaphore: asyncio.Semaphore,
-                              global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
-    """Обрабатывает одну конфигурацию прокси: парсит, скорит и сохраняет результат."""
+                              global_proxy_semaphore: asyncio.Semaphore,
+                              session: aiohttp.ClientSession) -> Optional[Dict]: # Принимаем session
+    """Обрабатывает одну конфигурацию прокси: парсит, проверяет доступность (TCP+HTTP), скорит и сохраняет результат."""
     async with proxy_semaphore, global_proxy_semaphore:
         config_obj = await parse_config(line, proxy_config.resolver)
         if config_obj is None:
             return None
+
+        host = None
+        port = None
+        proxy_url_for_http_check = None
+
+        if isinstance(config_obj, (VlessConfig, SSConfig, TrojanConfig, TuicConfig, Hy2Config)):
+            host = config_obj.address
+            port = config_obj.port
+            proxy_url_for_http_check = line # Используем оригинальную строку для HTTP проверки
+        elif isinstance(config_obj, SSConfConfig):
+            host = config_obj.server
+            port = config_obj.server_port
+            # Для ssconf://, преобразование в http proxy может быть сложнее, возможно потребуется внешняя библиотека
+            logger.warning("HTTP проверка для ssconf:// прокси пока не реализована.") # TODO: Implement HTTP proxy for ssconf
+            proxy_url_for_http_check = None # HTTP check for ssconf is skipped for now
+        else:
+            logger.warning(f"Неизвестный тип конфигурации для проверки доступности: {config_obj}")
+            return None
+
+        if host and port:
+            if not await is_proxy_reachable_tcp(host, port): # Проверяем TCP-доступность
+                logger.info(f"❌ Прокси {host}:{port} не прошла TCP-проверку и отфильтрована.")
+                return None # Пропускаем прокси, если TCP-проверка не удалась
+            else:
+                logger.debug(f"✅ Прокси {host}:{port} прошла TCP-проверку.") # Debug log for TCP success
+
+        if proxy_url_for_http_check: # Выполняем HTTP проверку, если есть URL для проверки
+            if not await is_proxy_reachable_http(proxy_url_for_http_check):
+                logger.info(f"❌ Прокси {proxy_url_for_http_check} не прошла HTTP-проверку и отфильтрована.")
+                return None # Пропускаем прокси, если HTTP-проверка не удалась
+            else:
+                logger.debug(f"✅ Прокси {proxy_url_for_http_check} прошла HTTP-проверку.") # Debug log for HTTP success
+
 
         score = compute_profile_score(
             line,
@@ -1400,7 +1453,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session: # Сессия создается здесь и передается в process_channel
         tasks = [
             process_channel(channel, session, channel_semaphore, proxy_config, global_proxy_semaphore)
             for channel in channels
