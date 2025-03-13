@@ -1494,7 +1494,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
 
 
 # --- Функции process_all_channels, sort_proxies, save_final_configs, update_and_save_weights, prepare_training_data, main - Без изменений ---
-def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
+async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
     """Обрабатывает все каналы в списке."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
