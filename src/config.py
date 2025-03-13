@@ -1129,9 +1129,8 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if transport_type == "WS" and security_type == "TLS":
             return ProfileName.VLESS_WS_TLS.value
         security_str = "" if security_type == "NONE" else security_type
-        transport_str = "" if transport_type == "NONE" else transport_type
-        parts = [part for part in [transport_str, security_str] if part]
-        return "🌌 VLESS - " + " - ".join(parts)
+        transport_str = transport_type if transport_type != "NONE" else ""
+        return "🌌 VLESS - " + " - ".join(filter(None, [transport_str, security_str]))
 
     elif scheme == "ss":
         method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")
@@ -1148,9 +1147,8 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if transport_type == "WS" and security_type == "TLS":
             return ProfileName.TROJAN_WS_TLS.value
         security_str = "" if security_type == "NONE" else security_type
-        transport_str = "" if transport_type == "NONE" else transport_type
-        parts = [part for part in [transport_str, security_str] if part]
-        return "🗡️ Trojan - " + " - ".join(parts)
+        transport_str = transport_type if transport_type != "NONE" else ""
+        return "🗡️ Trojan - " + " - ".join(filter(None, [transport_str, security_str]))
 
     elif scheme == "tuic":
         transport_type = query.get("type", ["udp"])[0].upper()
@@ -1159,9 +1157,8 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
             return ProfileName.TUIC_WS_TLS_BBR.value
         security_str = "" if security_type == "NONE" else security_type
-        transport_str = "" if transport_type == "NONE" else transport_str
-        parts = [part for part in [transport_str, security_str, congestion_control] if part]
-        return "🐢 TUIC - " + " - ".join(parts)
+        transport_str = transport_type if transport_type != "NONE" else ""
+        return "🐢 TUIC - " + " - ".join(filter(None, [transport_str, security_str, congestion_control]))
 
     elif scheme == "hy2":
         transport_type = query.get("type", ["udp"])[0].upper()
@@ -1169,9 +1166,8 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if transport_type == "UDP" and security_type == "TLS":
             return ProfileName.HY2_UDP_TLS.value
         security_str = "" if security_type == "NONE" else security_type
-        transport_str = "" if transport_type == "NONE" else transport_str
-        parts = [part for part in [transport_str, security_str] if part]
-        return "💧 HY2 - " + " - ".join(parts)
+        transport_str = transport_type if transport_type != "NONE" else ""
+        return "💧 HY2 - " + " - ".join(filter(None, [transport_str, security_str]))
 
     return f"⚠️ Unknown Protocol: {scheme}"
 
