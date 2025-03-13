@@ -1069,7 +1069,7 @@ def _calculate_common_score(parsed: urlparse, query: Dict, loaded_weights: Dict)
     return score
 
 
-def compute_profile_score(config: str, channel_response_time: float = 0.0, loaded_weights: Dict = None, channel_score:float = 100.0, first_seen: Optional[datetime] = None) -> float:
+async def compute_profile_score(config: str, channel_response_time: float = 0.0, loaded_weights: Dict = None, channel_score:float = 100.0, first_seen: Optional[datetime] = None) -> float:
     """Вычисляет общий рейтинг профиля прокси."""
     if loaded_weights is None:
         loaded_weights = ScoringWeights.load_weights_from_json()
@@ -1464,7 +1464,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
             logger.debug(f"✅ Прокси {line} прошла протокол-специфичную проверку.")
 
 
-        score = compute_profile_score(
+        score = await compute_profile_score( # Вызов асинхронной функции compute_profile_score должен быть с await
             line,
             channel_response_time=channel.metrics.avg_response_time,
             loaded_weights=loaded_weights,
