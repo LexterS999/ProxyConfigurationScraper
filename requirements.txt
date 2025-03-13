@@ -8,3 +8,4 @@ scapy
 aiodns
 scikit-learn
 numpy
+pysocks
