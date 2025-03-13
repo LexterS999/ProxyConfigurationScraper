@@ -1466,7 +1466,7 @@ def sort_proxies(proxies: List[Dict]) -> List[Dict]:
 
 def save_final_configs(proxies: List[Dict], output_file: str):
     """
-    Сохраняет финальные конфигурации прокси в выходной файл.
+    Сохраняет финальные конфигурации прокси в выходной файл, обеспечивая уникальность по IP и порту.
 
     Args:
         proxies: Список словарей с результатами проверки прокси.
@@ -1474,25 +1474,36 @@ def save_final_configs(proxies: List[Dict], output_file: str):
     """
     proxies_sorted = sort_proxies(proxies)
     profile_names = set()
+    unique_proxies = defaultdict(set) # Track unique proxies by protocol and (ip, port)
 
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
             for proxy in proxies_sorted:
                 config = proxy['config'].split('#')[0].strip()
                 parsed = urlparse(config)
-                query = parse_qs(parsed.query)
-                profile_name = generate_custom_name(parsed, query)
 
-                base_name = profile_name
-                suffix = 1
-                while profile_name in profile_names:
-                    profile_name = f"{base_name} ({suffix})"
-                    suffix += 1
-                profile_names.add(profile_name)
+                # Extract IP and port for uniqueness check
+                ip_address = parsed.hostname
+                port = parsed.port
+                protocol = proxy['protocol']
+                ip_port_tuple = (ip_address, port)
 
-                final_line = f"{config}#{profile_name} - Score: {proxy['score']:.2f}\n"
-                f.write(final_line)
-        logger.info(f"Финальные конфигурации сохранены в {output_file}")
+                if ip_port_tuple not in unique_proxies[protocol]:
+                    unique_proxies[protocol].add(ip_port_tuple)
+
+                    query = parse_qs(parsed.query)
+                    profile_name = generate_custom_name(parsed, query)
+
+                    base_name = profile_name
+                    suffix = 1
+                    while profile_name in profile_names:
+                        profile_name = f"{base_name} ({suffix})"
+                        suffix += 1
+                    profile_names.add(profile_name)
+
+                    final_line = f"{config}#{profile_name} - Score: {proxy['score']:.2f}\n"
+                    f.write(final_line)
+        logger.info(f"Финальные конфигурации сохранены в {output_file}. Уникальность прокси обеспечена.")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфигураций: {e}")
 
