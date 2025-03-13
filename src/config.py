@@ -11,7 +11,7 @@ import numbers
 import functools
 import string
 import socket
-import base64
+import base64 # Import for ssconf decode
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
@@ -73,15 +73,19 @@ def colored_log(level, message):
 
     logger.log(level, f"{color}{message}{LogColors.RESET}")
 
+# Теперь используйте colored_log вместо logger.info, logger.warning и т.д. для консольного вывода, если хотите цвет.
+# Для файлового лога цвет не нужен, там будет стандартный формат.
+
+
 # Константы (без изменений)
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 MIN_ACCEPTABLE_SCORE = 40.0
 MIN_CONFIG_LENGTH = 30
-ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
+ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"] # Добавлен ssconf://
 MAX_CONCURRENT_CHANNELS = 200
 MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
 MAX_CONCURRENT_PROXIES_GLOBAL = 500
-REQUEST_TIMEOUT = 120
+REQUEST_TIMEOUT = 120  # Увеличено REQUEST_TIMEOUT до 120 секунд
 HIGH_FREQUENCY_THRESHOLD_HOURS = 12
 HIGH_FREQUENCY_BONUS = 3
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
@@ -89,7 +93,7 @@ ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2
 AGE_PENALTY_PER_DAY = 0.1
-TEST_HTTP_URL = "http://httpbin.org/ip"
+TEST_HTTP_URL = "http://httpbin.org/ip" # URL для HTTP/HTTPS проверки прокси
 
 
 # --- Исключения (без изменений) ---
@@ -1274,10 +1278,12 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
 async def is_proxy_reachable_tcp(host: str, port: int, timeout: float = 5.0) -> bool:
     """Проверяет, доступен ли TCP-сервер на заданном хосте и порту."""
     try:
-        async with asyncio.timeout(timeout):
-            await asyncio.open_connection(host=host, port=port)
+        await asyncio.wait_for(asyncio.open_connection(host=host, port=port), timeout=timeout) # Заменено asyncio.timeout на asyncio.wait_for
         return True
-    except (asyncio.TimeoutError, ConnectionRefusedError, OSError, socket.gaierror) as e:
+    except asyncio.TimeoutError: # Обработка таймаута
+        logger.debug(f"TCP проверка: Прокси {host}:{port} - таймаут")
+        return False
+    except (ConnectionRefusedError, OSError, socket.gaierror) as e:
         logger.debug(f"TCP проверка: Прокси {host}:{port} недоступен: {e}") # Логируем как debug
         return False
 
