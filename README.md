@@ -1,4 +1,4 @@
-# Proxy Configuration Scraper and Scorer
+# Proxy Configuration Scraper
 
 ## Описание
 
