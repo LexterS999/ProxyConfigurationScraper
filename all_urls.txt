@@ -96,3 +96,4 @@ https://vlessnode.github.io/uploads/2025/03/2-20250312.txt
 https://vlessnode.github.io/uploads/2025/03/3-20250312.txt
 https://vlessnode.github.io/uploads/2025/03/4-20250312.txt
 https://raw.githubusercontent.com/SEDYY/vless-configs/refs/heads/main/servers.txt
+https://raw.githubusercontent.com/LexterS999/TG-Proxy-Parser/refs/heads/main/config-tg.txt
