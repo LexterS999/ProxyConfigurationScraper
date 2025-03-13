@@ -49,29 +49,9 @@ jobs:
           echo "scoring_weights.json найден."
         fi
 
-    - name: Display scoring_weights.json before script
-      if: always() # Запускать даже если предыдущий шаг с проверкой не нашел файл
-      run: |
-        if [ -f configs/scoring_weights.json ]; then
-          echo "Содержимое scoring_weights.json перед запуском скрипта:"
-          cat configs/scoring_weights.json
-        else
-          echo "scoring_weights.json не существует, поэтому содержимое не может быть отображено."
-        fi
-
     - name: Run config fetcher script
       run: python src/config.py
       continue-on-error: true
-
-    - name: Display scoring_weights.json after script
-      if: always() # Запускать даже если скрипт завершился с ошибкой (если continue-on-error: true)
-      run: |
-        if [ -f configs/scoring_weights.json ]; then
-          echo "Содержимое scoring_weights.json после запуска скрипта:"
-          cat configs/scoring_weights.json
-        else
-          echo "scoring_weights.json не был создан скриптом (возможно, ошибка)."
-        fi
 
     - name: Setup Git user
       run: |
