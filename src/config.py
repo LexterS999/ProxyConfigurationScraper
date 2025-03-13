@@ -93,7 +93,7 @@ ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2
 AGE_PENALTY_PER_DAY = 0.1
-TEST_HTTP_URL = "http://httpbin.org/ip" # URL для HTTP/HTTPS проверки прокси
+TEST_HTTP_URL = "http://httpbin.org/ip" # URL для HTTP/HTTPS проверки прокси - Больше не используется напрямую для проверки
 
 
 # --- Исключения (без изменений) ---
@@ -1274,37 +1274,53 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             return None
 
 
-# --- Функции для проверки доступности прокси ---
-async def is_proxy_reachable_tcp(host: str, port: int, timeout: float = 5.0) -> bool:
-    """Проверяет, доступен ли TCP-сервер на заданном хосте и порту."""
+# --- Функции для протокол-специфичных проверок ---
+async def test_vless_connection(config_obj: VlessConfig, timeout: float = 5.0) -> bool:
+    """Минимальная проверка VLESS соединения (TCP connect)."""
+    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="VLESS")
+
+async def test_trojan_connection(config_obj: TrojanConfig, timeout: float = 5.0) -> bool:
+    """Минимальная проверка Trojan соединения (TCP connect)."""
+    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Trojan")
+
+async def test_ss_connection(config_obj: SSConfig, timeout: float = 5.0) -> bool:
+    """Минимальная проверка Shadowsocks соединения (TCP connect)."""
+    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Shadowsocks")
+
+async def test_ssconf_connection(config_obj: SSConfConfig, timeout: float = 5.0) -> bool:
+    """Минимальная проверка SSConf соединения (TCP connect)."""
+    return await _minimal_tcp_connection_test(config_obj.server, config_obj.server_port, timeout, protocol_name="SSConf")
+
+async def test_tuic_connection(config_obj: TuicConfig, timeout: float = 5.0) -> bool:
+    """Минимальная проверка TUIC соединения (TCP connect).""" # TUIC is UDP based, but TCP connect might still be a preliminary check
+    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="TUIC")
+
+async def test_hy2_connection(config_obj: Hy2Config, timeout: float = 5.0) -> bool:
+    """Минимальная проверка HY2 соединения (TCP connect).""" # HY2 is UDP based, TCP connect as preliminary check
+    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="HY2")
+
+
+async def _minimal_tcp_connection_test(host: str, port: int, timeout: float, protocol_name: str) -> bool:
+    """Вспомогательная функция для минимальной TCP проверки."""
     try:
-        await asyncio.wait_for(asyncio.open_connection(host=host, port=port), timeout=timeout) # Заменено asyncio.timeout на asyncio.wait_for
+        await asyncio.wait_for(asyncio.open_connection(host=host, port=port), timeout=timeout)
+        logger.debug(f"✅ {protocol_name} проверка: TCP соединение с {host}:{port} установлено.")
         return True
-    except asyncio.TimeoutError: # Обработка таймаута
-        logger.debug(f"TCP проверка: Прокси {host}:{port} - таймаут")
+    except asyncio.TimeoutError:
+        logger.debug(f"❌ {protocol_name} проверка: TCP таймаут при подключении к {host}:{port}.")
         return False
     except (ConnectionRefusedError, OSError, socket.gaierror) as e:
-        logger.debug(f"TCP проверка: Прокси {host}:{port} недоступен: {e}") # Логируем как debug
-        return False
-
-async def is_proxy_reachable_http(proxy_url: str, timeout: float = 10.0) -> bool:
-    """Проверяет, работает ли прокси, отправляя HTTP-запрос через него."""
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-            async with session.get(TEST_HTTP_URL, proxy=proxy_url, timeout=timeout) as response:
-                return response.status in range(200, 300)
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logger.debug(f"HTTP проверка: Прокси {proxy_url} не работает: {e}") # Логируем как debug
+        logger.debug(f"❌ {protocol_name} проверка: Ошибка TCP соединения с {host}:{port}: {e}.")
         return False
 
 
-# --- Функции для обработки каналов и прокси (с улучшенной проверкой) ---
+# --- Функции для обработки каналов и прокси (с протокол-специфичной проверкой) ---
 async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession,
                           channel_semaphore: asyncio.Semaphore,
                           proxy_config: "ProxyConfig",
                           global_proxy_semaphore: asyncio.Semaphore
                           ) -> List[Dict]:
-    """Обрабатывает один канал, загружает конфигурации прокси и проверяет их."""
+    """Обрабатывает один канал, загружает конфигурации прокси и проверяет их протокол-специфичными тестами."""
     proxies = []
     loaded_weights = ScoringWeights.load_weights_from_json()
 
@@ -1394,43 +1410,36 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_semaphore: asyncio.Semaphore,
                               global_proxy_semaphore: asyncio.Semaphore,
                               session: aiohttp.ClientSession) -> Optional[Dict]: # Принимаем session
-    """Обрабатывает одну конфигурацию прокси: парсит, проверяет доступность (TCP+HTTP), скорит и сохраняет результат."""
+    """Обрабатывает одну конфигурацию прокси: парсит, проверяет доступность (протокол-специфично), скорит и сохраняет результат."""
     async with proxy_semaphore, global_proxy_semaphore:
         config_obj = await parse_config(line, proxy_config.resolver)
         if config_obj is None:
             return None
 
-        host = None
-        port = None
-        proxy_url_for_http_check = None
+        protocol_type = config_obj.__class__.__name__.replace("Config", "").lower()
+        is_reachable = False
 
-        if isinstance(config_obj, (VlessConfig, SSConfig, TrojanConfig, TuicConfig, Hy2Config)):
-            host = config_obj.address
-            port = config_obj.port
-            proxy_url_for_http_check = line # Используем оригинальную строку для HTTP проверки
-        elif isinstance(config_obj, SSConfConfig):
-            host = config_obj.server
-            port = config_obj.server_port
-            # Для ssconf://, преобразование в http proxy может быть сложнее, возможно потребуется внешняя библиотека
-            logger.warning("HTTP проверка для ssconf:// прокси пока не реализована.") # TODO: Implement HTTP proxy for ssconf
-            proxy_url_for_http_check = None # HTTP check for ssconf is skipped for now
+        if protocol_type == "vless":
+            is_reachable = await test_vless_connection(config_obj)
+        elif protocol_type == "trojan":
+            is_reachable = await test_trojan_connection(config_obj)
+        elif protocol_type == "ss":
+            is_reachable = await test_ss_connection(config_obj)
+        elif protocol_type == "ssconf":
+            is_reachable = await test_ssconf_connection(config_obj)
+        elif protocol_type == "tuic":
+            is_reachable = await test_tuic_connection(config_obj)
+        elif protocol_type == "hy2":
+            is_reachable = await test_hy2_connection(config_obj)
         else:
-            logger.warning(f"Неизвестный тип конфигурации для проверки доступности: {config_obj}")
+            logger.warning(f"Неизвестный тип протокола для проверки: {protocol_type}")
             return None
 
-        if host and port:
-            if not await is_proxy_reachable_tcp(host, port): # Проверяем TCP-доступность
-                logger.debug(f"❌ Прокси {host}:{port} не прошла TCP-проверку и отфильтрована.") # Debug level log
-                return None # Пропускаем прокси, если TCP-проверка не удалась
-            else:
-                logger.debug(f"✅ Прокси {host}:{port} прошла TCP-проверку.") # Debug level log for TCP success
-
-        if proxy_url_for_http_check: # Выполняем HTTP проверку, если есть URL для проверки
-            if not await is_proxy_reachable_http(proxy_url_for_http_check):
-                logger.debug(f"❌ Прокси {proxy_url_for_http_check} не прошла HTTP-проверку и отфильтрована.") # Debug level log
-                return None # Пропускаем прокси, если HTTP-проверка не удалась
-            else:
-                logger.debug(f"✅ Прокси {proxy_url_for_http_check} прошла HTTP-проверку.") # Debug level log for HTTP success
+        if not is_reachable:
+            logger.debug(f"❌ Прокси {line} не прошла протокол-специфичную проверку.")
+            return None
+        else:
+            logger.debug(f"✅ Прокси {line} прошла протокол-специфичную проверку.")
 
 
         score = compute_profile_score(
@@ -1443,13 +1452,12 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
 
         result = {
             "config": line,
-            "protocol": config_obj.__class__.__name__.replace("Config", "").lower(),
+            "protocol": protocol_type,
             "score": score,
             "config_obj": config_obj
         }
-        protocol_name = config_obj.__class__.__name__.replace("Config", "").lower()
-        channel.metrics.protocol_counts[protocol_name] += 1
-        channel.metrics.protocol_scores[protocol_name].append(score)
+        channel.metrics.protocol_counts[protocol_type] += 1
+        channel.metrics.protocol_scores[protocol_type].append(score)
         return result
 
 
