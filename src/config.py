@@ -51,7 +51,7 @@ logger.addHandler(console_handler)
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 MIN_ACCEPTABLE_SCORE = 40.0
 MIN_CONFIG_LENGTH = 30
-ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://"]
+ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"] # Добавлен ssconf://
 MAX_CONCURRENT_CHANNELS = 200
 MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
 MAX_CONCURRENT_PROXIES_GLOBAL = 500
@@ -89,6 +89,7 @@ class ProfileName(Enum):
     VLESS_WS_TLS = "🚀 VLESS - WS - TLS"
     SS_FORMAT = "🎭 SS - {method}"
     SS_CHACHA20_IETF_POLY1305 = "🛡️ SS - CHACHA20-IETF-POLY1305"
+    SSCONF_FORMAT = "📦 SSCONF" # Добавлен SSCONF
     TROJAN_FORMAT = "🗡️ Trojan - {transport} - {security}"
     TROJAN_WS_TLS = "⚔️ Trojan - WS - TLS"
     TUIC_FORMAT = "🐢 TUIC - {transport} - {security} - {congestion_control}"
@@ -171,6 +172,65 @@ class SSConfig:
             obfs = query.get('obfs',[None])[0],
             first_seen=datetime.now()
         )
+
+@dataclass(frozen=True)
+class SSConfConfig: # Data class for ssconf protocol
+    """Конфигурация Shadowsocks Conf прокси."""
+    server: str
+    server_port: int
+    local_address: str
+    local_port: int
+    password: str
+    timeout: int
+    method: str
+    protocol: str
+    protocol_param: Optional[str] = None
+    obfs: str
+    obfs_param: Optional[str] = None
+    remarks: Optional[str] = None
+    group: Optional[str] = None
+    udp_over_tcp: bool = False
+    first_seen: Optional[datetime] = field(default_factory=datetime.now)
+
+    def __hash__(self):
+        return hash(astuple(self))
+
+    @classmethod
+    async def from_url(cls, config_string: str, resolver: aiodns.DNSResolver) -> "SSConfConfig":
+        """Создает объект SSConfConfig из строки конфигурации."""
+        try:
+            config_b64 = config_string.split("ssconf://")[1]
+            config_json_str = base64.urlsafe_b64decode(config_b64 + '=' * (4 - len(config_b64) % 4)).decode('utf-8')
+            config_json = json.loads(config_json_str)
+
+            # Normalize keys to lowercase for case-insensitive access
+            config_json = {k.lower(): v for k, v in config_json.items()}
+
+            return cls(
+                server=config_json.get('server'),
+                server_port=int(config_json.get('server_port')),
+                local_address=config_json.get('local_address', '127.0.0.1'), # Default values if missing
+                local_port=int(config_json.get('local_port', 1080)),        # Default values if missing
+                password=config_json.get('password'),
+                timeout=int(config_json.get('timeout', 300)),              # Default values if missing
+                method=config_json.get('method'),
+                protocol=config_json.get('protocol', 'origin'),          # Default values if missing
+                protocol_param=config_json.get('protocol_param'),
+                obfs=config_json.get('obfs', 'plain'),                   # Default values if missing
+                obfs_param=config_json.get('obfs_param'),
+                remarks=config_json.get('remarks'),
+                group=config_json.get('group'),
+                udp_over_tcp=bool(config_json.get('udp_over_tcp', False)), # Default values if missing
+                first_seen=datetime.now()
+            )
+        except json.JSONDecodeError as e:
+            raise ConfigParseError(f"JSON decode error: {e}")
+        except KeyError as e:
+            raise ConfigParseError(f"Missing key in config: {e}")
+        except ValueError as e:
+            raise ConfigParseError(f"Value error: {e}")
+        except Exception as e:
+            raise ConfigParseError(f"Unexpected error parsing ssconf: {e}")
 
 
 @dataclass(frozen=True)
@@ -327,7 +387,7 @@ class ChannelMetrics:
 class ChannelConfig:
     """Конфигурация канала для проверки прокси."""
     RESPONSE_TIME_DECAY = 0.7
-    VALID_PROTOCOLS = ["http://", "https://", "vless://", "ss://", "trojan://", "tuic://", "hy2://"]
+    VALID_PROTOCOLS = ["http://", "https://", "vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"] # Добавлен ssconf://
 
     def __init__(self, url: str, request_timeout: int = REQUEST_TIMEOUT):
         """Инициализирует объект ChannelConfig."""
@@ -553,6 +613,22 @@ class ScoringWeights(Enum):
     SS_PLUGIN_OBFS_HTTP = 8
     SS_PLUGIN_NONE = 0
 
+    SSCONF_SERVER_PORT = 5 # Example weights for SSCONF
+    SSCONF_METHOD_CHACHA20_IETF_POLY1305 = 15
+    SSCONF_METHOD_AES_256_GCM = 14
+    SSCONF_METHOD_AES_128_GCM = 12
+    SSCONF_METHOD_NONE = -20
+    SSCONF_PASSWORD_LENGTH = 5
+    SSCONF_PROTOCOL_ORIGIN = 3
+    SSCONF_PROTOCOL_AUTH_SHA1_V4 = 7
+    SSCONF_PROTOCOL_AUTH_AES128_CFB = 7
+    SSCONF_OBFS_PLAIN = 0
+    SSCONF_OBFS_TLS = 10
+    SSCONF_OBFS_HTTP = 8
+    SSCONF_OBFS_WEBSOCKET = 10
+    SSCONF_UDP_OVER_TCP = 5
+
+
     TROJAN_SECURITY_TLS = 15
     TROJAN_TRANSPORT_WS = 10
     TROJAN_TRANSPORT_TCP = 2
@@ -725,6 +801,7 @@ def _parse_hop_interval(hop_interval_str: Optional[str]) -> Optional[int]:
         logger.warning(f"Invalid hopInterval value, using None: {hop_interval_str}")
         return None
 
+import base64 # Import for ssconf decode
 
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
     """Резолвит доменное имя в IP-адрес."""
@@ -794,6 +871,43 @@ def _calculate_ss_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> 
         score += plugin_scores.get(plugin, 0)
     else:
         score += loaded_weights.get("SS_PLUGIN_NONE", ScoringWeights.SS_PLUGIN_NONE.value)
+    return score
+
+def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> float:
+    """Вычисляет скор для Shadowsocks Conf конфигурации."""
+    score = 0
+
+    score += loaded_weights.get("SSCONF_SERVER_PORT", ScoringWeights.SSCONF_SERVER_PORT.value) if config_obj.server_port in [80, 443, 8080, 8443] else 0
+
+    method_scores = {
+        'chacha20-ietf-poly1305': loaded_weights.get("SSCONF_METHOD_CHACHA20_IETF_POLY1305", ScoringWeights.SSCONF_METHOD_CHACHA20_IETF_POLY1305.value),
+        'aes-256-gcm': loaded_weights.get("SSCONF_METHOD_AES_256_GCM", ScoringWeights.SSCONF_METHOD_AES_256_GCM.value),
+        'aes-128-gcm': loaded_weights.get("SSCONF_METHOD_AES_128_GCM", ScoringWeights.SSCONF_METHOD_AES_128_GCM.value),
+        'none': loaded_weights.get("SSCONF_METHOD_NONE", ScoringWeights.SSCONF_METHOD_NONE.value) # Consider if 'none' is valid for ssconf
+    }
+    score += method_scores.get(config_obj.method, 0)
+
+    score += min(loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value),
+                 len(config_obj.password or '') / 16 * loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value)) if config_obj.password else 0
+
+    protocol_scores = {
+        'origin': loaded_weights.get("SSCONF_PROTOCOL_ORIGIN", ScoringWeights.SSCONF_PROTOCOL_ORIGIN.value),
+        'auth_sha1_v4': loaded_weights.get("SSCONF_PROTOCOL_AUTH_SHA1_V4", ScoringWeights.SSCONF_PROTOCOL_AUTH_SHA1_v4.value),
+        'auth_aes128_cfb': loaded_weights.get("SSCONF_PROTOCOL_AUTH_AES128_CFB", ScoringWeights.SSCONF_PROTOCOL_AUTH_AES128_CFB.value),
+    }
+    score += protocol_scores.get(config_obj.protocol, loaded_weights.get("SSCONF_PROTOCOL_ORIGIN", ScoringWeights.SSCONF_PROTOCOL_ORIGIN.value)) # Default to origin if not found
+
+    obfs_scores = {
+        'plain': loaded_weights.get("SSCONF_OBFS_PLAIN", ScoringWeights.SSCONF_OBFS_PLAIN.value),
+        'tls': loaded_weights.get("SSCONF_OBFS_TLS", ScoringWeights.SSCONF_OBFS_TLS.value),
+        'http': loaded_weights.get("SSCONF_OBFS_HTTP", ScoringWeights.SSCONF_OBFS_HTTP.value),
+        'websocket': loaded_weights.get("SSCONF_OBFS_WEBSOCKET", ScoringWeights.SSCONF_OBFS_WEBSOCKET.value),
+    }
+    score += obfs_scores.get(config_obj.obfs, loaded_weights.get("SSCONF_OBFS_PLAIN", ScoringWeights.SSCONF_OBFS_PLAIN.value)) # Default to plain if not found
+
+    if config_obj.udp_over_tcp:
+        score += loaded_weights.get("SSCONF_UDP_OVER_TCP", ScoringWeights.SSCONF_UDP_OVER_TCP.value)
+
     return score
 
 
@@ -923,37 +1037,46 @@ def compute_profile_score(config: str, channel_response_time: float = 0.0, loade
     if loaded_weights is None:
         loaded_weights = ScoringWeights.load_weights_from_json()
 
-    try:
-        parsed = urlparse(config)
-        query = parse_qs(parsed.query)
-    except Exception as e:
-        logger.error(f"Ошибка парсинга URL {config}: {e}")
-        return 0.0
-
     protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
     if not protocol:
         return 0.0
 
-    score = loaded_weights.get("PROTOCOL_BASE", ScoringWeights.PROTOCOL_BASE.value)
-    score += _calculate_common_score(parsed, query, loaded_weights)
-    score += channel_response_time * loaded_weights.get("RESPONSE_TIME", ScoringWeights.RESPONSE_TIME.value)
-    score *= (channel_score / 100.0)
+    if protocol == "ssconf://":
+        try:
+            config_obj = SSConfConfig.from_url(config, None) # resolver not needed for ssconf scoring
+            score = _calculate_ssconf_score(config_obj, loaded_weights)
+        except ConfigParseError as e:
+            logger.error(f"Error parsing ssconf config for scoring: {e}")
+            return 0.0
 
-    score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
-                 (200.0 / (len(config) + 1)) * loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value))
+    else: # Handle URL based protocols
+        try:
+            parsed = urlparse(config)
+            query = parse_qs(parsed.query)
+        except Exception as e:
+            logger.error(f"Ошибка парсинга URL {config}: {e}")
+            return 0.0
 
-    if first_seen:
-        days_old = (datetime.now() - first_seen).days
-        score += days_old * loaded_weights.get("AGE_PENALTY", ScoringWeights.AGE_PENALTY.value)
+        score = loaded_weights.get("PROTOCOL_BASE", ScoringWeights.PROTOCOL_BASE.value)
+        score += _calculate_common_score(parsed, query, loaded_weights)
+        score += channel_response_time * loaded_weights.get("RESPONSE_TIME", ScoringWeights.RESPONSE_TIME.value)
+        score *= (channel_score / 100.0)
 
-    protocol_calculators = {
-        "vless://": _calculate_vless_score,
-        "ss://": _calculate_ss_score,
-        "trojan://": _calculate_trojan_score,
-        "tuic://": _calculate_tuic_score,
-        "hy2://": _calculate_hy2_score,
-    }
-    score += protocol_calculators[protocol](parsed, query, loaded_weights)
+        score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
+                     (200.0 / (len(config) + 1)) * loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value))
+
+        if first_seen:
+            days_old = (datetime.now() - first_seen).days
+            score += days_old * loaded_weights.get("AGE_PENALTY", ScoringWeights.AGE_PENALTY.value)
+
+        protocol_calculators = {
+            "vless://": _calculate_vless_score,
+            "ss://": _calculate_ss_score,
+            "trojan://": _calculate_trojan_score,
+            "tuic://": _calculate_tuic_score,
+            "hy2://": _calculate_hy2_score,
+        }
+        score += protocol_calculators.get(protocol, lambda *args: 0)(parsed, query, loaded_weights) # Use get with default lambda
 
     max_possible_score = sum(weight for weight in loaded_weights.values())
     normalized_score = (score / max_possible_score) * 100 if max_possible_score > 0 else 0.0
@@ -978,6 +1101,9 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
         if method == "CHACHA20-IETF-POLY1305":
             return ProfileName.SS_CHACHa20_IETF_POLY1305.value
         return ProfileName.SS_FORMAT.value.format(method=method)
+
+    elif scheme == "ssconf": # Custom name for ssconf
+        return ProfileName.SSCONF_FORMAT.value
 
     elif scheme == "trojan":
         transport_type = query.get("type", ["tcp"])[0].upper()
@@ -1039,7 +1165,11 @@ def is_valid_proxy_url(url: str) -> bool:
     """Проверяет, является ли URL валидным URL прокси."""
     if not any(url.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
         return False
-    try:
+
+    if url.startswith("ssconf://"): # Basic validation for ssconf
+        return url.startswith("ssconf://") and len(url) > len("ssconf://")
+
+    try: # URL based protocols validation
         parsed = urlparse(url)
         scheme = parsed.scheme
         if scheme in ('vless', 'trojan', 'tuic'):
@@ -1078,30 +1208,40 @@ def is_valid_uuid(uuid_string: str) -> bool:
 
 async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Optional[object]:
     """Парсит строку конфигурации прокси и возвращает объект конфигурации."""
-    try:
-        parsed = urlparse(config_string)
-        if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
+    protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p)), None)
+
+    if protocol == "ssconf://": # Parse ssconf
+        try:
+            return await SSConfConfig.from_url(config_string, resolver) # Resolver not actually used in SSConfConfig.from_url for now
+        except ConfigParseError as e:
+            logger.error(f"Ошибка парсинга ssconf конфигурации: {config_string} - {e}")
             return None
-        query = parse_qs(parsed.query)
-        scheme = parsed.scheme
 
-        config_parsers = {
-            "vless": VlessConfig.from_url,
-            "ss": SSConfig.from_url,
-            "trojan": TrojanConfig.from_url,
-            "tuic": TuicConfig.from_url,
-            "hy2": Hy2Config.from_url,
-        }
-        if scheme in config_parsers:
-            return await config_parsers[scheme](parsed, query, resolver)
-        return None
+    else: # Parse URL based protocols
+        try:
+            parsed = urlparse(config_string)
+            if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
+                return None
+            query = parse_qs(parsed.query)
+            scheme = parsed.scheme
 
-    except (InvalidURLError, UnsupportedProtocolError, InvalidParameterError, ConfigParseError) as e:
-        logger.error(f"Ошибка парсинга конфигурации: {config_string} - {e}")
-        return None
-    except Exception as e:
-        logger.exception(f"Непредвиденная ошибка при парсинге конфигурации {config_string}: {e}")
-        return None
+            config_parsers = {
+                "vless": VlessConfig.from_url,
+                "ss": SSConfig.from_url,
+                "trojan": TrojanConfig.from_url,
+                "tuic": TuicConfig.from_url,
+                "hy2": Hy2Config.from_url,
+            }
+            if scheme in config_parsers:
+                return await config_parsers[scheme](parsed, query, resolver)
+            return None
+
+        except (InvalidURLError, UnsupportedProtocolError, InvalidParameterError, ConfigParseError) as e:
+            logger.error(f"Ошибка парсинга конфигурации: {config_string} - {e}")
+            return None
+        except Exception as e:
+            logger.exception(f"Непредвиденная ошибка при парсинге конфигурации {config_string}: {e}")
+            return None
 
 
 # --- Функции для обработки каналов и прокси ---
