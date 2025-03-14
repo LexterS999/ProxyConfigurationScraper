@@ -79,27 +79,27 @@ DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
 MIN_ACCEPTABLE_SCORE = 10.0
 MIN_CONFIG_LENGTH = 10
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
-MAX_CONCURRENT_CHANNELS = 10
-MAX_CONCURRENT_PROXIES_PER_CHANNEL = 30
-MAX_CONCURRENT_PROXIES_GLOBAL = 60
-REQUEST_TIMEOUT = 120
-HIGH_FREQUENCY_THRESHOLD_HOURS = 72
+MAX_CONCURRENT_CHANNELS = 90
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
+MAX_CONCURRENT_PROXIES_GLOBAL = 120
+REQUEST_TIMEOUT = 6
+HIGH_FREQUENCY_THRESHOLD_HOURS = 24
 HIGH_FREQUENCY_BONUS = 30
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
-MAX_RETRIES = 4
-RETRY_DELAY_BASE = 6
+MAX_RETRIES = 1
+RETRY_DELAY_BASE = 1
 AGE_PENALTY_PER_DAY = 0.1
 
 # Протокол-специфичные таймауты для проверок (в секундах)
 PROTOCOL_TIMEOUTS = {
-    "vless": 30.0,
-    "trojan": 30.0,
-    "ss": 30.0,
-    "ssconf": 30.0,
-    "tuic": 30.0,
-    "hy2": 30.0,
-    "default": 30.0
+    "vless": 4.0,
+    "trojan": 4.0,
+    "ss": 4.0,
+    "ssconf": 4.0,
+    "tuic": 4.0,
+    "hy2": 4.0,
+    "default": 4.0
 }
 
 
