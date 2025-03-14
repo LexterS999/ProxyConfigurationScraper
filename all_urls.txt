@@ -108,7 +108,6 @@ https://raw.githubusercontent.com/Kwinshadow/TelegramV2rayCollector/main/sublink
 https://raw.githubusercontent.com/Kwinshadow/TelegramV2rayCollector/main/sublinks/ss.txt
 https://raw.githubusercontent.com/Kwinshadow/TelegramV2rayCollector/main/sublinks/trojan.txt
 https://raw.githubusercontent.com/Kwinshadow/TelegramV2rayCollector/main/sublinks/mix.txt
-https://raw.githubusercontent.com/V2RAYCONFIGSPOOL/V2RAY_SUB/refs/heads/main/V2RAY_SUB.txt
 https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt
 https://raw.githubusercontent.com/Epodonios/bulk-xray-v2ray-vless-vmess-...-configs/refs/heads/main/sub/United%20States/config.txt
 https://raw.githubusercontent.com/Epodonios/bulk-xray-v2ray-vless-vmess-...-configs/refs/heads/main/sub/United%20Kingdom/config.txt
@@ -118,7 +117,6 @@ https://raw.githubusercontent.com/Epodonios/bulk-xray-v2ray-vless-vmess-...-conf
 https://raw.githubusercontent.com/Epodonios/bulk-xray-v2ray-vless-vmess-...-configs/refs/heads/main/sub/Germany/config.txt
 https://raw.githubusercontent.com/Epodonios/bulk-xray-v2ray-vless-vmess-...-configs/refs/heads/main/sub/Netherlands/config.txt
 https://raw.githubusercontent.com/Epodonios/bulk-xray-v2ray-vless-vmess-...-configs/refs/heads/main/sub/Poland/config.txt
-https://raw.githubusercontent.com/Epodonios/bulk-xray-v2ray-vless-vmess-...-configs/refs/heads/main/sub/Romania/config.txt
 https://raw.githubusercontent.com/Epodonios/bulk-xray-v2ray-vless-vmess-...-configs/refs/heads/main/sub/Sweden/config.txt
 https://raw.githubusercontent.com/Epodonios/bulk-xray-v2ray-vless-vmess-...-configs/refs/heads/main/sub/Switzerland/config.txt
 https://raw.githubusercontent.com/ts-sf/fly/main/v2
@@ -129,7 +127,6 @@ https://raw.githubusercontent.com/MrPooyaX/SansorchiFucker/main/data.txt
 https://mrpooyax.camdvr.org/api/ramezan/lena.php?sub=1
 https://mrpooyax.camdvr.org/api/ramezan/run.php?sub=1
 https://mrpooyax.camdvr.org/api/ramezan/v2raySH.php?sub=1
-https://raw.githubusercontent.com/yebekhe/TVC/main/subscriptions/xray/base64/mix
 https://mrpooyax.camdvr.org/api/ramezan/alpha.php?sub=1
 https://raw.githubusercontent.com/hkpc/V2ray-Configs/refs/heads/main/All_Configs_Sub.txt
 https://raw.githubusercontent.com/v2clash/V2ray-Configs/refs/heads/main/All_Configs_Sub.txt
@@ -142,15 +139,8 @@ https://raw.githubusercontent.com/peasoft/NoMoreWalls/refs/heads/master/list_raw
 https://raw.githubusercontent.com/SonzaiEkkusu/V2RayDumper/refs/heads/main/config.txt
 https://raw.githubusercontent.com/MhdiTaheri/V2rayCollector/main/sub/vmess
 https://raw.githubusercontent.com/theGreatPeter/v2rayNodes/refs/heads/main/nodes.txt
-https://raw.githubusercontent.com/NiREvil/vless/main/sub/G-Core
 https://raw.githubusercontent.com/NiREvil/vless/main/sub/SSTime
 https://raw.githubusercontent.com/coldwater-10/V2rayCollector/main/vmess_iran.txt
-https://raw.githubusercontent.com/amirmohammad-mohammad-88/Sub-Reality-Azadi-config/Config/Azadi-Reality-Different
-https://raw.githubusercontent.com/amirmohammad-mohammad-88/Sub-Reality-Azadi-config/Config/Config
-https://raw.githubusercontent.com/amirmohammad-mohammad-88/Sub-Config-operator/Config/MCI.txt
-https://raw.githubusercontent.com/amirmohammad-mohammad-88/Sub-Config-operator/Config/Mobinet.txt
-https://raw.githubusercontent.com/amirmohammad-mohammad-88/Sub-Config-operator/Config/Mokhabrat.txt
-https://raw.githubusercontent.com/amirmohammad-mohammad-88/Sub-Config-operator/Config/Rightel.txt
 https://raw.githubusercontent.com/amirmohammad-mohammad-88/Sub-Config-operator/Config/irancell.txt
 https://raw.githubusercontent.com/amirmohammad-mohammad-88/Sub-Config-operator/Config/shatel.txt
 https://github.com/darknessm427/V2ray-Sub-Collector/blob/main/All_Darkness_Sub.txt
