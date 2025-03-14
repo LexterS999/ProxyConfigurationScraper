@@ -76,31 +76,30 @@ def colored_log(level, message):
 
 # Константы
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
-MIN_ACCEPTABLE_SCORE = 40.0
-MIN_CONFIG_LENGTH = 30
+MIN_ACCEPTABLE_SCORE = 10.0
+MIN_CONFIG_LENGTH = 10
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
-MAX_CONCURRENT_CHANNELS = 200
-MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
-MAX_CONCURRENT_PROXIES_GLOBAL = 500
+MAX_CONCURRENT_CHANNELS = 10
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = 30
+MAX_CONCURRENT_PROXIES_GLOBAL = 60
 REQUEST_TIMEOUT = 120
-HIGH_FREQUENCY_THRESHOLD_HOURS = 12
-HIGH_FREQUENCY_BONUS = 3
+HIGH_FREQUENCY_THRESHOLD_HOURS = 72
+HIGH_FREQUENCY_BONUS = 30
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
-MAX_RETRIES = 3
-RETRY_DELAY_BASE = 2
+MAX_RETRIES = 4
+RETRY_DELAY_BASE = 6
 AGE_PENALTY_PER_DAY = 0.1
-TEST_HTTP_URL = "http://httpbin.org/ip" # URL для HTTP/HTTPS проверки прокси - Больше не используется напрямую для проверки
 
 # Протокол-специфичные таймауты для проверок (в секундах)
 PROTOCOL_TIMEOUTS = {
-    "vless": 7.0,
-    "trojan": 7.0,
-    "ss": 7.0,
-    "ssconf": 7.0,
-    "tuic": 9.0,
-    "hy2": 9.0,
-    "default": 7.0
+    "vless": 30.0,
+    "trojan": 30.0,
+    "ss": 30.0,
+    "ssconf": 30.0,
+    "tuic": 30.0,
+    "hy2": 30.0,
+    "default": 30.0
 }
 
 
