@@ -807,7 +807,7 @@ class ProxyConfig:
                 logger.warning(f"Неверная конфигурация пропущена: {config}")
                 continue
             try:
-                normalized_url = asyncio.run(self._normalize_url(config.url))
+                normalized_url = await self._normalize_url(config.url)
                 if normalized_url not in seen_urls:
                     seen_urls.add(normalized_url)
                     unique_configs.append(config)
@@ -851,9 +851,9 @@ class ProxyConfig:
         except Exception as e:
             logger.error(f"Ошибка при удалении нерабочих каналов из {self.ALL_URLS_FILE}: {e}")
 
-    def save_bad_channel_url(self, channel_url: str):
+    async def save_bad_channel_url(self, channel_url: str):
         """Сохраняет URL канала в файл bad_channels.txt, избегая дубликатов."""
-        normalized_url = asyncio.run(self._normalize_url(channel_url)) # Normalize URL before saving
+        normalized_url = await self._normalize_url(channel_url) # Normalize URL before saving
 
         if normalized_url in self.bad_channels_list: # Check if already in bad channels list
             logger.debug(f"URL плохого канала уже существует в {BAD_CHANNELS_FILE}: {channel_url}")
