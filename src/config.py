@@ -1636,7 +1636,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
                 logger.warning(f"⚠️ Не удалось загрузить содержимое из URL: {channel.url}. Пропускаем канал.")
                 channel.update_load_success_history(False) # Помечаем загрузку как неудачную
                 channel.metrics.quality_category = "Bad" # Устанавливаем категорию качества как "Bad" для недоступных каналов
-                # proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала - **УДАЛЕНО**
+                await proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала - **ДОБАВЛЕНО ЗДЕСЬ**
                 continue # Переходим к следующему каналу
             channel.update_load_success_history(True) # Помечаем загрузку как успешную, если содержимое загружено
             logger.info(f"✅ Прокси конфигурации успешно загружены из URL: {channel.url}") # Логируем успешную загрузку
@@ -1644,7 +1644,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
             logger.error(f"Ошибка при обработке URL канала: {channel.url}. Ошибка: {e}")
             channel.update_load_success_history(False) # Помечаем загрузку как неудачную
             channel.metrics.quality_category = "Bad" # Устанавливаем категорию качества как "Bad" для недоступных каналов
-            # proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала - **УДАЛЕНО**
+            await proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала - **ДОБАВЛЕНО ЗДЕСЬ**
             continue
 
         lines = lines_str.splitlines() if lines_str else [] # Разделяем на строки, если содержимое было загружено
