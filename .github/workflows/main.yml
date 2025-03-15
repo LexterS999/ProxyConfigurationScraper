@@ -68,7 +68,15 @@ jobs:
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
     - name: Commit and push changes
+      id: git_push
       run: |
+        git pull --rebase origin main || true # Added git pull to sync with remote
         git add configs/scoring_weights.json configs/proxy_configs.txt all_urls.txt
-        git commit --allow-empty -m "Update proxy configs, stats and reports"
-        git push
+        if ! git diff --staged --quiet; then # Check if there are changes to commit
+          git commit -m "Update proxy configs, stats and reports"
+          git push origin HEAD:main
+          echo "::set-output name=pushed::true" # Set output if push happened
+        else
+          echo "No changes to commit."
+          echo "::set-output name=pushed::false" # Set output if no push happened
+        fi
