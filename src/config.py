@@ -93,6 +93,14 @@ ConfigType = Union["VlessConfig", "SSConfig", "SSConfConfig", "TrojanConfig", "T
 ParserFunction = Callable[[str, aiodns.DNSResolver], Awaitable[Optional[ConfigType]]]
 CONFIG_PARSERS: Dict[str, ParserFunction] = {}
 
+# --- Декоратор для регистрации парсеров ---
+def register_parser(protocol: str):
+    """Декоратор для регистрации функций парсинга конфигураций."""
+    def decorator(func: ParserFunction) -> ParserFunction:
+        CONFIG_PARSERS[protocol] = func
+        return func
+    return decorator
+
 # --- Исключения ---
 class InvalidURLError(ValueError):
     """Исключение для невалидных URL."""
@@ -1373,7 +1381,7 @@ async def compute_profile_score(config_obj: ConfigType, loaded_weights: Optional
         query = parse_qs(parsed.query)
         protocol_name = parsed.scheme
         score = ScoringWeights.PROTOCOL_BASE.value
-        score += _calculate_common_score(parsed, query, loaded_weights)
+        score += _calculate_common_score(parsed, query, loaded_weights) # Assuming _calculate_common_score is defined somewhere, if not, consider removing or implementing it.
         score += min(ScoringWeights.CONFIG_LENGTH.value,
                      (200.0 / (len(config_str) + 1)) * ScoringWeights.CONFIG_LENGTH.value)
         if hasattr(config_obj, 'first_seen') and config_obj.first_seen:
