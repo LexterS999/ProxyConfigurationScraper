@@ -50,7 +50,7 @@ MAX_CONCURRENT_PROXIES_GLOBAL = 120
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 PROTOCOL_TIMEOUT = 4.0
-SOURCE_URL_TIMEOUT = 10.0
+SOURCE_URL_TIMEOUT = 1.0
 
 
 # --- Исключения ---
