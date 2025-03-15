@@ -1,5 +1,5 @@
 import asyncio
-import aiohttp
+import aiodns
 import re
 import os
 import json
@@ -20,7 +20,6 @@ from typing import Dict, List, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field, astuple, replace
 from collections import defaultdict
 
-import aiodns
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
@@ -76,20 +75,14 @@ def colored_log(level, message):
 
 # Константы
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
-MIN_ACCEPTABLE_SCORE = 10.0
-MIN_CONFIG_LENGTH = 10
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
 MAX_CONCURRENT_CHANNELS = 90
 MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
 MAX_CONCURRENT_PROXIES_GLOBAL = 120
-REQUEST_TIMEOUT = 6
-HIGH_FREQUENCY_THRESHOLD_HOURS = 24
-HIGH_FREQUENCY_BONUS = 30
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 1
 RETRY_DELAY_BASE = 1
-AGE_PENALTY_PER_DAY = 0.1
 
 # Протокол-специфичные таймауты для проверок (в секундах)
 PROTOCOL_TIMEOUTS = {
@@ -411,11 +404,6 @@ class ChannelMetrics:
     """Метрики канала."""
     valid_configs: int = 0
     unique_configs: int = 0
-    avg_response_time: float = 0.0
-    last_success_time: Optional[datetime] = None
-    fail_count: int = 0
-    success_count: int = 0
-    overall_score: float = 0.0
     protocol_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     protocol_scores: Dict[str, List[float]] = field(default_factory=lambda: defaultdict(list))
     first_seen: Optional[datetime] = None
@@ -424,13 +412,12 @@ class ChannelMetrics:
 class ChannelConfig:
     """Конфигурация канала для проверки прокси."""
     RESPONSE_TIME_DECAY = 0.7
-    VALID_PROTOCOLS = ["http://", "https://", "vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
+    VALID_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
 
-    def __init__(self, url: str, request_timeout: int = REQUEST_TIMEOUT):
+    def __init__(self, url: str):
         """Инициализирует объект ChannelConfig."""
         self.url = self._validate_url(url)
         self.metrics = ChannelMetrics()
-        self.request_timeout = request_timeout
         self.check_count = 0
         self.metrics.first_seen = datetime.now()
 
@@ -453,64 +440,6 @@ class ChannelConfig:
             )
         return url
 
-    def calculate_overall_score(self):
-        """Вычисляет общий рейтинг канала на основе метрик."""
-        try:
-            success_ratio = self._calculate_success_ratio()
-            recency_bonus = self._calculate_recency_bonus()
-            response_time_penalty = self._calculate_response_time_penalty()
-
-            max_possible_score = (ScoringWeights.CHANNEL_STABILITY.value + HIGH_FREQUENCY_BONUS)
-            self.metrics.overall_score = round(
-                ((success_ratio * ScoringWeights.CHANNEL_STABILITY.value) + recency_bonus - response_time_penalty)
-                / max_possible_score * 100, 2)
-
-        except Exception as e:
-            logger.error(f"Ошибка при расчете рейтинга для {self.url}: {e}")
-            self.metrics.overall_score = 0.0
-
-    def _calculate_success_ratio(self) -> float:
-        """Вычисляет долю успешных проверок канала."""
-        total_checks = self.metrics.success_count + self.metrics.fail_count
-        return self.metrics.success_count / total_checks if total_checks > 0 else 0.0
-
-    def _calculate_recency_bonus(self) -> float:
-        """Вычисляет бонус за недавние успешные проверки."""
-        if self.metrics.last_success_time:
-            time_since_last_success = datetime.now() - self.metrics.last_success_time
-            return HIGH_FREQUENCY_BONUS if time_since_last_success.total_seconds() <= HIGH_FREQUENCY_THRESHOLD_HOURS * 3600 else 0.0
-        return 0.0
-
-    def _calculate_response_time_penalty(self) -> float:
-        """Вычисляет штраф за среднее время ответа."""
-        if self.metrics.avg_response_time > 0:
-            max_response_time_penalty = 20
-            penalty = min(self.metrics.avg_response_time / 5 * max_response_time_penalty, max_response_time_penalty)
-            return penalty
-        return 0.0
-
-    def update_channel_stats(self, success: bool, response_time: float = 0.0):
-        """Обновляет статистику канала."""
-        if not isinstance(success, bool):
-            raise TypeError(f"Аргумент 'success' должен быть bool, получено {type(success)}")
-        if not isinstance(response_time, numbers.Real):
-            raise TypeError(f"Аргумент 'response_time' должен быть числом, получено {type(response_time)}")
-
-        if success:
-            self.metrics.success_count += 1
-            self.metrics.last_success_time = datetime.now()
-        else:
-            self.metrics.fail_count += 1
-
-        if response_time > 0:
-            self.metrics.avg_response_time = (
-                (self.metrics.avg_response_time * self.RESPONSE_TIME_DECAY) + (
-                    response_time * (1 - self.RESPONSE_TIME_DECAY))
-                if self.metrics.avg_response_time
-                else response_time
-            )
-        self.calculate_overall_score()
-
 
 class ProxyConfig:
     """Управляет конфигурациями прокси."""
@@ -520,7 +449,7 @@ class ProxyConfig:
         self.resolver = None
         self.failed_channels = []
         self.processed_configs = set()
-        self.SOURCE_URLS = self._load_source_urls()
+        self.SOURCE_URLS = self._load_source_urls() # Still load source URLs, but need to adjust loading logic
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
         self.ALL_URLS_FILE = ALL_URLS_FILE
 
@@ -555,7 +484,7 @@ class ProxyConfig:
         url = url.strip()
         parsed = urlparse(url)
         if not parsed.scheme:
-            raise InvalidURLError(f"Отсутствует схема в URL: '{url}'. Ожидается 'http://' или 'https://'.")
+            raise InvalidURLError(f"Отсутствует схема в URL: '{url}'. Ожидается схема прокси.")
         if not parsed.netloc:
             raise InvalidURLError(f"Отсутствует netloc (домен или IP) в URL: '{url}'.")
         if not all(c in (string.ascii_letters + string.digits + '.-:') for c in parsed.netloc):
@@ -623,9 +552,7 @@ class ScoringWeights(Enum):
     """Перечисление весов, используемых для скоринга конфигураций прокси."""
     PROTOCOL_BASE = 20
     CONFIG_LENGTH = 5
-    RESPONSE_TIME = -0.1
     AGE_PENALTY = -0.05
-    CHANNEL_STABILITY = 15
 
     VLESS_SECURITY_TLS = 15
     VLESS_SECURITY_NONE = -10
@@ -768,45 +695,6 @@ class ScoringWeights(Enum):
         except Exception as e:
             logger.error(f"Error saving scoring weights to {file_path}: {e}")
 
-    @staticmethod
-    def calibrate_weights(training_data: List[Dict], features: List[str], target: str = 'score',
-                          file_path: str = DEFAULT_SCORING_WEIGHTS_FILE):
-        """Калибрует веса скоринга с использованием линейной регрессии."""
-        if not training_data:
-            logger.warning("No training data provided for weight calibration. Skipping.")
-            return
-
-        X = []
-        y = []
-        for profile_data in training_data:
-            feature_vector = [profile_data.get(feature, 0) for feature in features]
-            X.append(feature_vector)
-            y.append(profile_data.get(target, 0))
-
-        X = np.array(X)
-        y = np.array(y)
-
-        if X.shape[0] <= X.shape[1]:
-            logger.warning("Not enough data for weight calibration (need more data points than features). Skipping.")
-            return
-
-        model = LinearRegression()
-        try:
-            model.fit(X, y)
-        except Exception as e:
-            logger.error(f"Error during model fitting: {e}")
-            return
-
-        new_weights = {feature: abs(coef) for feature, coef in zip(features, model.coef_)}
-        total_weight = sum(new_weights.values())
-
-        if total_weight > 0:
-            normalized_weights = {k: (v / total_weight) * 100 for k, v in new_weights.items()}
-            saved_weights = {k: normalized_weights[k] for k in features} # Ensure only calibration features are saved
-            ScoringWeights.save_weights_to_json(saved_weights, file_path)
-            logger.info(f"Weights calibrated and saved: {saved_weights}")
-        else:
-            logger.warning("Total weight is zero after calibration. Skipping weight update.")
 
 
 # --- Вспомогательные функции ---
@@ -1068,7 +956,7 @@ def _calculate_common_score(parsed: urlparse, query: Dict, loaded_weights: Dict)
     return score
 
 
-async def compute_profile_score(config: str, channel_response_time: float = 0.0, loaded_weights: Dict = None, channel_score:float = 100.0, first_seen: Optional[datetime] = None) -> float:
+async def compute_profile_score(config: str, loaded_weights: Dict = None, first_seen: Optional[datetime] = None) -> float:
     """Вычисляет общий рейтинг профиля прокси."""
     if loaded_weights is None:
         loaded_weights = ScoringWeights.load_weights_from_json()
@@ -1095,8 +983,6 @@ async def compute_profile_score(config: str, channel_response_time: float = 0.0,
 
         score = loaded_weights.get("PROTOCOL_BASE", ScoringWeights.PROTOCOL_BASE.value)
         score += _calculate_common_score(parsed, query, loaded_weights)
-        score += channel_response_time * loaded_weights.get("RESPONSE_TIME", ScoringWeights.RESPONSE_TIME.value)
-        score *= (channel_score / 100.0)
 
         score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
                      (200.0 / (len(config) + 1)) * loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value))
@@ -1331,102 +1217,11 @@ async def _ss_handshake(config_obj: SSConfig, timeout: float) -> bool:
     return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Shadowsocks")
 
 
-# --- Функции для обработки каналов и прокси (с протокол-специфичной проверкой) ---
-async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession,
-                          channel_semaphore: asyncio.Semaphore,
-                          proxy_config: "ProxyConfig",
-                          global_proxy_semaphore: asyncio.Semaphore
-                          ) -> List[Dict]:
-    """Обрабатывает один канал, загружает конфигурации прокси и проверяет их протокол-специфичными тестами."""
-    proxies = []
-    loaded_weights = ScoringWeights.load_weights_from_json()
-
-    async with channel_semaphore:
-        retries = 0
-        success = False
-        response_time = 0
-        text = ""
-
-        while retries < MAX_RETRIES and not success:
-            start_time = asyncio.get_event_loop().time()
-            try:
-                colored_log(logging.INFO, f"Загрузка контента из канала: {channel.url} (попытка {retries+1}/{MAX_RETRIES})...")
-                async with session.get(channel.url, timeout=channel.request_timeout) as response:
-                    response.raise_for_status()
-                    text = await response.text()
-                    end_time = asyncio.get_event_loop().time()
-                    response_time = end_time - start_time
-                    success = True
-
-            except aiohttp.ClientResponseError as e:
-                retries += 1
-                retry_delay = RETRY_DELAY_BASE * (2 ** (retries - 1))
-                colored_log(logging.WARNING,
-                    f"HTTP ошибка при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}): "
-                    f"{e.status} {e.message}. Повтор через {retry_delay} сек."
-                )
-                await asyncio.sleep(retry_delay)
-            except asyncio.TimeoutError:
-                retries += 1
-                retry_delay = RETRY_DELAY_BASE * (2 ** (retries - 1))
-                colored_log(logging.WARNING,
-                    f"Таймаут при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}). "
-                    f"Повтор через {retry_delay} сек."
-                )
-                await asyncio.sleep(retry_delay)
-            except aiohttp.ClientError as e:
-                retries += 1
-                retry_delay = RETRY_DELAY_BASE * (2 ** (retries - 1))
-                colored_log(logging.WARNING,
-                    f"Ошибка клиента aiohttp при загрузке из {channel.url} (попытка {retries}/{MAX_RETRIES}): "
-                    f"{type(e).__name__} - {e}. Повтор через {retry_delay} сек."
-                )
-                await asyncio.sleep(retry_delay)
-
-            except Exception as e:
-                logger.exception(f"Непредвиденная ошибка при загрузке из {channel.url}: {e}")
-                channel.check_count += 1
-                channel.update_channel_stats(success=False)
-                return []
-
-        if not success:
-            colored_log(logging.ERROR, f"❌ Не удалось загрузить данные из {channel.url} после {MAX_RETRIES} попыток.")
-            channel.check_count += 1
-            channel.update_channel_stats(success=False)
-            proxy_config.failed_channels.append(channel.url)
-            return []
-
-        colored_log(logging.INFO, f"✅ Контент из {channel.url} успешно загружен за {response_time:.2f} секунд")
-        channel.update_channel_stats(success=True, response_time=response_time)
-
-        lines = text.splitlines()
-        proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
-        tasks = []
-
-        for line in lines:
-            line = line.strip()
-            if len(line) < MIN_CONFIG_LENGTH or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
-                continue
-            task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
-                                                        loaded_weights, proxy_semaphore, global_proxy_semaphore, session))
-            tasks.append(task)
-
-        results = await asyncio.gather(*tasks)
-        for result in results:
-            if result:
-                proxies.append(result)
-
-        channel.metrics.valid_configs += len(proxies)
-        channel.check_count += 1
-        colored_log(logging.INFO, f"📊 Канал {channel.url}: Найдено {len(proxies)} валидных конфигураций.")
-        return proxies
-
 
 async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_config: ProxyConfig, loaded_weights: Dict,
                               proxy_semaphore: asyncio.Semaphore,
-                              global_proxy_semaphore: asyncio.Semaphore,
-                              session: aiohttp.ClientSession) -> Optional[Dict]:
+                              global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
     """Обрабатывает одну конфигурацию прокси: парсит, проверяет доступность (протокол-специфично), скорит и сохраняет результат."""
     async with proxy_semaphore, global_proxy_semaphore:
         config_obj = await parse_config(line, proxy_config.resolver)
@@ -1461,9 +1256,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
 
         score = await compute_profile_score( # Вызов асинхронной функции compute_profile_score должен быть с await
             line,
-            channel_response_time=channel.metrics.avg_response_time,
             loaded_weights=loaded_weights,
-            channel_score=channel.metrics.overall_score,
             first_seen = config_obj.first_seen
         )
 
@@ -1485,18 +1278,36 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
-        tasks = [
-            process_channel(channel, session, channel_semaphore, proxy_config, global_proxy_semaphore)
-            for channel in channels
-        ]
-        results = await asyncio.gather(*tasks)
+    tasks = []
 
+    for channel in channels:
+        lines_str = ""
+        try:
+            with open(channel.url, 'r', encoding='utf-8') as f: # Treat channel.url as file path now
+                lines_str = f.read()
+        except Exception as e:
+            logger.error(f"Error reading channel file: {channel.url}. Error: {e}")
+            continue
+
+        lines = lines_str.splitlines()
+
+        proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
+        proxy_tasks = []
+        loaded_weights = ScoringWeights.load_weights_from_json()
+
+        for line in lines:
+            line = line.strip()
+            if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line): # Removed MIN_CONFIG_LENGTH
+                continue
+            task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
+                                                        loaded_weights, proxy_semaphore, global_proxy_semaphore))
+            proxy_tasks.append(task)
+        results = await asyncio.gather(*proxy_tasks)
         for result in results:
-            if isinstance(result, Exception):
-                logger.error(f"Ошибка при обработке канала: {result}")
-            elif result:
-                proxies_all.extend(result)
+            if result:
+                proxies_all.append(result)
+        channel.metrics.valid_configs += len(proxies_all) # Counting valid configs per "channel file"
+
     return proxies_all
 
 
@@ -1546,46 +1357,6 @@ def save_final_configs(proxies: List[Dict], output_file: str):
         logger.error(f"Ошибка сохранения конфигураций: {e}")
 
 
-def update_and_save_weights(channels: List[ChannelConfig], loaded_weights: Dict):
-    """Обновляет и сохраняет веса скоринга на основе статистики каналов."""
-    total_success_ratio = sum(channel._calculate_success_ratio() for channel in channels) / len(channels) if channels else 0
-    loaded_weights['CHANNEL_STABILITY'] = min(max(int(total_success_ratio * 100), 0), 100)
-
-    protocol_counts = defaultdict(int)
-    for channel in channels:
-        for protocol, count in channel.metrics.protocol_counts.items():
-            protocol_counts[protocol] += count
-
-    total_configs = sum(protocol_counts.values())
-    for protocol, count in protocol_counts.items():
-        ratio = (count / total_configs) * 100 if total_configs > 0 else 0
-        if protocol == "vless":
-            loaded_weights['PROTOCOL_BASE'] = min(max(int(ratio * 5), 0), 100)
-
-    all_response_times = [channel.metrics.avg_response_time for channel in channels if channel.metrics.avg_response_time > 0]
-    if all_response_times:
-        avg_response_time_all = sum(all_response_times) / len(all_response_times)
-        loaded_weights['RESPONSE_TIME'] = min(max(int(-avg_response_time_all * 2), -50), 0)
-
-    ScoringWeights.save_weights_to_json(loaded_weights)
-
-
-def prepare_training_data(proxies: List[Dict]) -> List[Dict]:
-    """Подготавливает данные для обучения модели калибровки весов."""
-    training_data = []
-    for proxy in proxies:
-        config = proxy['config']
-        parsed = urlparse(config)
-        query = parse_qs(parsed.query)
-        data = {
-            'score': proxy['score'],
-            'vless_security_tls': 1 if _get_value(query, 'security', 'none').lower() == 'tls' else 0,
-            'vless_transport_ws': 1 if _get_value(query, 'type', 'tcp').lower() == 'ws' else 0,
-            'vless_encryption_none': 1 if _get_value(query, 'encryption', 'none').lower() == 'none' else 0,
-        }
-        training_data.append(data)
-    return training_data
-
 
 def main():
     """Основная функция для запуска проверки прокси."""
@@ -1604,25 +1375,16 @@ def main():
 
         proxies = await process_all_channels(channels, proxy_config)
 
-        training_data = prepare_training_data(proxies)
-        features = [
-            'vless_security_tls',
-            'vless_transport_ws',
-            'vless_encryption_none',
-        ]
-        ScoringWeights.calibrate_weights(training_data, features)
 
         save_final_configs(proxies, proxy_config.OUTPUT_FILE)
-        update_and_save_weights(channels, loaded_weights)
-        proxy_config.remove_failed_channels_from_file()
+        proxy_config.remove_failed_channels_from_file() # Keep for file management, but might need to adjust logic
 
         if not statistics_logged:
             total_channels = len(channels)
             enabled_channels = sum(1 for channel in channels)
             disabled_channels = total_channels - enabled_channels
             total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
-            total_successes = sum(channel.metrics.success_count for channel in channels)
-            total_fails = sum(channel.metrics.fail_count for channel in channels)
+
 
             protocol_stats = defaultdict(int)
             for channel in channels:
@@ -1630,12 +1392,11 @@ def main():
                     protocol_stats[protocol] += count
 
             colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ПРОВЕРКИ ПРОКСИ ====================")
-            colored_log(logging.INFO, f"🔄 Всего каналов обработано: {total_channels}")
-            colored_log(logging.INFO, f"✅ Включено каналов: {enabled_channels}")
-            colored_log(logging.INFO, f"❌ Отключено каналов: {disabled_channels}")
+            colored_log(logging.INFO, f"🔄 Всего файлов-каналов обработано: {total_channels}") # Adjusted log message
+            colored_log(logging.INFO, f"✅ Включено файлов-каналов: {enabled_channels}") # Adjusted log message
+            colored_log(logging.INFO, f"❌ Отключено файлов-каналов: {disabled_channels}") # Adjusted log message
             colored_log(logging.INFO, f"✨ Всего найдено валидных конфигураций: {total_valid_configs}")
-            colored_log(logging.INFO, f"⬆️  Успешных загрузок каналов: {total_successes}")
-            colored_log(logging.INFO, f"⬇️  Неудачных загрузок каналов: {total_fails}")
+
 
             colored_log(logging.INFO, "\n breakdown by protocol:")
             if protocol_stats:
