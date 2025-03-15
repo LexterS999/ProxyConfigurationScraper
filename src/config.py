@@ -31,7 +31,7 @@ CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
 LOG_FILE = 'proxy_checker.log'
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 # Логирование в файл (WARNING и выше)
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
@@ -42,7 +42,7 @@ logger.addHandler(file_handler)
 
 # Логирование в консоль (INFO и выше)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.DEBUG)
 formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
@@ -1381,7 +1381,7 @@ def main():
         loop = asyncio.get_running_loop()
         proxy_config.set_event_loop(loop)
 
-        colored_log(logging.INFO, "🚀 Начало проверки прокси...")
+        colored_log(logging.DEBUG, "🚀 Начало проверки прокси...")
 
         proxies = await process_all_channels(channels, proxy_config)
 
