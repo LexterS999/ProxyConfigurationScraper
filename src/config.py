@@ -423,7 +423,12 @@ class ChannelConfig:
         self.metrics.first_seen = datetime.now()
 
     def _validate_url(self, url: str) -> str:
-        """Проверяет и нормализует URL канала."""
+        """Проверяет и нормализует URL канала.
+        
+        Изменение: теперь разрешаются ссылки с протоколами http и https,
+        так как файл all_urls.txt содержит внешние ссылки для скачивания списков прокси.
+        Также разрешаются прямые прокси-конфигурации с протоколами из VALID_PROTOCOLS.
+        """
         if not isinstance(url, str):
             raise InvalidURLError(f"URL должен быть строкой, получено: {type(url).__name__}")
         url = url.strip()
@@ -433,8 +438,9 @@ class ChannelConfig:
             raise InvalidURLError("URL содержит слишком много повторяющихся символов.")
 
         parsed = urlsplit(url)
-        if parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
-            expected_protocols = ', '.join(self.VALID_PROTOCOLS)
+        # Разрешаем http и https для внешних ссылок, либо ссылки с протоколами прокси
+        if parsed.scheme not in ["http", "https"] and parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
+            expected_protocols = ", ".join(["http", "https"] + self.VALID_PROTOCOLS)
             received_protocol_prefix = parsed.scheme or url[:10]
             raise UnsupportedProtocolError(
                 f"Неверный протокол URL. Ожидается: {expected_protocols}, получено: {received_protocol_prefix}..."
@@ -578,7 +584,7 @@ class ScoringWeights(Enum):
     SS_PLUGIN_OBFS_HTTP = 8
     SS_PLUGIN_NONE = 0
 
-    SSCONF_SERVER_PORT = 5 # Example weights for SSCONF
+    SSCONF_SERVER_PORT = 5
     SSCONF_METHOD_CHACHA20_IETF_POLY1305 = 15
     SSCONF_METHOD_AES_256_GCM = 14
     SSCONF_METHOD_AES_128_GCM = 12
@@ -592,7 +598,6 @@ class ScoringWeights(Enum):
     SSCONF_OBFS_HTTP = 8
     SSCONF_OBFS_WEBSOCKET = 10
     SSCONF_UDP_OVER_TCP = 5
-
 
     TROJAN_SECURITY_TLS = 15
     TROJAN_TRANSPORT_WS = 10
@@ -808,7 +813,7 @@ def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> f
         'chacha20-ietf-poly1305': loaded_weights.get("SSCONF_METHOD_CHACHA20_IETF_POLY1305", ScoringWeights.SSCONF_METHOD_CHACHA20_IETF_POLY1305.value),
         'aes-256-gcm': loaded_weights.get("SSCONF_METHOD_AES_256_GCM", ScoringWeights.SSCONF_METHOD_AES_256_GCM.value),
         'aes-128-gcm': loaded_weights.get("SSCONF_METHOD_AES_128_GCM", ScoringWeights.SSCONF_METHOD_AES_128_GCM.value),
-        'none': loaded_weights.get("SSCONF_METHOD_NONE", ScoringWeights.SSCONF_METHOD_NONE.value) # Consider if 'none' is valid for ssconf
+        'none': loaded_weights.get("SSCONF_METHOD_NONE", ScoringWeights.SSCONF_METHOD_NONE.value)
     }
     score += method_scores.get(config_obj.method, 0)
 
@@ -817,10 +822,10 @@ def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> f
 
     protocol_scores = {
         'origin': loaded_weights.get("SSCONF_PROTOCOL_ORIGIN", ScoringWeights.SSCONF_PROTOCOL_ORIGIN.value),
-        'auth_sha1_v4': loaded_weights.get("SSCONF_PROTOCOL_AUTH_SHA1_V4", ScoringWeights.SSCONF_PROTOCOL_AUTH_SHA1_v4.value),
+        'auth_sha1_v4': loaded_weights.get("SSCONF_PROTOCOL_AUTH_SHA1_V4", ScoringWeights.SSCONF_PROTOCOL_AUTH_SHA1_V4.value),
         'auth_aes128_cfb': loaded_weights.get("SSCONF_PROTOCOL_AUTH_AES128_CFB", ScoringWeights.SSCONF_PROTOCOL_AUTH_AES128_CFB.value),
     }
-    score += protocol_scores.get(config_obj.protocol, loaded_weights.get("SSCONF_PROTOCOL_ORIGIN", ScoringWeights.SSCONF_PROTOCOL_ORIGIN.value)) # Default to origin if not found
+    score += protocol_scores.get(config_obj.protocol, loaded_weights.get("SSCONF_PROTOCOL_ORIGIN", ScoringWeights.SSCONF_PROTOCOL_ORIGIN.value))
 
     obfs_scores = {
         'plain': loaded_weights.get("SSCONF_OBFS_PLAIN", ScoringWeights.SSCONF_OBFS_PLAIN.value),
@@ -828,7 +833,7 @@ def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> f
         'http': loaded_weights.get("SSCONF_OBFS_HTTP", ScoringWeights.SSCONF_OBFS_HTTP.value),
         'websocket': loaded_weights.get("SSCONF_OBFS_WEBSOCKET", ScoringWeights.SSCONF_OBFS_WEBSOCKET.value),
     }
-    score += obfs_scores.get(config_obj.obfs, loaded_weights.get("SSCONF_OBFS_PLAIN", ScoringWeights.SSCONF_OBFS_PLAIN.value)) # Default to plain if not found
+    score += obfs_scores.get(config_obj.obfs, loaded_weights.get("SSCONF_OBFS_PLAIN", ScoringWeights.SSCONF_OBFS_PLAIN.value))
 
     if config_obj.udp_over_tcp:
         score += loaded_weights.get("SSCONF_UDP_OVER_TCP", ScoringWeights.SSCONF_UDP_OVER_TCP.value)
@@ -968,13 +973,13 @@ async def compute_profile_score(config: str, loaded_weights: Dict = None, first_
 
     if protocol == "ssconf://":
         try:
-            config_obj = await SSConfConfig.from_url(config, None) # resolver not needed for ssconf scoring
+            config_obj = await SSConfConfig.from_url(config, None)
             score = _calculate_ssconf_score(config_obj, loaded_weights)
         except ConfigParseError as e:
             logger.error(f"Error parsing ssconf config for scoring: {e}")
             return 0.0
 
-    else: # Handle URL based protocols
+    else:
         try:
             parsed = urlparse(config)
             query = parse_qs(parsed.query)
@@ -999,7 +1004,7 @@ async def compute_profile_score(config: str, loaded_weights: Dict = None, first_
             "tuic://": _calculate_tuic_score,
             "hy2://": _calculate_hy2_score,
         }
-        score += protocol_calculators.get(protocol, lambda *args: 0)(parsed, query, loaded_weights) # Use get with default lambda
+        score += protocol_calculators.get(protocol, lambda *args: 0)(parsed, query, loaded_weights)
 
     max_possible_score = sum(weight for weight in loaded_weights.values())
     normalized_score = (score / max_possible_score) * 100 if max_possible_score > 0 else 0.0
@@ -1024,7 +1029,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
             return ProfileName.SS_CHACHA20_IETF_POLY1305.value
         return ProfileName.SS_FORMAT.value.format(method=method)
 
-    elif scheme == "ssconf": # Custom name for ssconf
+    elif scheme == "ssconf":
         return ProfileName.SSCONF_FORMAT.value
 
     elif scheme == "trojan":
@@ -1085,10 +1090,10 @@ def is_valid_proxy_url(url: str) -> bool:
     if not any(url.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
         return False
 
-    if url.startswith("ssconf://"): # Basic validation for ssconf
+    if url.startswith("ssconf://"):
         return url.startswith("ssconf://") and len(url) > len("ssconf://")
 
-    try: # URL based protocols validation
+    try:
         parsed = urlparse(url)
         scheme = parsed.scheme
         if scheme in ('vless', 'trojan', 'tuic'):
@@ -1129,14 +1134,14 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
     """Парсит строку конфигурации прокси и возвращает объект конфигурации."""
     protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p)), None)
 
-    if protocol == "ssconf://": # Parse ssconf
+    if protocol == "ssconf://":
         try:
-            return await SSConfConfig.from_url(config_string, resolver) # Resolver not actually used in SSConfConfig.from_url for now
+            return await SSConfConfig.from_url(config_string, resolver)
         except ConfigParseError as e:
             logger.error(f"Ошибка парсинга ssconf конфигурации: {config_string} - {e}")
             return None
 
-    else: # Parse URL based protocols
+    else:
         try:
             parsed = urlparse(config_string)
             if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
@@ -1178,7 +1183,7 @@ async def test_ss_connection(config_obj: SSConfig, timeout: float = PROTOCOL_TIM
 
 async def test_ssconf_connection(config_obj: SSConfConfig, timeout: float = PROTOCOL_TIMEOUTS.get("ssconf")) -> bool:
     """Проверка SSConf соединения: TCP handshake."""
-    return await test_ss_connection(SSConfig(method=config_obj.method, password=config_obj.password, address=config_obj.server, port=config_obj.server_port, plugin=None, obfs=config_obj.obfs), timeout=timeout) # Reuse SS handshake
+    return await test_ss_connection(SSConfig(method=config_obj.method, password=config_obj.password, address=config_obj.server, port=config_obj.server_port, plugin=None, obfs=config_obj.obfs), timeout=timeout)
 
 async def test_tuic_connection(config_obj: TuicConfig, timeout: float = PROTOCOL_TIMEOUTS.get("tuic")) -> bool:
     """Проверка TUIC соединения: TCP connect (для UDP-based протокола, минимальная TCP проверка)."""
@@ -1204,17 +1209,17 @@ async def _minimal_tcp_connection_test(host: str, port: int, timeout: float, pro
 
 
 async def _vless_handshake(config_obj: VlessConfig, timeout: float) -> bool:
-    """Минимальный handshake для VLESS (TCP connect - для начала). **НУЖНО РЕАЛИЗОВАТЬ VLESS HANDSHAKE!**"""
+    """Минимальный handshake для VLESS (TCP connect)."""
     return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="VLESS")
 
 
 async def _trojan_handshake(config_obj: TrojanConfig, timeout: float) -> bool:
-    """Минимальный handshake для Trojan (TCP connect - для начала). **НУЖНО РЕАЛИЗОВАТЬ TROJAN HANDSHAKE!**"""
+    """Минимальный handshake для Trojan (TCP connect)."""
     return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Trojan")
 
 
 async def _ss_handshake(config_obj: SSConfig, timeout: float) -> bool:
-    """Минимальный handshake для Shadowsocks (TCP connect - для начала). **НУЖНО РЕАЛИЗОВАТЬ SS HANDSHAKE!**"""
+    """Минимальный handshake для Shadowsocks (TCP connect)."""
     return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Shadowsocks")
 
 
@@ -1223,7 +1228,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_config: ProxyConfig, loaded_weights: Dict,
                               proxy_semaphore: asyncio.Semaphore,
                               global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
-    """Обрабатывает одну конфигурацию прокси: парсит, проверяет доступность (протокол-специфично), скорит и сохраняет результат."""
+    """Обрабатывает одну конфигурацию прокси: парсит, проверяет доступность, скорит и сохраняет результат."""
     async with proxy_semaphore, global_proxy_semaphore:
         config_obj = await parse_config(line, proxy_config.resolver)
         if config_obj is None:
@@ -1249,13 +1254,12 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
             return None
 
         if not is_reachable:
-            logger.debug(f"❌ Прокси {line} не прошла протокол-специфичную проверку.")
+            logger.debug(f"❌ Прокси {line} не прошла проверку.")
             return None
         else:
-            logger.debug(f"✅ Прокси {line} прошла протокол-специфичную проверку.")
+            logger.debug(f"✅ Прокси {line} прошла проверку.")
 
-
-        score = await compute_profile_score( # Вызов асинхронной функции compute_profile_score должен быть с await
+        score = await compute_profile_score(
             line,
             loaded_weights=loaded_weights,
             first_seen = config_obj.first_seen
@@ -1279,22 +1283,22 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
 
-    async with aiohttp.ClientSession() as session: # Use aiohttp session for efficiency
-        session_timeout = aiohttp.ClientTimeout(total=15) # Set timeout for session
+    async with aiohttp.ClientSession() as session:
+        session_timeout = aiohttp.ClientTimeout(total=15)
         for channel in channels:
             proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
             proxy_tasks = []
             loaded_weights = ScoringWeights.load_weights_from_json()
-            lines = [] # Initialize lines here
+            lines = []
 
             try:
-                async with session.get(channel.url, timeout=session_timeout) as response: # Fetch content from channel URL
+                async with session.get(channel.url, timeout=session_timeout) as response:
                     if response.status == 200:
                         text = await response.text()
-                        lines = text.splitlines() # Get proxy configs from fetched content
+                        lines = text.splitlines()
                     else:
                         logger.error(f"Failed to fetch from {channel.url}, status: {response.status}")
-                        continue # Skip to next channel if fetch fails
+                        continue
             except aiohttp.ClientError as e:
                 logger.error(f"Error fetching from {channel.url}: {e}")
                 continue
@@ -1302,10 +1306,9 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
                 logger.error(f"Timeout fetching from {channel.url}")
                 continue
 
-
             for line in lines:
                 line = line.strip()
-                if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line): # Removed MIN_CONFIG_LENGTH
+                if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
                     continue
                 task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
                                                             loaded_weights, proxy_semaphore, global_proxy_semaphore))
@@ -1314,7 +1317,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
             for result in results:
                 if result:
                     proxies_all.append(result)
-            channel.metrics.valid_configs += len(proxies_all) # Counting valid configs per "channel file"
+            channel.metrics.valid_configs += len(proxies_all)
 
     return proxies_all
 
@@ -1365,7 +1368,6 @@ def save_final_configs(proxies: List[Dict], output_file: str):
         logger.error(f"Ошибка сохранения конфигураций: {e}")
 
 
-
 def main():
     """Основная функция для запуска проверки прокси."""
     proxy_config = ProxyConfig()
@@ -1383,9 +1385,8 @@ def main():
 
         proxies = await process_all_channels(channels, proxy_config)
 
-
         save_final_configs(proxies, proxy_config.OUTPUT_FILE)
-        proxy_config.remove_failed_channels_from_file() # Keep for file management, but might need to adjust logic
+        proxy_config.remove_failed_channels_from_file()
 
         if not statistics_logged:
             total_channels = len(channels)
@@ -1393,18 +1394,16 @@ def main():
             disabled_channels = total_channels - enabled_channels
             total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
 
-
             protocol_stats = defaultdict(int)
             for channel in channels:
                 for protocol, count in channel.metrics.protocol_counts.items():
                     protocol_stats[protocol] += count
 
             colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ПРОВЕРКИ ПРОКСИ ====================")
-            colored_log(logging.INFO, f"🔄 Всего файлов-каналов обработано: {total_channels}") # Adjusted log message
-            colored_log(logging.INFO, f"✅ Включено файлов-каналов: {enabled_channels}") # Adjusted log message
-            colored_log(logging.INFO, f"❌ Отключено файлов-каналов: {disabled_channels}") # Adjusted log message
+            colored_log(logging.INFO, f"🔄 Всего файлов-каналов обработано: {total_channels}")
+            colored_log(logging.INFO, f"✅ Включено файлов-каналов: {enabled_channels}")
+            colored_log(logging.INFO, f"❌ Отключено файлов-каналов: {disabled_channels}")
             colored_log(logging.INFO, f"✨ Всего найдено валидных конфигураций: {total_valid_configs}")
-
 
             colored_log(logging.INFO, "\n breakdown by protocol:")
             if protocol_stats:
