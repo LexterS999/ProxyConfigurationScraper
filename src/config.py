@@ -153,6 +153,9 @@ class VlessConfig:
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["VlessConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
+        if address is None:
+            logger.debug(f"Пропущен VLESS конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
+            return None
         headers = _parse_headers(query.get("headers"))
         alpn_list = query.get('alpn', []) # Используем query.get и получаем список
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
@@ -216,6 +219,9 @@ class SSConfig:
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["SSConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
+        if address is None:
+            logger.debug(f"Пропущен SS конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
+            return None
         method = parsed_url.username.lower() if parsed_url.username else 'none'
         if method not in SS_VALID_METHODS:
             logger.debug(f"Недопустимый метод шифрования для ss://: {method}, пропуск конфигурации.")
@@ -269,6 +275,12 @@ class SSConfConfig:
             config_json = json.loads(config_json_str)
             config_json = {k.lower(): v for k, v in config_json.items()}
 
+            server_host = config_json.get('server')
+            server_address = await resolve_address(server_host, resolver)
+            if server_address is None:
+                logger.debug(f"Пропущен SSCONF конфиг из-за не IPv4 адреса: {server_host}")
+                return None
+
             server_port_str = config_json.get('server_port')
             timeout_str = config_json.get('timeout')
             local_port_str = config_json.get('local_port', '1080') # default value as string to handle potential errors
@@ -293,7 +305,7 @@ class SSConfConfig:
 
 
             return cls(
-                server=config_json.get('server'),
+                server=server_address, # Use resolved IPv4 address
                 server_port=server_port,
                 local_address=config_json.get('local_address', '127.0.0.1'),
                 local_port=local_port,
@@ -335,6 +347,9 @@ class TrojanConfig:
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TrojanConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
+        if address is None:
+            logger.debug(f"Пропущен Trojan конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
+            return None
         headers = _parse_headers(query.get("headers"))
         alpn_list = query.get('alpn', []) # Используем query.get и получаем список
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
@@ -399,6 +414,9 @@ class TuicConfig:
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TuicConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
+        if address is None:
+            logger.debug(f"Пропущен TUIC конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
+            return None
         alpn_list = query.get('alpn', []) # Используем query.get и получаем список
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
 
@@ -469,6 +487,9 @@ class Hy2Config:
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["Hy2Config"]:
         address = await resolve_address(parsed_url.hostname, resolver)
+        if address is None:
+            logger.debug(f"Пропущен HY2 конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
+            return None
         hop_interval_str = query.get('hopInterval', [None])[0] # Используем query.get
         hop_interval = None
         if hop_interval_str is not None:
@@ -818,21 +839,30 @@ def _parse_hop_interval(hop_interval_str: Optional[str]) -> Optional[int]:
         logger.warning(f"Неверное значение hopInterval, ожидается целое число, используется None: {hop_interval_str}") # More informative message
         return None
 
-async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
-    if is_valid_ipv4(hostname) or is_valid_ipv6(hostname):
-        return hostname
+async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
+    if is_valid_ipv4(hostname):
+        return hostname # Return IPv4 directly if already valid
+    if is_valid_ipv6(hostname): # Skip IPv6 addresses
+        logger.debug(f"Пропущен hostname {hostname} так как это IPv6 адрес.")
+        return None
     try:
         result = await resolver.query(hostname, 'A')
         resolved_address = result[0].host
-        logger.debug(f"Hostname '{hostname}' успешно разрешен в IP-адрес: {resolved_address}") # Debug logging for success
-        return resolved_address
+        if is_valid_ipv4(resolved_address):
+            logger.debug(f"Hostname '{hostname}' успешно разрешен в IPv4-адрес: {resolved_address}") # Debug logging for success
+            return resolved_address
+        else:
+            logger.debug(f"Hostname '{hostname}' разрешен в не IPv4 адрес: {resolved_address}. Пропускаем.")
+            return None
     except aiodns.error.DNSError as e:
-        if not is_valid_ipv4(hostname) and not is_valid_ipv6(hostname): # Only log warning if hostname is not already IP
-            logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}") # Warning for DNSError
-        return hostname
+        if e.args[0] == 4: # Domain name not found
+            logger.debug(f"Не удалось разрешить hostname: {hostname} - {e}") # Debug level for "Domain name not found"
+        elif not is_valid_ipv4(hostname) and not is_valid_ipv6(hostname): # Only log warning if hostname is not already IP
+            logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}") # Warning for other DNSError
+        return None # Return None if DNS resolution fails
     except Exception as e:
         logger.error(f"Неожиданная ошибка при резолвинге {hostname}: {e}") # Error for other exceptions
-        return hostname
+        return None
 
 # --- Функции для расчета скоринга ---
 def _calculate_vless_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
