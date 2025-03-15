@@ -22,6 +22,7 @@ from collections import defaultdict
 
 import numpy as np
 from sklearn.linear_model import LinearRegression
+import aiohttp
 
 
 # --- Настройка улучшенного логирования ---
@@ -432,8 +433,8 @@ class ChannelConfig:
             raise InvalidURLError("URL содержит слишком много повторяющихся символов.")
 
         parsed = urlsplit(url)
-        if parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
-            expected_protocols = ', '.join(self.VALID_PROTOCOLS)
+        if parsed.scheme not in ['http', 'https']: # Modified: Expecting http/https for channel URLs
+            expected_protocols = 'http, https'
             received_protocol_prefix = parsed.scheme or url[:10]
             raise UnsupportedProtocolError(
                 f"Неверный протокол URL. Ожидается: {expected_protocols}, получено: {received_protocol_prefix}..."
@@ -464,7 +465,7 @@ class ProxyConfig:
                         try:
                             initial_urls.append(ChannelConfig(url))
                         except (InvalidURLError, UnsupportedProtocolError) as e:
-                            logger.warning(f"Неверный URL в {ALL_URLS_FILE}: {url} - {e}")
+                            logger.warning(f"Неверный URL в {ALL_URLS_FILE}: {url} - {e}") # Keep warning for invalid channel URLs
         except FileNotFoundError:
             logger.warning(f"Файл URL не найден: {ALL_URLS_FILE}. Создается пустой файл.")
             open(ALL_URLS_FILE, 'w', encoding='utf-8').close()
@@ -1278,139 +1279,39 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
 
-    tasks = []
-
-    for channel in channels:
-        lines_str = ""
-        try:
-            with open(channel.url, 'r', encoding='utf-8') as f: # Treat channel.url as file path now
-                lines_str = f.read()
-        except Exception as e:
-            logger.error(f"Error reading channel file: {channel.url}. Error: {e}")
-            continue
-
-        lines = lines_str.splitlines()
-
-        proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
-        proxy_tasks = []
-        loaded_weights = ScoringWeights.load_weights_from_json()
-
-        for line in lines:
-            line = line.strip()
-            if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line): # Removed MIN_CONFIG_LENGTH
+    async with aiohttp.ClientSession() as session: # Use aiohttp session for efficiency
+        for channel in channels:
+            lines = []
+            try:
+                async with session.get(channel.url, timeout=15) as response: # Fetch content from channel URL
+                    if response.status == 200:
+                        text = await response.text()
+                        lines = text.splitlines()
+                    else:
+                        logger.error(f"Failed to fetch from {channel.url}, status: {response.status}")
+                        continue # Skip to next channel if fetch fails
+            except aiohttp.ClientError as e:
+                logger.error(f"Error fetching from {channel.url}: {e}")
                 continue
-            task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
-                                                        loaded_weights, proxy_semaphore, global_proxy_semaphore))
-            proxy_tasks.append(task)
-        results = await asyncio.gather(*proxy_tasks)
-        for result in results:
-            if result:
-                proxies_all.append(result)
-        channel.metrics.valid_configs += len(proxies_all) # Counting valid configs per "channel file"
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout fetching from {channel.url}")
+                continue
+
+            proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
+            proxy_tasks = []
+            loaded_weights = ScoringWeights.load_weights_from_json()
+
+            for line in lines:
+                line = line.strip()
+                if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line): # Removed MIN_CONFIG_LENGTH
+                    continue
+                task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
+                                                            loaded_weights, proxy_semaphore, global_proxy_semaphore))
+                proxy_tasks.append(task)
+            results = await asyncio.gather(*proxy_tasks)
+            for result in results:
+                if result:
+                    proxies_all.append(result)
+            channel.metrics.valid_configs += len(proxies_all) # Counting valid configs per "channel file"
 
     return proxies_all
-
-
-def sort_proxies(proxies: List[Dict]) -> List[Dict]:
-    """Сортирует список прокси по полноте конфигурации."""
-    def config_completeness(proxy_dict):
-        config_obj = proxy_dict['config_obj']
-        return sum(1 for field_value in astuple(config_obj) if field_value is not None)
-    return sorted(proxies, key=config_completeness, reverse=True)
-
-
-def save_final_configs(proxies: List[Dict], output_file: str):
-    """Сохраняет финальные конфигурации прокси в выходной файл, обеспечивая уникальность по IP и порту."""
-    proxies_sorted = sort_proxies(proxies)
-    profile_names = set()
-    unique_proxies = defaultdict(set)
-    unique_proxy_count = 0
-
-    try:
-        with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
-            for proxy in proxies_sorted:
-                config = proxy['config'].split('#')[0].strip()
-                parsed = urlparse(config)
-                ip_address = parsed.hostname
-                port = parsed.port
-                protocol = proxy['protocol']
-                ip_port_tuple = (ip_address, port)
-
-                if ip_port_tuple not in unique_proxies[protocol]:
-                    unique_proxies[protocol].add(ip_port_tuple)
-                    unique_proxy_count += 1
-
-                    query = parse_qs(parsed.query)
-                    profile_name = generate_custom_name(parsed, query)
-                    base_name = profile_name
-                    suffix = 1
-                    while profile_name in profile_names:
-                        profile_name = f"{base_name} ({suffix})"
-                        suffix += 1
-                    profile_names.add(profile_name)
-
-                    final_line = f"{config}#{profile_name} - Score: {proxy['score']:.2f}\n"
-                    f.write(final_line)
-        colored_log(logging.INFO, f"✅ Финальные конфигурации сохранены в {output_file}. Уникальность прокси обеспечена.")
-        colored_log(logging.INFO, f"✨ Всего уникальных прокси сохранено: {unique_proxy_count}")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения конфигураций: {e}")
-
-
-
-def main():
-    """Основная функция для запуска проверки прокси."""
-    proxy_config = ProxyConfig()
-    channels = proxy_config.get_enabled_channels()
-    loaded_weights = ScoringWeights.load_weights_from_json()
-    statistics_logged = False
-
-    async def runner():
-        nonlocal statistics_logged
-
-        loop = asyncio.get_running_loop()
-        proxy_config.set_event_loop(loop)
-
-        colored_log(logging.INFO, "🚀 Начало проверки прокси...")
-
-        proxies = await process_all_channels(channels, proxy_config)
-
-
-        save_final_configs(proxies, proxy_config.OUTPUT_FILE)
-        proxy_config.remove_failed_channels_from_file() # Keep for file management, but might need to adjust logic
-
-        if not statistics_logged:
-            total_channels = len(channels)
-            enabled_channels = sum(1 for channel in channels)
-            disabled_channels = total_channels - enabled_channels
-            total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
-
-
-            protocol_stats = defaultdict(int)
-            for channel in channels:
-                for protocol, count in channel.metrics.protocol_counts.items():
-                    protocol_stats[protocol] += count
-
-            colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ПРОВЕРКИ ПРОКСИ ====================")
-            colored_log(logging.INFO, f"🔄 Всего файлов-каналов обработано: {total_channels}") # Adjusted log message
-            colored_log(logging.INFO, f"✅ Включено файлов-каналов: {enabled_channels}") # Adjusted log message
-            colored_log(logging.INFO, f"❌ Отключено файлов-каналов: {disabled_channels}") # Adjusted log message
-            colored_log(logging.INFO, f"✨ Всего найдено валидных конфигураций: {total_valid_configs}")
-
-
-            colored_log(logging.INFO, "\n breakdown by protocol:")
-            if protocol_stats:
-                for protocol, count in protocol_stats.items():
-                    colored_log(logging.INFO, f"   - {protocol}: {count} configs")
-            else:
-                colored_log(logging.INFO, "   No protocol statistics available.")
-
-            colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
-            statistics_logged = True
-            colored_log(logging.INFO, "✅ Проверка прокси завершена.")
-
-    asyncio.run(runner())
-
-
-if __name__ == "__main__":
-    main()
