@@ -138,9 +138,8 @@ class VlessConfig:
     first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
-        headers_tuple = tuple(sorted(self.headers.items())) if isinstance(self.headers, dict) else None
-        return hash(astuple(replace(self, headers=headers_tuple)))
-        
+        return hash(astuple(self))
+
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "VlessConfig":
         address = await resolve_address(parsed_url.hostname, resolver)
@@ -253,8 +252,7 @@ class TrojanConfig:
     first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
-        headers_tuple = tuple(sorted(self.headers.items())) if isinstance(self.headers, dict) else None
-        return hash(astuple(replace(self, headers=headers_tuple)))
+        return hash(astuple(self))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "TrojanConfig":
@@ -651,14 +649,7 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
 
 # --- Функции для расчета скоринга ---
 def _calculate_vless_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    """Расчет скоринга для VLESS с проверкой наличия обязательных параметров."""
     score = 0
-    required_params = {'security': 'none', 'type': 'tcp', 'encryption': 'none'}
-    for param, default in required_params.items():
-        if param not in query:
-            logger.warning(f"Параметр '{param}' отсутствует в query для vless, используется значение по умолчанию: {default}")
-            query[param] = [default]
-    
     security = _get_value(query, 'security', 'none').lower()
     score += loaded_weights.get("VLESS_SECURITY_TLS", ScoringWeights.VLESS_SECURITY_TLS.value) if security == 'tls' else loaded_weights.get("VLESS_SECURITY_NONE", ScoringWeights.VLESS_SECURITY_NONE.value)
     transport = _get_value(query, 'type', 'tcp').lower()
@@ -684,13 +675,7 @@ def _calculate_vless_score(parsed: urlparse, query: Dict, loaded_weights: Dict) 
     return score
 
 def _calculate_ss_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    """Расчет скоринга для SS с проверкой параметров и учетом сложности пароля."""
     score = 0
-    if not parsed.username:
-        logger.warning("Отсутствует метод шифрования в ss:// URL")
-    if not parsed.password:
-        logger.warning("Отсутствует пароль в ss:// URL")
-    
     method = parsed.username.lower() if parsed.username else 'none'
     method_scores = {
         'chacha20-ietf-poly1305': loaded_weights.get("SS_METHOD_CHACHA20_IETF_POLY1305", ScoringWeights.SS_METHOD_CHACHA20_IETF_POLY1305.value),
@@ -699,17 +684,8 @@ def _calculate_ss_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> 
         'none': loaded_weights.get("SS_METHOD_NONE", ScoringWeights.SS_METHOD_NONE.value)
     }
     score += method_scores.get(method, 0)
-    
-    if parsed.password:
-        pwd = parsed.password
-        complexity_bonus = (1 if any(c.isdigit() for c in pwd) else 0) + \
-                          (1 if any(c.isupper() for c in pwd) else 0) + \
-                          (1 if any(c in string.punctuation for c in pwd) else 0)
-        score += min(loaded_weights.get("SS_PASSWORD_LENGTH", ScoringWeights.SS_PASSWORD_LENGTH.value),
-                     (len(pwd) / 16 + complexity_bonus) * loaded_weights.get("SS_PASSWORD_LENGTH", ScoringWeights.SS_PASSWORD_LENGTH.value))
-    else:
-        score += 0  # Пароль отсутствует
-    
+    score += min(loaded_weights.get("SS_PASSWORD_LENGTH", ScoringWeights.SS_PASSWORD_LENGTH.value),
+                 len(parsed.password or '') / 16 * loaded_weights.get("SS_PASSWORD_LENGTH", ScoringWeights.SS_PASSWORD_LENGTH.value)) if parsed.password else 0
     plugin = _get_value(query, 'plugin', 'none').lower()
     plugin_scores = {
         'obfs-http': loaded_weights.get("SS_PLUGIN_OBFS_HTTP", ScoringWeights.SS_PLUGIN_OBFS_HTTP.value),
@@ -722,14 +698,7 @@ def _calculate_ss_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> 
     return score
 
 def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> float:
-    """Расчет скоринга для SSCONF с проверкой обязательных полей."""
     score = 0
-    required_fields = {'server': '', 'server_port': 0, 'password': '', 'method': 'none'}
-    for field, default in required_fields.items():
-        if getattr(config_obj, field) is None:
-            logger.warning(f"Поле '{field}' отсутствует в ssconf, используется значение по умолчанию: {default}")
-            setattr(config_obj, field, default)
-    
     score += loaded_weights.get("SSCONF_SERVER_PORT", ScoringWeights.SSCONF_SERVER_PORT.value) if config_obj.server_port in [80, 443, 8080, 8443] else 0
     method_scores = {
         'chacha20-ietf-poly1305': loaded_weights.get("SSCONF_METHOD_CHACHA20_IETF_POLY1305", ScoringWeights.SSCONF_METHOD_CHACHA20_IETF_POLY1305.value),
@@ -738,15 +707,8 @@ def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> f
         'none': loaded_weights.get("SSCONF_METHOD_NONE", ScoringWeights.SSCONF_METHOD_NONE.value)
     }
     score += method_scores.get(config_obj.method, 0)
-    if config_obj.password:
-        pwd = config_obj.password
-        complexity_bonus = (1 if any(c.isdigit() for c in pwd) else 0) + \
-                          (1 if any(c.isupper() for c in pwd) else 0) + \
-                          (1 if any(c in string.punctuation for c in pwd) else 0)
-        score += min(loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value),
-                     (len(pwd) / 16 + complexity_bonus) * loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value))
-    else:
-        score += 0  # Пароль отсутствует
+    score += min(loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value),
+                 len(config_obj.password or '') / 16 * loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value)) if config_obj.password else 0
     protocol_scores = {
         'origin': loaded_weights.get("SSCONF_PROTOCOL_ORIGIN", ScoringWeights.SSCONF_PROTOCOL_ORIGIN.value),
         'auth_sha1_v4': loaded_weights.get("SSCONF_PROTOCOL_AUTH_SHA1_V4", ScoringWeights.SSCONF_PROTOCOL_AUTH_SHA1_V4.value),
@@ -765,27 +727,13 @@ def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> f
     return score
 
 def _calculate_trojan_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    """Расчет скоринга для Trojan с проверкой наличия обязательных параметров."""
     score = 0
-    required_params = {'security': 'none', 'type': 'tcp'}
-    for param, default in required_params.items():
-        if param not in query:
-            logger.warning(f"Параметр '{param}' отсутствует в query для trojan, используется значение по умолчанию: {default}")
-            query[param] = [default]
-    
     security = _get_value(query, 'security', 'none').lower()
     score += loaded_weights.get("TROJAN_SECURITY_TLS", ScoringWeights.TROJAN_SECURITY_TLS.value) if security == 'tls' else 0
     transport = _get_value(query, 'type', 'tcp').lower()
     score += loaded_weights.get("TROJAN_TRANSPORT_WS", ScoringWeights.TROJAN_TRANSPORT_WS.value) if transport == 'ws' else loaded_weights.get("TROJAN_TRANSPORT_TCP", ScoringWeights.TROJAN_TRANSPORT_TCP.value)
-    if parsed.password:
-        pwd = parsed.password
-        complexity_bonus = (1 if any(c.isdigit() for c in pwd) else 0) + \
-                          (1 if any(c.isupper() for c in pwd) else 0) + \
-                          (1 if any(c in string.punctuation for c in pwd) else 0)
-        score += min(loaded_weights.get("TROJAN_PASSWORD_LENGTH", ScoringWeights.TROJAN_PASSWORD_LENGTH.value),
-                     (len(pwd) / 16 + complexity_bonus) * loaded_weights.get("TROJAN_PASSWORD_LENGTH", ScoringWeights.TROJAN_PASSWORD_LENGTH.value))
-    else:
-        score += 0  # Пароль отсутствует
+    score += min(loaded_weights.get("TROJAN_PASSWORD_LENGTH", ScoringWeights.TROJAN_PASSWORD_LENGTH.value),
+                 len(parsed.password or '') / 16 * loaded_weights.get("TROJAN_PASSWORD_LENGTH", ScoringWeights.TROJAN_PASSWORD_LENGTH.value)) if parsed.password else 0
     if _get_value(query, 'sni'):
         score += loaded_weights.get("TROJAN_SNI_PRESENT", ScoringWeights.TROJAN_SNI_PRESENT.value)
     if _get_value(query, 'alpn'):
@@ -795,14 +743,7 @@ def _calculate_trojan_score(parsed: urlparse, query: Dict, loaded_weights: Dict)
     return score
 
 def _calculate_tuic_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    """Расчет скоринга для TUIC с проверкой наличия обязательных параметров."""
     score = 0
-    required_params = {'security': 'none', 'type': 'udp', 'congestion': 'bbr'}
-    for param, default in required_params.items():
-        if param not in query:
-            logger.warning(f"Параметр '{param}' отсутствует в query для tuic, используется значение по умолчанию: {default}")
-            query[param] = [default]
-    
     security = _get_value(query, 'security', 'none').lower()
     score += loaded_weights.get("TUIC_SECURITY_TLS", ScoringWeights.TUIC_SECURITY_TLS.value) if security == 'tls' else 0
     transport = _get_value(query, 'type', 'udp').lower()
@@ -816,15 +757,8 @@ def _calculate_tuic_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -
     score += congestion_scores.get(congestion_control, 0)
     if parsed.username:
         score += loaded_weights.get("TUIC_UUID_PRESENT", ScoringWeights.TUIC_UUID_PRESENT.value)
-    if parsed.password:
-        pwd = parsed.password
-        complexity_bonus = (1 if any(c.isdigit() for c in pwd) else 0) + \
-                          (1 if any(c.isupper() for c in pwd) else 0) + \
-                          (1 if any(c in string.punctuation for c in pwd) else 0)
-        score += min(loaded_weights.get("TUIC_PASSWORD_LENGTH", ScoringWeights.TUIC_PASSWORD_LENGTH.value),
-                     (len(pwd) / 16 + complexity_bonus) * loaded_weights.get("TUIC_PASSWORD_LENGTH", ScoringWeights.TUIC_PASSWORD_LENGTH.value))
-    else:
-        score += 0  # Пароль отсутствует
+    score += min(loaded_weights.get("TUIC_PASSWORD_LENGTH", ScoringWeights.TUIC_PASSWORD_LENGTH.value),
+                 len(parsed.password or '') / 16 * loaded_weights.get("TUIC_PASSWORD_LENGTH", ScoringWeights.TUIC_PASSWORD_LENGTH.value)) if parsed.password else 0
     if _get_value(query, 'sni'):
         score += loaded_weights.get("TUIC_SNI_PRESENT", ScoringWeights.TUIC_SNI_PRESENT.value)
     if _get_value(query, 'alpn'):
@@ -838,27 +772,13 @@ def _calculate_tuic_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -
     return score
 
 def _calculate_hy2_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    """Расчет скоринга для HY2 с проверкой наличия обязательных параметров."""
     score = 0
-    required_params = {'security': 'none', 'type': 'udp'}
-    for param, default in required_params.items():
-        if param not in query:
-            logger.warning(f"Параметр '{param}' отсутствует в query для hy2, используется значение по умолчанию: {default}")
-            query[param] = [default]
-    
     security = _get_value(query, 'security', 'none').lower()
     score += loaded_weights.get("HY2_SECURITY_TLS", ScoringWeights.HY2_SECURITY_TLS.value) if security == 'tls' else 0
     transport = _get_value(query, 'type', 'udp').lower()
     score += loaded_weights.get("HY2_TRANSPORT_UDP", ScoringWeights.HY2_TRANSPORT_UDP.value) if transport == 'udp' else loaded_weights.get("HY2_TRANSPORT_TCP", ScoringWeights.HY2_TRANSPORT_TCP.value)
-    if parsed.password:
-        pwd = parsed.password
-        complexity_bonus = (1 if any(c.isdigit() for c in pwd) else 0) + \
-                          (1 if any(c.isupper() for c in pwd) else 0) + \
-                          (1 if any(c in string.punctuation for c in pwd) else 0)
-        score += min(loaded_weights.get("HY2_PASSWORD_LENGTH", ScoringWeights.HY2_PASSWORD_LENGTH.value),
-                     (len(pwd) / 16 + complexity_bonus) * loaded_weights.get("HY2_PASSWORD_LENGTH", ScoringWeights.HY2_PASSWORD_LENGTH.value))
-    else:
-        score += 0  # Пароль отсутствует
+    score += min(loaded_weights.get("HY2_PASSWORD_LENGTH", ScoringWeights.HY2_PASSWORD_LENGTH.value),
+                 len(parsed.password or '') / 16 * loaded_weights.get("HY2_PASSWORD_LENGTH", ScoringWeights.HY2_PASSWORD_LENGTH.value)) if parsed.password else 0
     if _get_value(query, 'sni'):
         score += loaded_weights.get("HY2_SNI_PRESENT", ScoringWeights.HY2_SNI_PRESENT.value)
     if _get_value(query, 'alpn'):
@@ -876,22 +796,18 @@ def _calculate_hy2_score(parsed: urlparse, query: Dict, loaded_weights: Dict) ->
     return score
 
 def _calculate_common_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    """Расчет общего скоринга с расширенной логикой для портов и utls."""
     score = 0
-    port_weights = {
+    port_scores = {
         443: loaded_weights.get("COMMON_PORT_443", ScoringWeights.COMMON_PORT_443.value),
-        80: loaded_weights.get("COMMON_PORT_80", ScoringWeights.COMMON_PORT_80.value),
-        8080: 3,  # Популярный порт для прокси
-        8443: 4   # Популярный порт для HTTPS
+        80: loaded_weights.get("COMMON_PORT_80", ScoringWeights.COMMON_PORT_80.value)
     }
-    score += port_weights.get(parsed.port, loaded_weights.get("COMMON_PORT_OTHER", ScoringWeights.COMMON_PORT_OTHER.value))
-    
-    utls = _get_value(query, 'utls', None) or _get_value(query, 'fp', 'none').lower()
+    score += port_scores.get(parsed.port, loaded_weights.get("COMMON_PORT_OTHER", ScoringWeights.COMMON_PORT_OTHER.value))
+    utls = _get_value(query, 'utls', None) or _get_value(query, 'fp', 'none')
+    utls = utls.lower()
     utls_scores = {
         'chrome': loaded_weights.get("COMMON_UTLS_CHROME", ScoringWeights.COMMON_UTLS_CHROME.value),
         'firefox': loaded_weights.get("COMMON_UTLS_FIREFOX", ScoringWeights.COMMON_UTLS_FIREFOX.value),
-        'randomized': loaded_weights.get("COMMON_UTLS_RANDOMIZED", ScoringWeights.COMMON_UTLS_RANDOMIZED.value),
-        'safari': 6  # Пример веса для Safari
+        'randomized': loaded_weights.get("COMMON_UTLS_RANDOMIZED", ScoringWeights.COMMON_UTLS_RANDOMIZED.value)
     }
     score += utls_scores.get(utls, loaded_weights.get("COMMON_UTLS_OTHER", ScoringWeights.COMMON_UTLS_OTHER.value))
     if _get_value(query, 'sni') and '.cdn.' in _get_value(query, 'sni'):
@@ -914,67 +830,88 @@ def _calculate_common_score(parsed: urlparse, query: Dict, loaded_weights: Dict)
                              loaded_weights.get("COMMON_RARE_PARAM", ScoringWeights.COMMON_RARE_PARAM.value) / len(value[0]))
     return score
 
-@functools.lru_cache(maxsize=1024)
 async def compute_profile_score(config: str, loaded_weights: Dict = None, first_seen: Optional[datetime] = None) -> float:
-    """Расчет скоринга профиля с обработкой исключений и кэшированием."""
     if loaded_weights is None:
         loaded_weights = ScoringWeights.load_weights_from_json()
     protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
     if not protocol:
-        logger.warning(f"Неизвестный протокол в конфигурации: {config}")
         return 0.0
-    
-    try:
-        if protocol == "ssconf://":
+    if protocol == "ssconf://":
+        try:
             config_obj = await SSConfConfig.from_url(config, None)
             score = _calculate_ssconf_score(config_obj, loaded_weights)
-        else:
+        except ConfigParseError as e:
+            logger.error(f"Ошибка парсинга ssconf: {e}")
+            return 0.0
+    else:
+        try:
             parsed = urlparse(config)
             query = parse_qs(parsed.query)
-            score = loaded_weights.get("PROTOCOL_BASE", ScoringWeights.PROTOCOL_BASE.value)
-            score += _calculate_common_score(parsed, query, loaded_weights)
-            score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
-                         (200.0 / (len(config) + 1)) * loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value))
-            if first_seen:
-                days_old = (datetime.now() - first_seen).days
-                score += days_old * loaded_weights.get("AGE_PENALTY", ScoringWeights.AGE_PENALTY.value)
-            protocol_calculators = {
-                "vless://": _calculate_vless_score,
-                "ss://": _calculate_ss_score,
-                "trojan://": _calculate_trojan_score,
-                "tuic://": _calculate_tuic_score,
-                "hy2://": _calculate_hy2_score,
-            }
-            score += protocol_calculators.get(protocol, lambda *args: 0)(parsed, query, loaded_weights)
-    except Exception as e:
-        logger.error(f"Ошибка вычисления скоринга для {config}: {e}")
-        return 0.0
-    
+        except Exception as e:
+            logger.error(f"Ошибка парсинга URL {config}: {e}")
+            return 0.0
+        score = loaded_weights.get("PROTOCOL_BASE", ScoringWeights.PROTOCOL_BASE.value)
+        score += _calculate_common_score(parsed, query, loaded_weights)
+        score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
+                     (200.0 / (len(config) + 1)) * loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value))
+        if first_seen:
+            days_old = (datetime.now() - first_seen).days
+            score += days_old * loaded_weights.get("AGE_PENALTY", ScoringWeights.AGE_PENALTY.value)
+        protocol_calculators = {
+            "vless://": _calculate_vless_score,
+            "ss://": _calculate_ss_score,
+            "trojan://": _calculate_trojan_score,
+            "tuic://": _calculate_tuic_score,
+            "hy2://": _calculate_hy2_score,
+        }
+        score += protocol_calculators.get(protocol, lambda *args: 0)(parsed, query, loaded_weights)
     max_possible_score = sum(weight for weight in loaded_weights.values())
     normalized_score = (score / max_possible_score) * 100 if max_possible_score > 0 else 0.0
     return round(normalized_score, 2)
 
 def generate_custom_name(parsed: urlparse, query: Dict) -> str:
-    """Генерация пользовательского имени с поддержкой всех протоколов и дополнительных параметров."""
     scheme = parsed.scheme
-    transport = query.get("type", ["tcp"])[0].upper()
-    security = query.get("security", ["none"])[0].upper()
-    
     if scheme == "vless":
-        return f"🌌 VLESS - {transport} - {security}"
+        transport_type = query.get("type", ["tcp"])[0].upper()
+        security_type = query.get("security", ["none"])[0].upper()
+        if transport_type == "WS" and security_type == "TLS":
+            return ProfileName.VLESS_WS_TLS.value
+        security_str = "" if security_type == "NONE" else security_type
+        transport_str = transport_type if transport_type != "NONE" else ""
+        return "🌌 VLESS - " + " - ".join(filter(None, [transport_str, security_str]))
     elif scheme == "ss":
-        method = parsed.username.upper() if parsed.username else "UNKNOWN"
-        return f"🎭 SS - {method}"
+        method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")
+        if method == "CHACHA20-IETF-POLY1305":
+            return ProfileName.SS_CHACHA20_IETF_POLY1305.value
+        return ProfileName.SS_FORMAT.value.format(method=method)
     elif scheme == "ssconf":
         return ProfileName.SSCONF_FORMAT.value
     elif scheme == "trojan":
-        return f"🗡️ Trojan - {transport} - {security}"
+        transport_type = query.get("type", ["tcp"])[0].upper()
+        security_type = query.get("security", ["tls"])[0].upper()
+        if transport_type == "WS" and security_type == "TLS":
+            return ProfileName.TROJAN_WS_TLS.value
+        security_str = "" if security_type == "NONE" else security_type
+        transport_str = transport_type if transport_type != "NONE" else ""
+        return "🗡️ Trojan - " + " - ".join(filter(None, [transport_str, security_str]))
     elif scheme == "tuic":
-        congestion = query.get("congestion", ["bbr"])[0].upper()
-        return f"🐢 TUIC - {transport} - {security} - {congestion}"
+        transport_type = query.get("type", ["udp"])[0].upper()
+        security_type = query.get("security", ["tls"])[0].upper()
+        congestion_control = query.get("congestion", ["bbr"])[0].upper()
+        if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
+            return ProfileName.TUIC_WS_TLS_BBR.value
+        security_str = "" if security_type == "NONE" else security_type
+        transport_str = transport_type if transport_type != "NONE" else ""
+        return "🐢 TUIC - " + " - ".join(filter(None, [transport_str, security_str, congestion_control]))
     elif scheme == "hy2":
-        return f"💧 HY2 - {transport} - {security}"
-    return f"⚠️ Unknown - {scheme} - {transport}"
+        transport_type = query.get("type", ["udp"])[0].upper()
+        security_type = query.get("security", ["tls"])[0].upper()
+        if transport_type == "UDP" and security_type == "TLS":
+            return ProfileName.HY2_UDP_TLS.value
+        security_str = "" if security_type == "NONE" else security_type
+        transport_str = transport_type if transport_type != "NONE" else ""
+        return "💧 HY2 - " + " - ".join(filter(None, [transport_str, security_str]))
+    return f"⚠️ Unknown Protocol: {scheme}"
 
 @functools.lru_cache(maxsize=None)
 def is_valid_ipv4(hostname: str) -> bool:
@@ -988,10 +925,6 @@ def is_valid_ipv4(hostname: str) -> bool:
 
 @functools.lru_cache(maxsize=None)
 def is_valid_ipv6(hostname: str) -> bool:
-    if not hostname:
-        return False
-    if hostname.startswith('[') and hostname.endswith(']'):
-        hostname = hostname[1:-1]
     try:
         ipaddress.IPv6Address(hostname)
         return True
@@ -999,7 +932,6 @@ def is_valid_ipv6(hostname: str) -> bool:
         return False
 
 def is_valid_proxy_url(url: str) -> bool:
-    """Проверка валидности URL прокси с учетом специфики протоколов."""
     if not any(url.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
         return False
     if url.startswith("ssconf://"):
@@ -1010,7 +942,6 @@ def is_valid_proxy_url(url: str) -> bool:
         if scheme in ('vless', 'trojan', 'tuic'):
             profile_id = parsed.username or parse_qs(parsed.query).get('id', [None])[0]
             if profile_id and not is_valid_uuid(profile_id):
-                logger.debug(f"Недопустимый UUID для {scheme}: {profile_id}")
                 return False
         if scheme != "ss":
             if not parsed.hostname or not parsed.port:
@@ -1076,12 +1007,13 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
     async with proxy_semaphore, global_proxy_semaphore:
         config_obj = await parse_config(line, proxy_config.resolver)
         if config_obj is None:
-            logger.debug(f"❌ Прокси {line} отклонена: некорректная конфигурация")
             return None
-        is_reachable = True  # Пример, здесь должна быть реальная проверка
+        is_reachable = True
         if not is_reachable:
-            logger.debug(f"❌ Прокси {line} отклонена: сервер недоступен")
+            logger.debug(f"❌ Прокси {line} не прошла проверку.")
             return None
+        else:
+            logger.debug(f"✅ Прокси {line} считается доступной.")
         score = await compute_profile_score(
             line,
             loaded_weights=loaded_weights,
@@ -1098,70 +1030,66 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
         return result
 
 async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
-    """Обработка всех каналов с параллельным выполнением и обработкой исключений."""
+    """Обрабатывает все каналы в списке с улучшенным логированием и обработкой ошибок."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
 
     async with aiohttp.ClientSession() as session:
         session_timeout = aiohttp.ClientTimeout(total=15)
-        tasks = []
         for channel in channels:
-            task = asyncio.create_task(process_channel(channel, session, session_timeout, proxy_config, global_proxy_semaphore))
-            tasks.append(task)
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for result in results:
-            if isinstance(result, list):
-                proxies_all.extend(result)
-            elif isinstance(result, Exception):
-                colored_log(logging.ERROR, f"❌ Ошибка в канале: {result}")
+            # Логируем начало обработки канала
+            colored_log(logging.INFO, f"🚀 Начало обработки канала: {channel.url}")
+            proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
+            proxy_tasks = []
+            loaded_weights = ScoringWeights.load_weights_from_json()
+            lines = []
+
+            try:
+                async with session.get(channel.url, timeout=session_timeout) as response:
+                    if response.status == 200:
+                        try:
+                            # Исправляем UnicodeDecodeError с помощью errors='ignore'
+                            text = await response.text(encoding='utf-8', errors='ignore')
+                            lines = text.splitlines()
+                        except UnicodeDecodeError as e:
+                            colored_log(logging.WARNING, f"⚠️ Ошибка декодирования для {channel.url}: {e}. Пропуск.")
+                            continue
+                    elif response.status in (403, 404):
+                        # Пропускаем 403/404 без логирования
+                        continue
+                    else:
+                        colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}, статус: {response.status}")
+                        continue
+            except aiohttp.ClientError as e:
+                colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}: {e}")
+                continue
+            except asyncio.TimeoutError:
+                colored_log(logging.ERROR, f"⌛ Таймаут при получении {channel.url}")
+                continue
+
+            for line in lines:
+                line = line.strip()
+                if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
+                    continue
+                task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
+                                                                loaded_weights, proxy_semaphore, global_proxy_semaphore))
+                proxy_tasks.append(task)
+            results = await asyncio.gather(*proxy_tasks)
+            valid_results = [result for result in results if result]
+            for result in valid_results:
+                proxies_all.append(result)
+            channel.metrics.valid_configs = len(valid_results)
+            # Логируем завершение обработки канала с количеством конфигураций
+            colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
+
     return proxies_all
 
-async def process_channel(channel: ChannelConfig, session: aiohttp.ClientSession, session_timeout: aiohttp.ClientTimeout, proxy_config: ProxyConfig, global_proxy_semaphore: asyncio.Semaphore) -> List[Dict]:
-    colored_log(logging.INFO, f"🚀 Начало обработки канала: {channel.url}")
-    proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
-    proxy_tasks = []
-    loaded_weights = ScoringWeights.load_weights_from_json()
-    lines = []
-    try:
-        async with session.get(channel.url, timeout=session_timeout) as response:
-            if response.status == 200:
-                try:
-                    text = await response.text(encoding='utf-8', errors='ignore')
-                    lines = text.splitlines()
-                except UnicodeDecodeError as e:
-                    colored_log(logging.WARNING, f"⚠️ Ошибка декодирования для {channel.url}: {e}. Пропуск.")
-                    return []
-            elif response.status in (403, 404):
-                return []
-            else:
-                colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}, статус: {response.status}")
-                return []
-    except aiohttp.ClientError as e:
-        colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}: {e}")
-        return []
-    except asyncio.TimeoutError:
-        colored_log(logging.ERROR, f"⌛ Таймаут при получении {channel.url}")
-        return []
-
-    for line in lines:
-        line = line.strip()
-        if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
-            continue
-        task = asyncio.create_task(process_single_proxy(line, channel, proxy_config, loaded_weights, proxy_semaphore, global_proxy_semaphore))
-        proxy_tasks.append(task)
-    results = await asyncio.gather(*proxy_tasks)
-    valid_results = [result for result in results if result]
-    channel.metrics.valid_configs = len(valid_results)
-    colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
-    return valid_results
-
 def sort_proxies(proxies: List[Dict]) -> List[Dict]:
-    """Сортировка прокси по score и config_completeness."""
     def config_completeness(proxy_dict):
         config_obj = proxy_dict['config_obj']
         return sum(1 for field_value in astuple(config_obj) if field_value is not None)
-    return sorted(proxies, key=lambda x: (x['score'], config_completeness(x)), reverse=True)
+    return sorted(proxies, key=config_completeness, reverse=True)
 
 def save_final_configs(proxies: List[Dict], output_file: str):
     proxies_sorted = sort_proxies(proxies)
