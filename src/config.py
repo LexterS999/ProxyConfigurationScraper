@@ -39,7 +39,7 @@ logger.addHandler(file_handler)
 
 # Логирование в консоль (настраиваемый уровень и выше)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.INFO) # Уровень консольного логирования INFO и выше
 formatter_console = colorlog.ColoredFormatter(
     '%(log_color)s[%(levelname)-8s]%(reset)s %(message_log_color)s%(message)s%(reset)s',
     log_colors={
@@ -185,7 +185,11 @@ class VlessConfig:
 
         transport = _get_value(query, 'type', 'tcp').lower()
         if transport not in ['tcp', 'ws']:
-            raise InvalidParameterError(f"Недопустимое значение type: {transport}. Допустимые значения: tcp, ws.")
+            transport_value = _get_value(query, 'type') # Get the original value for logging
+            log_message = f"Недопустимое значение type: {transport_value}. Допустимые значения: tcp, ws."
+            logger.warning(f"Неверный параметр в конфигурации: {parsed_url.geturl()} - {log_message}") # Log as warning to file
+            logger.debug(f"Неверный параметр в конфигурации: {parsed_url.geturl()} - {log_message}") # Log as debug to suppress console
+            raise InvalidParameterError(log_message) # Still raise the exception to stop processing this config
 
         encryption = _get_value(query, 'encryption', 'none').lower()
         if encryption not in ['none', 'auto', 'aes-128-gcm', 'chacha20-poly1305']:
