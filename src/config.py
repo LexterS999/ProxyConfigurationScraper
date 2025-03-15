@@ -1585,7 +1585,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
         if channel.metrics.spam_configs_count > 0: # Если спам был обнаружен в канале, устанавливаем флаг
             channel.metrics.spam_detected = True
 
-        logger.info(f"📊 Канал {channel.url}: Качество - {channel.metrics.quality_category}, Общий скор - {channel.metrics.overall_quality_score:.2f}, Успешность загрузки - {channel.calculate_load_success_rate():.2f}%, Частота обновлений - {channel.metrics.calculate_update_frequency_score():.2f}, Спам конфигов - {channel.metrics.spam_configs_count}") # Логируем результаты оценки канала
+        logger.info(f"📊 Канал {channel.url}: Качество - {channel.metrics.quality_category}, Общий скор - {channel.metrics.overall_quality_score:.2f}, Успешность загрузки - {channel.calculate_load_success_rate():.2f}%, Частота обновлений - {channel.calculate_update_frequency_score():.2f}, Спам конфигов - {channel.metrics.spam_configs_count}") # Логируем результаты оценки канала
 
         # Фильтрация каналов по качеству
         if channel.metrics.quality_category.lower() not in ["excellent", "good", "medium", "low", "bad"]: # Defensive check
