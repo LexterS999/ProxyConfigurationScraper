@@ -138,8 +138,9 @@ class VlessConfig:
     first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
-        return hash(astuple(self))
-
+        headers_tuple = tuple(sorted(self.headers.items())) if isinstance(self.headers, dict) else None
+        return hash(astuple(replace(self, headers=headers_tuple)))
+        
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "VlessConfig":
         address = await resolve_address(parsed_url.hostname, resolver)
@@ -252,7 +253,8 @@ class TrojanConfig:
     first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
-        return hash(astuple(self))
+        headers_tuple = tuple(sorted(self.headers.items())) if isinstance(self.headers, dict) else None
+        return hash(astuple(replace(self, headers=headers_tuple)))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "TrojanConfig":
