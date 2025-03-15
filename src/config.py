@@ -434,7 +434,7 @@ class ChannelConfig:
 
         parsed = urlsplit(url)
         if parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
-            expected_protocols = ', '.join(self.VALID_PROTOCOlS)
+            expected_protocols = ', '.join(self.VALID_PROTOCOLS)
             received_protocol_prefix = parsed.scheme or url[:10]
             raise UnsupportedProtocolError(
                 f"Неверный протокол URL. Ожидается: {expected_protocols}, получено: {received_protocol_prefix}..."
