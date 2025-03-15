@@ -1615,6 +1615,11 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     min_quality_category = proxy_config.min_quality_category.lower() # Получаем минимальную категорию из ProxyConfig
 
     for channel in channels:
+        # Проверка, если канал в списке плохих каналов, пропустить его обработку
+        if channel.url in proxy_config.bad_channels_list:
+            logger.info(f"⏭️ Канал {channel.url} пропущен, так как он находится в списке плохих каналов.")
+            continue # Пропустить текущий канал и перейти к следующему
+
         channel.update_load_success_history(False) # Assume failure at start, corrected on success
         invalid_configs_count = 0
         duplicate_configs_count = 0
@@ -1628,12 +1633,16 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
             if lines_str is None: # Если не удалось загрузить содержимое
                 logger.warning(f"⚠️ Не удалось загрузить содержимое из URL: {channel.url}. Пропускаем канал.")
                 channel.update_load_success_history(False) # Помечаем загрузку как неудачную
+                channel.metrics.quality_category = "Bad" # Устанавливаем категорию качества как "Bad" для недоступных каналов
+                proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала
                 continue # Переходим к следующему каналу
             channel.update_load_success_history(True) # Помечаем загрузку как успешную, если содержимое загружено
             logger.info(f"✅ Прокси конфигурации успешно загружены из URL: {channel.url}") # Логируем успешную загрузку
         except Exception as e: # Обработка ошибок при загрузке URL
             logger.error(f"Ошибка при обработке URL канала: {channel.url}. Ошибка: {e}")
             channel.update_load_success_history(False) # Помечаем загрузку как неудачную
+            channel.metrics.quality_category = "Bad" # Устанавливаем категорию качества как "Bad" для недоступных каналов
+            proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала
             continue
 
         lines = lines_str.splitlines() if lines_str else [] # Разделяем на строки, если содержимое было загружено
@@ -1676,17 +1685,16 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
         # Фильтрация каналов по качеству
         quality_category = channel.metrics.quality_category.lower()
-        if quality_category == "bad": # Check for "Bad" quality and skip
-            logger.info(f"⛔️ Канал {channel.url} пропущен из-за низкого качества ({channel.metrics.quality_category}). Прокси из канала не будут сохранены.")
+        if quality_category in ["low", "bad"]: # Check for "Low" or "Bad" quality and skip
+            logger.info(f"⛔️ Канал {channel.url} пропущен из-за низкого качества ({channel.metrics.quality_category}). URL канала будет сохранен в bad_channels.txt")
             proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала
-            continue # Пропускаем канал, если качество 'bad'
+            continue # Пропускаем канал, если качество 'low' или 'bad'
         elif quality_category not in ["excellent", "good", "medium", "low"]: # Defensive check for other unexpected categories
             logger.warning(f"⚠️ Неверная категория качества для канала {channel.url}: {channel.metrics.quality_category}. Пропускаем канал.")
             continue # Пропускаем канал, если категория не распознана
-        elif quality_category in ["medium", "good", "excellent", "low"]: # Now also include 'low' or adjust as needed based on MIN_CHANNEL_QUALITY_CATEGORY
-            logger.info(f"✔️ Канал {channel.url} прошел фильтрацию по качеству ({channel.metrics.quality_category} >= {min_quality_category}).")
-
-        proxies_all.extend(valid_proxies) # Добавляем прокси только если канал прошел фильтрацию
+        elif quality_category in ["medium", "good", "excellent"]: # Process proxies only for Medium or higher quality
+            logger.info(f"✔️ Канал {channel.url} прошел фильтрацию по качеству ({channel.metrics.quality_category} >= {min_quality_category}). Прокси из канала будут обработаны.")
+            proxies_all.extend(valid_proxies) # Добавляем прокси только если канал прошел фильтрацию
 
     return proxies_all
 
