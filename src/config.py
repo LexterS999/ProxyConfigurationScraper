@@ -1204,6 +1204,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
+    failed_channels = []  # Локальный список для сводки
 
     async with aiohttp.ClientSession() as session:
         session_timeout = aiohttp.ClientTimeout(total=15)
@@ -1216,16 +1217,28 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
             try:
                 async with session.get(channel.url, timeout=session_timeout) as response:
                     if response.status == 200:
-                        text = await response.text()
-                        lines = text.splitlines()
+                        try:
+                            text = await response.text()
+                            lines = text.splitlines()
+                        except UnicodeDecodeError as e:
+                            logger.error(f"UnicodeDecodeError for {channel.url}: {e}")
+                            failed_channels.append(channel.url)
+                            proxy_config.failed_channels.append(channel.url)
+                            continue
                     else:
                         logger.error(f"Failed to fetch from {channel.url}, status: {response.status}")
+                        failed_channels.append(channel.url)
+                        proxy_config.failed_channels.append(channel.url)
                         continue
             except aiohttp.ClientError as e:
                 logger.error(f"Error fetching from {channel.url}: {e}")
+                failed_channels.append(channel.url)
+                proxy_config.failed_channels.append(channel.url)
                 continue
             except asyncio.TimeoutError:
                 logger.error(f"Timeout fetching from {channel.url}")
+                failed_channels.append(channel.url)
+                proxy_config.failed_channels.append(channel.url)
                 continue
 
             for line in lines:
@@ -1233,13 +1246,17 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
                 if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
                     continue
                 task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
-                                                                  loaded_weights, proxy_semaphore, global_proxy_semaphore))
+                                                                loaded_weights, proxy_semaphore, global_proxy_semaphore))
                 proxy_tasks.append(task)
             results = await asyncio.gather(*proxy_tasks)
             for result in results:
                 if result:
                     proxies_all.append(result)
             channel.metrics.valid_configs += len(proxies_all)
+
+    # Добавляю сводку о пропущенных каналах
+    if failed_channels:
+        logger.info(f"Пропущено {len(failed_channels)} каналов из-за ошибок выборки.")
 
     return proxies_all
 
