@@ -58,16 +58,6 @@ jobs:
           echo "all_urls.txt найден."
         fi
 
-    - name: Check bad_channels.txt exists
-      run: |
-        if [ ! -f configs/bad_channels.txt ]; then
-          echo "configs/bad_channels.txt не найден. Будет создан дефолтный файл."
-          mkdir -p configs
-          touch configs/bad_channels.txt
-        else
-          echo "configs/bad_channels.txt найден."
-        fi
-
     - name: Run config fetcher script
       run: python src/config.py
       continue-on-error: true
@@ -79,6 +69,6 @@ jobs:
 
     - name: Commit and push changes
       run: |
-        git add configs/scoring_weights.json configs/proxy_configs.txt configs/bad_channels.txt all_urls.txt
+        git add configs/scoring_weights.json configs/proxy_configs.txt all_urls.txt
         git commit --allow-empty -m "Update proxy configs, stats and reports"
         git push
