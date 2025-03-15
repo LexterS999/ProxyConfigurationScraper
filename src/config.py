@@ -83,6 +83,14 @@ ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 1
 RETRY_DELAY_BASE = 1
 SS_VALID_METHODS = ['chacha20-ietf-poly1305', 'aes-256-gcm', 'aes-128-gcm', 'none'] # Константа для валидных методов SS
+VALID_VLESS_TRANSPORTS = ['tcp', 'ws']
+VALID_TROJAN_TRANSPORTS = ['tcp', 'ws']
+VALID_TUIC_TRANSPORTS = ['udp', 'ws']
+VALID_HY2_TRANSPORTS = ['udp', 'tcp']
+VALID_SECURITY_TYPES = ['tls', 'none']
+VALID_ENCRYPTION_TYPES_VLESS = ['none', 'auto', 'aes-128-gcm', 'chacha20-poly1305']
+VALID_CONGESTION_CONTROL_TUIC = ['bbr', 'cubic', 'new-reno']
+
 
 PROTOCOL_TIMEOUTS = {
     "vless": 4.0,
@@ -143,28 +151,36 @@ class VlessConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "VlessConfig":
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["VlessConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         headers = _parse_headers(query.get("headers"))
         alpn_list = query.get('alpn', []) # Используем query.get и получаем список
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
 
         security = query.get('security', ['none'])[0].lower()
-        if security not in ('tls', 'none'):
-            raise InvalidParameterError(f"Недопустимое значение security: {security}")
+        if security not in VALID_SECURITY_TYPES:
+            logger.debug(f"Недопустимое значение security: {security} для vless, пропуск конфигурации.")
+            return None
 
         transport = query.get('type', ['tcp'])[0].lower()
-        if transport not in ('tcp', 'ws'):
-            raise InvalidParameterError(f"Недопустимое значение type: {transport}")
+        if transport not in VALID_VLESS_TRANSPORTS:
+            logger.debug(f"Недопустимое значение type: {transport} для vless, пропуск конфигурации.")
+            return None
 
         encryption = query.get('encryption', ['none'])[0].lower()
-        if encryption not in ('none', 'auto', 'aes-128-gcm', 'chacha20-poly1305'):
-            raise InvalidParameterError(f"Недопустимое значение encryption: {encryption}")
+        if encryption not in VALID_ENCRYPTION_TYPES_VLESS:
+            logger.debug(f"Недопустимое значение encryption: {encryption} для vless, пропуск конфигурации.")
+            return None
 
+        port_str = parsed_url.port
+        if port_str is None:
+            logger.debug(f"Отсутствует порт в URL для vless, пропуск конфигурации.")
+            return None
         try:
-            port = int(parsed_url.port)
+            port = int(port_str)
         except (ValueError, TypeError):
-            raise InvalidParameterError(f"Недопустимый порт: {parsed_url.port}")
+            logger.debug(f"Недопустимый порт: {port_str} для vless, пропуск конфигурации.")
+            return None
 
         return cls(
             uuid=parsed_url.username,
@@ -182,6 +198,7 @@ class VlessConfig:
             headers=headers,
             first_seen=datetime.now()
         )
+        return None # Добавлено для явного возврата None в случае ошибок
 
 @dataclass(frozen=True)
 class SSConfig:
@@ -197,15 +214,21 @@ class SSConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "SSConfig":
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["SSConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         method = parsed_url.username.lower() if parsed_url.username else 'none'
         if method not in SS_VALID_METHODS:
-            raise InvalidParameterError(f"Недопустимый метод шифрования для ss://: {method}")
+            logger.debug(f"Недопустимый метод шифрования для ss://: {method}, пропуск конфигурации.")
+            return None
+        port_str = parsed_url.port
+        if port_str is None:
+            logger.debug(f"Отсутствует порт в URL для ss, пропуск конфигурации.")
+            return None
         try:
-            port = int(parsed_url.port)
+            port = int(port_str)
         except (ValueError, TypeError):
-            raise InvalidParameterError(f"Недопустимый порт: {parsed_url.port}")
+            logger.debug(f"Недопустимый порт: {port_str} для ss, пропуск конфигурации.")
+            return None
         return cls(
             method=method,
             password=parsed_url.password,
@@ -215,6 +238,7 @@ class SSConfig:
             obfs=query.get('obfs',[None])[0],
             first_seen=datetime.now()
         )
+        return None # Добавлено для явного возврата None в случае ошибок
 
 @dataclass(frozen=True)
 class SSConfConfig:
@@ -238,7 +262,7 @@ class SSConfConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, config_string: str, resolver: aiodns.DNSResolver) -> "SSConfConfig":
+    async def from_url(cls, config_string: str, resolver: aiodns.DNSResolver) -> Optional["SSConfConfig"]:
         try:
             config_b64 = config_string.split("ssconf://")[1]
             config_json_str = base64.urlsafe_b64decode(config_b64 + '=' * (4 - len(config_b64) % 4)).decode('utf-8')
@@ -286,7 +310,9 @@ class SSConfConfig:
                 first_seen=datetime.now()
             )
         except (json.JSONDecodeError, KeyError, ValueError, ConfigParseError) as e:
-            raise ConfigParseError(f"Ошибка разбора ssconf: {e}")
+            logger.debug(f"Ошибка разбора ssconf: {e}, пропуск конфигурации.") # Debug level
+            return None
+        return None # Добавлено для явного возврата None в случае ошибок
 
 @dataclass(frozen=True)
 class TrojanConfig:
@@ -307,24 +333,31 @@ class TrojanConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "TrojanConfig":
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TrojanConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         headers = _parse_headers(query.get("headers"))
         alpn_list = query.get('alpn', []) # Используем query.get и получаем список
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
 
         security = query.get('security', ['tls'])[0].lower() # default 'tls' as in original code
-        if security not in ('tls', 'none'):
-            raise InvalidParameterError(f"Недопустимое значение security: {security}")
+        if security not in VALID_SECURITY_TYPES:
+            logger.debug(f"Недопустимое значение security: {security} для trojan, пропуск конфигурации.")
+            return None
 
         transport = query.get('type', ['tcp'])[0].lower() # default 'tcp' as in original code
-        if transport not in ('tcp', 'ws'):
-            raise InvalidParameterError(f"Недопустимое значение type: {transport}")
+        if transport not in VALID_TROJAN_TRANSPORTS:
+            logger.debug(f"Недопустимое значение type: {transport} для trojan, пропуск конфигурации.")
+            return None
 
+        port_str = parsed_url.port
+        if port_str is None:
+            logger.debug(f"Отсутствует порт в URL для trojan, пропуск конфигурации.")
+            return None
         try:
-            port = int(parsed_url.port)
+            port = int(port_str)
         except (ValueError, TypeError):
-            raise InvalidParameterError(f"Недопустимый порт: {parsed_url.port}")
+            logger.debug(f"Недопустимый порт: {port_str} для trojan, пропуск конфигурации.")
+            return None
 
         return cls(
             password=parsed_url.password,
@@ -340,6 +373,7 @@ class TrojanConfig:
             headers=headers,
             first_seen=datetime.now()
         )
+        return None # Добавлено для явного возврата None в случае ошибок
 
 @dataclass(frozen=True)
 class TuicConfig:
@@ -363,27 +397,35 @@ class TuicConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "TuicConfig":
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TuicConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         alpn_list = query.get('alpn', []) # Используем query.get и получаем список
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
 
         security = query.get('security', ['tls'])[0].lower() # default 'tls' as in original code
-        if security not in ('tls', 'none'):
-            raise InvalidParameterError(f"Недопустимое значение security: {security}")
+        if security not in VALID_SECURITY_TYPES:
+            logger.debug(f"Недопустимое значение security: {security} для tuic, пропуск конфигурации.")
+            return None
 
         transport = query.get('type', ['udp'])[0].lower() # default 'udp' as in original code
-        if transport not in ('udp', 'ws'):
-            raise InvalidParameterError(f"Недопустимое значение type: {transport}")
+        if transport not in VALID_TUIC_TRANSPORTS:
+            logger.debug(f"Недопустимое значение type: {transport} для tuic, пропуск конфигурации.")
+            return None
 
         congestion_control = query.get('congestion', ['bbr'])[0].lower() # default 'bbr' as in original code
-        if congestion_control not in ('bbr', 'cubic', 'new-reno'):
-            raise InvalidParameterError(f"Недопустимое значение congestion: {congestion_control}")
+        if congestion_control not in VALID_CONGESTION_CONTROL_TUIC:
+            logger.debug(f"Недопустимое значение congestion: {congestion_control} для tuic, пропуск конфигурации.")
+            return None
 
+        port_str = parsed_url.port
+        if port_str is None:
+            logger.debug(f"Отсутствует порт в URL для tuic, пропуск конфигурации.")
+            return None
         try:
-            port = int(parsed_url.port)
+            port = int(port_str)
         except (ValueError, TypeError):
-            raise InvalidParameterError(f"Недопустимый порт: {parsed_url.port}")
+            logger.debug(f"Недопустимый порт: {port_str} для tuic, пропуск конфигурации.")
+            return None
 
 
         return cls(
@@ -403,6 +445,7 @@ class TuicConfig:
             obfs=query.get('obfs',[None])[0],
             first_seen=datetime.now()
         )
+        return None # Добавлено для явного возврата None в случае ошибок
 
 @dataclass(frozen=True)
 class Hy2Config:
@@ -424,7 +467,7 @@ class Hy2Config:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "Hy2Config":
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["Hy2Config"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         hop_interval_str = query.get('hopInterval', [None])[0] # Используем query.get
         hop_interval = None
@@ -432,23 +475,31 @@ class Hy2Config:
             try:
                 hop_interval = int(hop_interval_str)
             except ValueError:
-                raise InvalidParameterError(f"Неверное значение hopInterval: {hop_interval_str}")
+                logger.debug(f"Неверное значение hopInterval: {hop_interval_str} для hy2, используется None.")
+                hop_interval = None # Use None instead of raising error, as in original logic
 
         alpn_list = query.get('alpn', []) # Используем query.get и получаем список
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
 
         security = query.get('security', ['tls'])[0].lower() # default 'tls' as in original code
-        if security not in ('tls', 'none'):
-            raise InvalidParameterError(f"Недопустимое значение security: {security}")
+        if security not in VALID_SECURITY_TYPES:
+            logger.debug(f"Недопустимое значение security: {security} для hy2, пропуск конфигурации.")
+            return None
 
         transport = query.get('type', ['udp'])[0].lower() # default 'udp' as in original code
-        if transport not in ('udp', 'tcp'):
-            raise InvalidParameterError(f"Недопустимое значение type: {transport}")
+        if transport not in VALID_HY2_TRANSPORTS:
+            logger.debug(f"Недопустимое значение type: {transport} для hy2, пропуск конфигурации.")
+            return None
 
+        port_str = parsed_url.port
+        if port_str is None:
+            logger.debug(f"Отсутствует порт в URL для hy2, пропуск конфигурации.")
+            return None
         try:
-            port = int(parsed_url.port)
+            port = int(port_str)
         except (ValueError, TypeError):
-            raise InvalidParameterError(f"Недопустимый порт: {parsed_url.port}")
+            logger.debug(f"Недопустимый порт: {port_str} для hy2, пропуск конфигурации.")
+            return None
 
 
         return cls(
@@ -466,6 +517,7 @@ class Hy2Config:
             obfs=query.get('obfs',[None])[0],
             first_seen=datetime.now()
         )
+        return None # Добавлено для явного возврата None в случае ошибок
 
 # --- Data classes для метрик и конфигураций каналов ---
 @dataclass
@@ -775,7 +827,8 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> str:
         logger.debug(f"Hostname '{hostname}' успешно разрешен в IP-адрес: {resolved_address}") # Debug logging for success
         return resolved_address
     except aiodns.error.DNSError as e:
-        logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}") # Warning for DNSError
+        if not is_valid_ipv4(hostname) and not is_valid_ipv6(hostname): # Only log warning if hostname is not already IP
+            logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}") # Warning for DNSError
         return hostname
     except Exception as e:
         logger.error(f"Неожиданная ошибка при резолвинге {hostname}: {e}") # Error for other exceptions
@@ -975,15 +1028,15 @@ async def compute_profile_score(config: str, loaded_weights: Dict = None, first_
             config_obj = await SSConfConfig.from_url(config, None)
             score = _calculate_ssconf_score(config_obj, loaded_weights)
         except ConfigParseError as e:
-            logger.error(f"Ошибка парсинга ssconf: {e}")
-            raise ConfigParseError(f"Ошибка парсинга ssconf при вычислении score: {e}") # Проброс исключения
+            logger.debug(f"Ошибка парсинга ssconf: {e}, пропуск конфигурации.") # Debug level
+            return 0.0
     else:
         try:
             parsed = urlparse(config)
             query = parse_qs(parsed.query)
         except Exception as e:
-            logger.error(f"Ошибка парсинга URL {config}: {e}")
-            raise InvalidURLError(f"Ошибка парсинга URL при вычислении score {config}: {e}") # Проброс исключения
+            logger.debug(f"Ошибка парсинга URL {config}: {e}, пропуск конфигурации.") # Debug level
+            return 0.0
         score = loaded_weights.get("PROTOCOL_BASE", ScoringWeights.PROTOCOL_BASE.value)
         score += _calculate_common_score(parsed, query, loaded_weights)
         score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
@@ -1118,8 +1171,8 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
         try:
             return await SSConfConfig.from_url(config_string, resolver)
         except ConfigParseError as e:
-            logger.error(f"Ошибка парсинга ssconf конфигурации: {config_string} - {e}")
-            raise ConfigParseError(f"Ошибка парсинга ssconf конфигурации: {config_string} - {e}") # Проброс исключения
+            logger.debug(f"Ошибка парсинга ssconf конфигурации: {config_string} - {e}") # Debug level
+            return None
     else:
         try:
             parsed = urlparse(config_string)
@@ -1135,12 +1188,12 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             if scheme in config_parsers:
                 return await config_parsers[scheme](parsed, query, resolver)
             return None
-        except (InvalidURLError, UnsupportedProtocolError, InvalidParameterError, ConfigParseError) as e:
-            logger.error(f"Ошибка парсинга конфигурации: {config_string} - {e}")
-            raise # Проброс исключения
+        except (InvalidURLError, UnsupportedProtocolError) as e: # Removed InvalidParameterError and ConfigParseError from here
+            logger.debug(f"Ошибка парсинга конфигурации: {config_string} - {e}") # Debug level
+            return None
         except Exception as e:
             logger.exception(f"Непредвиденная ошибка при парсинге конфигурации {config_string}: {e}")
-            raise # Проброс исключения
+            return None
 
 async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_config: ProxyConfig, loaded_weights: Dict,
