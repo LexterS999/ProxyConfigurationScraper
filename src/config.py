@@ -31,7 +31,7 @@ CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
 LOG_FILE = 'proxy_checker.log'
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 # Логирование в файл (WARNING и выше)
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
@@ -42,7 +42,7 @@ logger.addHandler(file_handler)
 
 # Логирование в консоль (INFO и выше)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.DEBUG)
+console_handler.setLevel(logging.INFO)
 formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
@@ -85,7 +85,7 @@ ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 1
 RETRY_DELAY_BASE = 1
 
-# Протокол-специфичные таймауты для проверок (в секундах)
+# Таймауты для проверок (оставлены для совместимости, но не используются)
 PROTOCOL_TIMEOUTS = {
     "vless": 4.0,
     "trojan": 4.0,
@@ -171,9 +171,9 @@ class VlessConfig:
             path=query.get('path', [None])[0],
             early_data=_get_value(query, 'earlyData') == '1',
             utls=_get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
-            obfs = query.get('obfs',[None])[0],
+            obfs=query.get('obfs',[None])[0],
             headers=headers,
-            first_seen = datetime.now()
+            first_seen=datetime.now()
         )
 
 
@@ -185,7 +185,7 @@ class SSConfig:
     address: str
     port: int
     plugin: Optional[str] = None
-    obfs:Optional[str] = None
+    obfs: Optional[str] = None
     first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
@@ -201,7 +201,7 @@ class SSConfig:
             address=address,
             port=parsed_url.port,
             plugin=query.get('plugin', [None])[0],
-            obfs = query.get('obfs',[None])[0],
+            obfs=query.get('obfs',[None])[0],
             first_seen=datetime.now()
         )
 
@@ -300,7 +300,7 @@ class TrojanConfig:
             alpn=alpn,
             early_data=_get_value(query, 'earlyData') == '1',
             utls=_get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
-            obfs = _get_value(query, 'obfs'),
+            obfs=_get_value(query, 'obfs'),
             headers=headers,
             first_seen=datetime.now()
         )
@@ -348,7 +348,7 @@ class TuicConfig:
             zero_rtt_handshake=_get_value(query, 'zero_rtt_handshake') == '1',
             utls=_get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
             password=parsed_url.password,
-            obfs = _get_value(query, 'obfs'),
+            obfs=_get_value(query, 'obfs'),
             first_seen=datetime.now()
         )
 
@@ -377,7 +377,6 @@ class Hy2Config:
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> "Hy2Config":
         """Создает объект Hy2Config из URL."""
         address = await resolve_address(parsed_url.hostname, resolver)
-
         hop_interval_str = _get_value(query, 'hopInterval')
         hop_interval = _parse_hop_interval(hop_interval_str)
         alpn = tuple(sorted(_get_value(query, 'alpn', []).split(','))) if 'alpn' in query else None
@@ -392,10 +391,10 @@ class Hy2Config:
             early_data=_get_value(query, 'earlyData') == '1',
             pmtud=_get_value(query, 'pmtud') == '1',
             hop_interval=hop_interval,
-            password = parsed_url.password,
-            utls = _get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
-            obfs = _get_value(query, 'obfs'),
-            first_seen = datetime.now()
+            password=parsed_url.password,
+            utls=_get_value(query, 'utls') or _get_value(query, 'fp', 'none'),
+            obfs=_get_value(query, 'obfs'),
+            first_seen=datetime.now()
         )
 
 
@@ -425,9 +424,8 @@ class ChannelConfig:
     def _validate_url(self, url: str) -> str:
         """Проверяет и нормализует URL канала.
         
-        Изменение: теперь разрешаются ссылки с протоколами http и https,
-        так как файл all_urls.txt содержит внешние ссылки для скачивания списков прокси.
-        Также разрешаются прямые прокси-конфигурации с протоколами из VALID_PROTOCOLS.
+        Разрешаются ссылки с протоколами http и https для внешних списков прокси,
+        а также прямые прокси-конфигурации с протоколами из VALID_PROTOCOLS.
         """
         if not isinstance(url, str):
             raise InvalidURLError(f"URL должен быть строкой, получено: {type(url).__name__}")
@@ -438,7 +436,6 @@ class ChannelConfig:
             raise InvalidURLError("URL содержит слишком много повторяющихся символов.")
 
         parsed = urlsplit(url)
-        # Разрешаем http и https для внешних ссылок, либо ссылки с протоколами прокси
         if parsed.scheme not in ["http", "https"] and parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
             expected_protocols = ", ".join(["http", "https"] + self.VALID_PROTOCOLS)
             received_protocol_prefix = parsed.scheme or url[:10]
@@ -456,7 +453,7 @@ class ProxyConfig:
         self.resolver = None
         self.failed_channels = []
         self.processed_configs = set()
-        self.SOURCE_URLS = self._load_source_urls() # Still load source URLs, but need to adjust loading logic
+        self.SOURCE_URLS = self._load_source_urls()
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
         self.ALL_URLS_FILE = ALL_URLS_FILE
 
@@ -702,7 +699,6 @@ class ScoringWeights(Enum):
             logger.error(f"Error saving scoring weights to {file_path}: {e}")
 
 
-
 # --- Вспомогательные функции ---
 def _get_value(query: Dict, key: str, default_value: Any = None) -> Any:
     """Безопасно извлекает значение из словаря query."""
@@ -806,7 +802,6 @@ def _calculate_ss_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> 
 def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> float:
     """Вычисляет скор для Shadowsocks Conf конфигурации."""
     score = 0
-
     score += loaded_weights.get("SSCONF_SERVER_PORT", ScoringWeights.SSCONF_SERVER_PORT.value) if config_obj.server_port in [80, 443, 8080, 8443] else 0
 
     method_scores = {
@@ -816,7 +811,6 @@ def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> f
         'none': loaded_weights.get("SSCONF_METHOD_NONE", ScoringWeights.SSCONF_METHOD_NONE.value)
     }
     score += method_scores.get(config_obj.method, 0)
-
     score += min(loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value),
                  len(config_obj.password or '') / 16 * loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value)) if config_obj.password else 0
 
@@ -1168,115 +1162,43 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             return None
 
 
-# --- Функции для протокол-специфичных проверок (Улучшенные) ---
-async def test_vless_connection(config_obj: VlessConfig, timeout: float = PROTOCOL_TIMEOUTS.get("vless")) -> bool:
-    """Проверка VLESS соединения: TCP handshake."""
-    return await _vless_handshake(config_obj, timeout)
-
-async def test_trojan_connection(config_obj: TrojanConfig, timeout: float = PROTOCOL_TIMEOUTS.get("trojan")) -> bool:
-    """Проверка Trojan соединения: TCP handshake."""
-    return await _trojan_handshake(config_obj, timeout)
-
-async def test_ss_connection(config_obj: SSConfig, timeout: float = PROTOCOL_TIMEOUTS.get("ss")) -> bool:
-    """Проверка Shadowsocks соединения: TCP handshake."""
-    return await _ss_handshake(config_obj, timeout)
-
-async def test_ssconf_connection(config_obj: SSConfConfig, timeout: float = PROTOCOL_TIMEOUTS.get("ssconf")) -> bool:
-    """Проверка SSConf соединения: TCP handshake."""
-    return await test_ss_connection(SSConfig(method=config_obj.method, password=config_obj.password, address=config_obj.server, port=config_obj.server_port, plugin=None, obfs=config_obj.obfs), timeout=timeout)
-
-async def test_tuic_connection(config_obj: TuicConfig, timeout: float = PROTOCOL_TIMEOUTS.get("tuic")) -> bool:
-    """Проверка TUIC соединения: TCP connect (для UDP-based протокола, минимальная TCP проверка)."""
-    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="TUIC")
-
-async def test_hy2_connection(config_obj: Hy2Config, timeout: float = PROTOCOL_TIMEOUTS.get("hy2")) -> bool:
-    """Проверка HY2 соединения: TCP connect (для UDP-based протокола, минимальная TCP проверка)."""
-    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="HY2")
-
-
-async def _minimal_tcp_connection_test(host: str, port: int, timeout: float, protocol_name: str) -> bool:
-    """Вспомогательная функция для минимальной TCP проверки с настраиваемым таймаутом."""
-    try:
-        await asyncio.wait_for(asyncio.open_connection(host=host, port=port), timeout=timeout)
-        logger.debug(f"✅ {protocol_name} проверка: TCP соединение с {host}:{port} установлено за {timeout:.2f} секунд.")
-        return True
-    except asyncio.TimeoutError:
-        logger.debug(f"❌ {protocol_name} проверка: TCP таймаут ({timeout:.2f} сек) при подключении к {host}:{port}.")
-        return False
-    except (ConnectionRefusedError, OSError, socket.gaierror) as e:
-        logger.debug(f"❌ {protocol_name} проверка: Ошибка TCP соединения с {host}:{port}: {e}.")
-        return False
-
-
-async def _vless_handshake(config_obj: VlessConfig, timeout: float) -> bool:
-    """Минимальный handshake для VLESS (TCP connect)."""
-    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="VLESS")
-
-
-async def _trojan_handshake(config_obj: TrojanConfig, timeout: float) -> bool:
-    """Минимальный handshake для Trojan (TCP connect)."""
-    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Trojan")
-
-
-async def _ss_handshake(config_obj: SSConfig, timeout: float) -> bool:
-    """Минимальный handshake для Shadowsocks (TCP connect)."""
-    return await _minimal_tcp_connection_test(config_obj.address, config_obj.port, timeout, protocol_name="Shadowsocks")
-
-
-
 async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_config: ProxyConfig, loaded_weights: Dict,
                               proxy_semaphore: asyncio.Semaphore,
                               global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
-    """Обрабатывает одну конфигурацию прокси: парсит, проверяет доступность, скорит и сохраняет результат."""
+    """Обрабатывает одну конфигурацию прокси: парсит, скорит и сохраняет результат.
+       Проверка доступности по TCP и HTTP удалена – конфигурация считается доступной."""
     async with proxy_semaphore, global_proxy_semaphore:
         config_obj = await parse_config(line, proxy_config.resolver)
         if config_obj is None:
             return None
 
-        protocol_type = config_obj.__class__.__name__.replace("Config", "").lower()
-        is_reachable = False
-
-        if protocol_type == "vless":
-            is_reachable = await test_vless_connection(config_obj)
-        elif protocol_type == "trojan":
-            is_reachable = await test_trojan_connection(config_obj)
-        elif protocol_type == "ss":
-            is_reachable = await test_ss_connection(config_obj)
-        elif protocol_type == "ssconf":
-            is_reachable = await test_ssconf_connection(config_obj)
-        elif protocol_type == "tuic":
-            is_reachable = await test_tuic_connection(config_obj)
-        elif protocol_type == "hy2":
-            is_reachable = await test_hy2_connection(config_obj)
-        else:
-            logger.warning(f"Неизвестный тип протокола для проверки: {protocol_type}")
-            return None
+        # Пропускаем проверку соединения, считаем, что прокси доступен
+        is_reachable = True
 
         if not is_reachable:
             logger.debug(f"❌ Прокси {line} не прошла проверку.")
             return None
         else:
-            logger.debug(f"✅ Прокси {line} прошла проверку.")
+            logger.debug(f"✅ Прокси {line} считается доступной.")
 
         score = await compute_profile_score(
             line,
             loaded_weights=loaded_weights,
-            first_seen = config_obj.first_seen
+            first_seen=config_obj.first_seen
         )
 
         result = {
             "config": line,
-            "protocol": protocol_type,
+            "protocol": config_obj.__class__.__name__.replace("Config", "").lower(),
             "score": score,
             "config_obj": config_obj
         }
-        channel.metrics.protocol_counts[protocol_type] += 1
-        channel.metrics.protocol_scores[protocol_type].append(score)
+        channel.metrics.protocol_counts[result["protocol"]] += 1
+        channel.metrics.protocol_scores[result["protocol"]].append(score)
         return result
 
 
-# --- Функции process_all_channels, sort_proxies, save_final_configs, update_and_save_weights, prepare_training_data, main ---
 async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
     """Обрабатывает все каналы в списке."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
@@ -1311,7 +1233,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
                 if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
                     continue
                 task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
-                                                            loaded_weights, proxy_semaphore, global_proxy_semaphore))
+                                                                  loaded_weights, proxy_semaphore, global_proxy_semaphore))
                 proxy_tasks.append(task)
             results = await asyncio.gather(*proxy_tasks)
             for result in results:
@@ -1381,7 +1303,7 @@ def main():
         loop = asyncio.get_running_loop()
         proxy_config.set_event_loop(loop)
 
-        colored_log(logging.DEBUG, "🚀 Начало проверки прокси...")
+        colored_log(logging.INFO, "🚀 Начало проверки прокси...")
 
         proxies = await process_all_channels(channels, proxy_config)
 
