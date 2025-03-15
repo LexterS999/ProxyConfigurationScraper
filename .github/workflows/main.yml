@@ -79,6 +79,6 @@ jobs:
 
     - name: Commit and push changes
       run: |
-        git add configs/scoring_weights.json configs/proxy_configs.txt configs/bad_channels.txt all_urls.txt # Ensure bad_channels.txt and all_urls.txt are added
+        git add configs/scoring_weights.json configs/proxy_configs.txt configs/bad_channels.txt all_urls.txt
         git commit --allow-empty -m "Update proxy configs, stats and reports"
         git push
