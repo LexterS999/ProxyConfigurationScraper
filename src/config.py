@@ -1579,7 +1579,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
             "config_obj": config_obj
         }
         channel.metrics.protocol_counts[protocol_type] += 1
-        channel.metrics.protocol_scores[protocol_type].append(result['config_obj']) # Store config object instead of score
+        channel.metrics.protocol_scores[protocol_type].append(score) # Store score instead of config_obj
         return result
 
 
