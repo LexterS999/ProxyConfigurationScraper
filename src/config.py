@@ -83,7 +83,7 @@ MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
 MAX_CONCURRENT_PROXIES_GLOBAL = 120
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
-BAD_CHANNELS_FILE = "configs/bad_channels.txt" # Файл для сохранения URL не прошедших фильтрацию каналов
+BAD_CHANNELS_FILE = "configs/bad_channels.txt" # Файл для сохранения URL плохих каналов - **УДАЛЕНО**
 MAX_RETRIES = 1
 RETRY_DELAY_BASE = 1
 
@@ -710,24 +710,24 @@ class ProxyConfig:
         self.SOURCE_URLS = self._load_source_urls() # Still load source URLs, but need to adjust loading logic
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
         self.ALL_URLS_FILE = ALL_URLS_FILE
-        self.BAD_CHANNELS_FILE = BAD_CHANNELS_FILE
+        self.BAD_CHANNELS_FILE = None # BAD_CHANNELS_FILE Удален
         self.known_configs = set() # Set to store known configurations globally
         self.min_quality_category = MIN_CHANNEL_QUALITY_CATEGORY # Минимальная категория качества канала
-        self.bad_channels_list = self._load_bad_channels() # Load existing bad channels
+        self.bad_channels_list = set() # self._load_bad_channels() # Load existing bad channels - **УДАЛЕНО**
 
-    def _load_bad_channels(self) -> set:
-        """Загружает список URL плохих каналов из файла в set для быстрой проверки."""
-        bad_channels = set()
-        if os.path.exists(self.BAD_CHANNELS_FILE):
-            try:
-                with open(self.BAD_CHANNELS_FILE, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        url = line.strip()
-                        if url:
-                            bad_channels.add(url)
-            except Exception as e:
-                logger.error(f"Ошибка чтения файла {self.BAD_CHANNELS_FILE}: {e}")
-        return bad_channels
+    # def _load_bad_channels(self) -> set: # _load_bad_channels - **УДАЛЕНО**
+    #     """Загружает список URL плохих каналов из файла в set для быстрой проверки."""
+    #     bad_channels = set()
+    #     if os.path.exists(self.BAD_CHANNELS_FILE):
+    #         try:
+    #             with open(self.BAD_CHANNELS_FILE, 'r', encoding='utf-8') as f:
+    #                 for line in f:
+    #                     url = line.strip()
+    #                     if url:
+    #                         bad_channels.add(url)
+    #         except Exception as e:
+    #             logger.error(f"Ошибка чтения файла {self.BAD_CHANNELS_FILE}: {e}")
+    #     return bad_channels
 
 
     async def _fetch_url_content(self, url: str) -> Optional[str]:
@@ -739,19 +739,19 @@ class ProxyConfig:
                         return await response.text(encoding='utf-8')
                     else:
                         logger.warning(f"HTTP ошибка {response.status} при загрузке URL: {url}")
-                        self.save_bad_channel_url(url) # Save bad channel URL for HTTP errors
+                        # self.save_bad_channel_url(url) # Save bad channel URL for HTTP errors - **УДАЛЕНО**
                         return None
         except aiohttp.ClientError as e:
             logger.warning(f"Ошибка при загрузке URL: {url} - {e}")
-            self.save_bad_channel_url(url) # Save bad channel URL for client errors
+            # self.save_bad_channel_url(url) # Save bad channel URL for client errors - **УДАЛЕНО**
             return None
         except asyncio.TimeoutError:
             logger.warning(f"Таймаут при загрузке URL: {url}")
-            self.save_bad_channel_url(url) # Save bad channel URL for timeouts
+            # self.save_bad_channel_url(url) # Save bad channel URL for timeouts - **УДАЛЕНО**
             return None
         except aiodns.error.DNSError as e: # Catch DNS errors explicitly
             logger.warning(f"DNS ошибка при загрузке URL: {url} - {e}")
-            self.save_bad_channel_url(url) # Save bad channel URL for DNS errors
+            # self.save_bad_channel_url(url) # Save bad channel URL for DNS errors - **УДАЛЕНО**
             return None
         except Exception as e:
             logger.warning(f"Неизвестная ошибка при загрузке URL: {url} - {e}")
@@ -833,40 +833,42 @@ class ProxyConfig:
         """Устанавливает event loop для асинхронного DNS resolver."""
         self.resolver = aiodns.DNSResolver(loop=loop)
 
-    def remove_failed_channels_from_file(self):
+    def remove_failed_channels_from_file(self): # remove_failed_channels_from_file - **УДАЛЕНО**
         """Удаляет URL нерабочих каналов из файла all_urls.txt."""
-        if not self.failed_channels:
-            return
+        pass # **УДАЛЕНО**
+        # if not self.failed_channels:
+        #     return
 
-        try:
-            with open(self.ALL_URLS_FILE, 'r', encoding='utf-8') as f_read:
-                lines = f_read.readlines()
-            updated_lines = [line for line in lines if line.strip() not in self.failed_channels]
-            with open(self.ALL_URLS_FILE, 'w', encoding='utf-8') as f_write:
-                f_write.writelines(updated_lines)
-            logger.info(f"Удалены нерабочие каналы из {self.ALL_URLS_FILE}: {', '.join(self.failed_channels)}")
-            self.failed_channels = []
-        except FileNotFoundError:
-            logger.error(f"Файл не найден: {self.ALL_URLS_FILE}. Невозможно удалить нерабочие каналы.")
-        except Exception as e:
-            logger.error(f"Ошибка при удалении нерабочих каналов из {self.ALL_URLS_FILE}: {e}")
+        # try:
+        #     with open(self.ALL_URLS_FILE, 'r', encoding='utf-8') as f_read:
+        #         lines = f_read.readlines()
+        #     updated_lines = [line for line in lines if line.strip() not in self.failed_channels]
+        #     with open(self.ALL_URLS_FILE, 'w', encoding='utf-8') as f_write:
+        #         f_write.writelines(updated_lines)
+        #     logger.info(f"Удалены нерабочие каналы из {self.ALL_URLS_FILE}: {', '.join(self.failed_channels)}")
+        #     self.failed_channels = []
+        # except FileNotFoundError:
+        #     logger.error(f"Файл не найден: {self.ALL_URLS_FILE}. Невозможно удалить нерабочие каналы.")
+        # except Exception as e:
+        #     logger.error(f"Ошибка при удалении нерабочих каналов из {self.ALL_URLS_FILE}: {e}")
 
-    async def save_bad_channel_url(self, channel_url: str):
+    async def save_bad_channel_url(self, channel_url: str): # save_bad_channel_url - **УДАЛЕНО**
         """Сохраняет URL канала в файл bad_channels.txt, избегая дубликатов."""
-        normalized_url = await self._normalize_url(channel_url) # Normalize URL before saving
+        pass # **УДАЛЕНО**
+        # normalized_url = await self._normalize_url(channel_url) # Normalize URL before saving
 
-        if normalized_url in self.bad_channels_list: # Check if already in bad channels list
-            logger.debug(f"URL плохого канала уже существует в {BAD_CHANNELS_FILE}: {channel_url}")
-            return
+        # if normalized_url in self.bad_channels_list: # Check if already in bad channels list
+        #     logger.debug(f"URL плохого канала уже существует в {BAD_CHANNELS_FILE}: {channel_url}")
+        #     return
 
-        os.makedirs(os.path.dirname(BAD_CHANNELS_FILE), exist_ok=True) # Ensure directory exists
-        try:
-            with open(BAD_CHANNELS_FILE, 'a', encoding='utf-8') as f: # Append mode
-                f.write(normalized_url + '\n') # Save normalized URL
-            self.bad_channels_list.add(normalized_url) # Add to the set to prevent future duplicates
-            logger.info(f"URL плохого канала сохранен в {BAD_CHANNELS_FILE}: {channel_url}")
-        except Exception as e:
-            logger.error(f"Ошибка сохранения URL плохого канала в {BAD_CHANNELS_FILE}: {e}")
+        # os.makedirs(os.path.dirname(BAD_CHANNELS_FILE), exist_ok=True) # Ensure directory exists
+        # try:
+        #     with open(BAD_CHANNELS_FILE, 'a', encoding='utf-8') as f: # Append mode
+        #         f.write(normalized_url + '\n') # Save normalized URL
+        #     self.bad_channels_list.add(normalized_url) # Add to the set to prevent future duplicates
+        #     logger.info(f"URL плохого канала сохранен в {BAD_CHANNELS_FILE}: {channel_url}")
+        # except Exception as e:
+        #     logger.error(f"Ошибка сохранения URL плохого канала в {BAD_CHANNELS_FILE}: {e}")
 
 
 # --- Enum для весов скоринга ---
@@ -1615,10 +1617,10 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     min_quality_category = proxy_config.min_quality_category.lower() # Получаем минимальную категорию из ProxyConfig
 
     for channel in channels:
-        # Проверка, если канал в списке плохих каналов, пропустить его обработку
-        if channel.url in proxy_config.bad_channels_list:
-            logger.info(f"⏭️ Канал {channel.url} пропущен, так как он находится в списке плохих каналов.")
-            continue # Пропустить текущий канал и перейти к следующему
+        # Проверка, если канал в списке плохих каналов, пропустить его обработку - **УДАЛЕНО**
+        # if channel.url in proxy_config.bad_channels_list:
+        #     logger.info(f"⏭️ Канал {channel.url} пропущен, так как он находится в списке плохих каналов.")
+        #     continue # Пропустить текущий канал и перейти к следующему
 
         channel.update_load_success_history(False) # Assume failure at start, corrected on success
         invalid_configs_count = 0
@@ -1634,7 +1636,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
                 logger.warning(f"⚠️ Не удалось загрузить содержимое из URL: {channel.url}. Пропускаем канал.")
                 channel.update_load_success_history(False) # Помечаем загрузку как неудачную
                 channel.metrics.quality_category = "Bad" # Устанавливаем категорию качества как "Bad" для недоступных каналов
-                proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала
+                # proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала - **УДАЛЕНО**
                 continue # Переходим к следующему каналу
             channel.update_load_success_history(True) # Помечаем загрузку как успешную, если содержимое загружено
             logger.info(f"✅ Прокси конфигурации успешно загружены из URL: {channel.url}") # Логируем успешную загрузку
@@ -1642,7 +1644,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
             logger.error(f"Ошибка при обработке URL канала: {channel.url}. Ошибка: {e}")
             channel.update_load_success_history(False) # Помечаем загрузку как неудачную
             channel.metrics.quality_category = "Bad" # Устанавливаем категорию качества как "Bad" для недоступных каналов
-            proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала
+            # proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала - **УДАЛЕНО**
             continue
 
         lines = lines_str.splitlines() if lines_str else [] # Разделяем на строки, если содержимое было загружено
@@ -1683,18 +1685,22 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
         logger.info(f"📊 Канал {channel.url}: Качество - {channel.metrics.quality_category}, Общий скор - {channel.metrics.overall_quality_score:.2f} (Успешность загрузки: {channel.calculate_load_success_rate():.2f}%, Частота обновлений: {channel.calculate_update_frequency_score():.2f}, Разнообразие протоколов: {channel.calculate_protocol_diversity_score():.2f}%, Разнообразие конфигов: {channel.calculate_config_diversity_score():.2f}%, Уникальность: {channel.metrics.uniqueness_ratio:.2f}%, Спам конфигов: {channel.metrics.spam_configs_count})") # Расширенная статистика
 
-        # Фильтрация каналов по качеству
-        quality_category = channel.metrics.quality_category.lower()
-        if quality_category in ["low", "bad"]: # Check for "Low" or "Bad" quality and skip
-            logger.info(f"⛔️ Канал {channel.url} пропущен из-за низкого качества ({channel.metrics.quality_category}). URL канала будет сохранен в bad_channels.txt")
-            proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала
-            continue # Пропускаем канал, если качество 'low' или 'bad'
-        elif quality_category not in ["excellent", "good", "medium", "low"]: # Defensive check for other unexpected categories
-            logger.warning(f"⚠️ Неверная категория качества для канала {channel.url}: {channel.metrics.quality_category}. Пропускаем канал.")
-            continue # Пропускаем канал, если категория не распознана
-        elif quality_category in ["medium", "good", "excellent"]: # Process proxies only for Medium or higher quality
-            logger.info(f"✔️ Канал {channel.url} прошел фильтрацию по качеству ({channel.metrics.quality_category} >= {min_quality_category}). Прокси из канала будут обработаны.")
-            proxies_all.extend(valid_proxies) # Добавляем прокси только если канал прошел фильтрацию
+        # Фильтрация каналов по уникальности и качеству
+        if channel.metrics.uniqueness_ratio == 100.00:
+            logger.info(f"✨ Канал {channel.url} имеет 100% уникальность. Прокси будут сохранены, несмотря на качество.")
+            proxies_all.extend(valid_proxies)
+        elif channel.metrics.uniqueness_ratio == 0.00:
+            logger.info(f"🕳️ Канал {channel.url} имеет 0% уникальности. Прокси не будут сохранены.")
+            continue # Пропускаем канал, если уникальность 0%
+        else: # Apply quality filter if uniqueness is not 0% or 100%
+            quality_category = channel.metrics.quality_category.lower()
+            if quality_category in ["medium", "good", "excellent"]: # Process proxies only for Medium or higher quality
+                logger.info(f"✔️ Канал {channel.url} прошел фильтрацию по качеству ({channel.metrics.quality_category} >= {min_quality_category}). Прокси из канала будут обработаны.")
+                proxies_all.extend(valid_proxies)
+            elif quality_category in ["low", "bad"]:
+                logger.info(f"⛔️ Канал {channel.url} пропущен из-за низкого качества ({channel.metrics.quality_category}) и не 100% уникальности.")
+            elif quality_category not in ["excellent", "good", "medium", "low"]: # Defensive check
+                logger.warning(f"⚠️ Неверная категория качества для канала {channel.url}: {channel.metrics.quality_category}. Пропускаем канал.")
 
     return proxies_all
 
@@ -1765,7 +1771,7 @@ def main():
 
 
         save_final_configs(proxies, proxy_config.OUTPUT_FILE)
-        proxy_config.remove_failed_channels_from_file() # Keep for file management, but might need to adjust logic
+        proxy_config.remove_failed_channels_from_file() # Keep for file management, but might need to adjust logic - **УДАЛЕНО**
 
         if not statistics_logged:
             total_channels = len(channels)
