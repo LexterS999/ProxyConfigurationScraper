@@ -23,6 +23,7 @@ from collections import defaultdict
 
 import numpy as np
 from sklearn.linear_model import LinearRegression
+import aiohttp # Import aiohttp for making HTTP requests
 
 
 # --- Настройка улучшенного логирования ---
@@ -472,7 +473,7 @@ class ChannelConfig:
 
     def __init__(self, url: str):
         """Инициализирует объект ChannelConfig."""
-        self.url = self._validate_url(url)
+        self.url = self._validate_url(url) # Сохраняем URL внешнего источника, а не файла
         self.metrics = ChannelMetrics()
         self.check_count = 0
         self.metrics.first_seen = datetime.now()
@@ -488,8 +489,8 @@ class ChannelConfig:
             raise InvalidURLError("URL содержит слишком много повторяющихся символов.")
 
         parsed = urlsplit(url)
-        if parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
-            expected_protocols = ', '.join(self.VALID_PROTOCOLS)
+        if parsed.scheme not in ['http', 'https']: # Разрешаем http и https для внешних ссылок
+            expected_protocols = 'http, https'
             received_protocol_prefix = parsed.scheme or url[:10]
             raise UnsupportedProtocolError(
                 f"Неверный протокол URL. Ожидается: {expected_protocols}, получено: {received_protocol_prefix}..."
@@ -670,6 +671,23 @@ class ProxyConfig:
         self.known_configs = set() # Set to store known configurations globally
         self.min_quality_category = MIN_CHANNEL_QUALITY_CATEGORY # Минимальная категория качества канала
 
+    async def _fetch_url_content(self, url: str) -> Optional[str]:
+        """Загружает содержимое URL асинхронно."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as response: # Добавлен таймаут для запроса
+                    if response.status == 200:
+                        return await response.text(encoding='utf-8')
+                    else:
+                        logger.warning(f"HTTP ошибка {response.status} при загрузке URL: {url}")
+                        return None
+        except aiohttp.ClientError as e:
+            logger.warning(f"Ошибка при загрузке URL: {url} - {e}")
+            return None
+        except asyncio.TimeoutError:
+            logger.warning(f"Таймаут при загрузке URL: {url}")
+            return None
+
     def _load_source_urls(self) -> List[ChannelConfig]:
         """Загружает URL каналов из файла и удаляет дубликаты."""
         initial_urls = []
@@ -679,7 +697,7 @@ class ProxyConfig:
                     url = line.strip()
                     if url:
                         try:
-                            initial_urls.append(ChannelConfig(url))
+                            initial_urls.append(ChannelConfig(url)) # Теперь сохраняем URL как внешний источник
                         except (InvalidURLError, UnsupportedProtocolError) as e:
                             logger.warning(f"Неверный URL в {ALL_URLS_FILE}: {url} - {e}")
         except FileNotFoundError:
@@ -1518,14 +1536,20 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
         lines_str = ""
         try:
-            with open(channel.url, 'r', encoding='utf-8') as f: # Treat channel.url as file path now
-                lines_str = f.read()
-            channel.update_load_success_history(True) # Mark channel load as success on file read success
-        except Exception as e:
-            logger.error(f"Error reading channel file: {channel.url}. Error: {e}")
+            logger.info(f"🔄 Загрузка прокси конфигураций из URL: {channel.url}") # Логируем начало загрузки из внешнего URL
+            lines_str = await proxy_config._fetch_url_content(channel.url) # Загружаем содержимое из внешнего URL
+            if lines_str is None: # Если не удалось загрузить содержимое
+                logger.warning(f"⚠️ Не удалось загрузить содержимое из URL: {channel.url}. Пропускаем канал.")
+                channel.update_load_success_history(False) # Помечаем загрузку как неудачную
+                continue # Переходим к следующему каналу
+            channel.update_load_success_history(True) # Помечаем загрузку как успешную, если содержимое загружено
+            logger.info(f"✅ Прокси конфигурации успешно загружены из URL: {channel.url}") # Логируем успешную загрузку
+        except Exception as e: # Обработка ошибок при загрузке URL
+            logger.error(f"Ошибка при обработке URL канала: {channel.url}. Ошибка: {e}")
+            channel.update_load_success_history(False) # Помечаем загрузку как неудачную
             continue
 
-        lines = lines_str.splitlines()
+        lines = lines_str.splitlines() if lines_str else [] # Разделяем на строки, если содержимое было загружено
 
         proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
         proxy_tasks = []
