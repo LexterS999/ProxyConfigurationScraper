@@ -12,6 +12,7 @@ import functools
 import string
 import socket
 import base64
+import statistics  # For standard deviation
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
@@ -84,17 +85,32 @@ ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 1
 RETRY_DELAY_BASE = 1
 
-# Протокол-специфичные таймауты для проверок (в секундах)
-PROTOCOL_TIMEOUTS = {
-    "vless": 4.0,
-    "trojan": 4.0,
-    "ss": 4.0,
-    "ssconf": 4.0,
-    "tuic": 4.0,
-    "hy2": 4.0,
-    "default": 4.0
+# Периоды для расчета метрик (в днях)
+METRIC_PERIOD_SHORT = 1  # 1 день для краткосрочных метрик
+METRIC_PERIOD_MEDIUM = 7 # 7 дней для среднесрочных метрик
+METRIC_PERIOD_LONG = 30  # 30 дней для долгосрочных метрик
+
+# Веса метрик для общего скора канала (настраиваемые)
+CHANNEL_SCORE_WEIGHTS = {
+    "load_success_rate": 0.30,
+    "update_frequency_score": 0.20,
+    "success_rate_stability_score": 0.15,
+    "average_proxy_score": 0.15,
+    "protocol_diversity_score": 0.10,
+    "uniqueness_ratio": 0.10,
+    "invalid_config_ratio_penalty": -0.20, # Штрафы
+    "duplicate_config_ratio_penalty": -0.10,
+    "spam_config_penalty": -0.50, # Сильный штраф за спам
 }
 
+# Пороговые значения для классификации каналов (настраиваемые)
+CHANNEL_QUALITY_THRESHOLDS = {
+    "excellent": 90,
+    "good": 75,
+    "medium": 50,
+    "low": 25,
+    "bad": 0,
+}
 
 # --- Исключения ---
 class InvalidURLError(ValueError):
@@ -408,11 +424,31 @@ class ChannelMetrics:
     protocol_scores: Dict[str, List[float]] = field(default_factory=lambda: defaultdict(list))
     first_seen: Optional[datetime] = None
 
+    # Метрики стабильности и надежности
+    load_success_history: List[Tuple[datetime, bool]] = field(default_factory=list) # История успешности загрузок (время, успех)
+    last_success_time: Optional[datetime] = None
+    fail_count: int = 0
+    success_count: int = 0
+
+    # Метрики качества контента
+    average_proxy_score: float = 0.0
+    protocol_diversity_score: float = 0.0
+    uniqueness_ratio: float = 0.0
+
+    # Точечные метрики (чистота и глубина)
+    invalid_config_ratio: float = 0.0
+    duplicate_config_ratio: float = 0.0
+    config_completeness_score: float = 0.0 # Средняя полнота конфигураций
+
+    overall_quality_score: float = 0.0 # Общий скор качества канала
+    quality_category: str = "Unknown"
+
 
 class ChannelConfig:
     """Конфигурация канала для проверки прокси."""
     RESPONSE_TIME_DECAY = 0.7
     VALID_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
+    GLOBAL_CONFIG_HISTORY = set() # Глобальный набор для отслеживания уникальности конфигураций
 
     def __init__(self, url: str):
         """Инициализирует объект ChannelConfig."""
@@ -440,6 +476,159 @@ class ChannelConfig:
             )
         return url
 
+    def update_load_success_history(self, success: bool):
+        """Обновляет историю успешности загрузок."""
+        self.metrics.load_success_history.append((datetime.now(), success))
+        # Ограничение истории, например, до METRIC_PERIOD_LONG дней
+        cutoff_time = datetime.now() - timedelta(days=METRIC_PERIOD_LONG)
+        self.metrics.load_success_history = [(t, s) for t, s in self.metrics.load_success_history if t > cutoff_time]
+
+    def calculate_load_success_rate(self, period_days=METRIC_PERIOD_MEDIUM):
+        """Вычисляет процент успешных загрузок за период."""
+        start_time = datetime.now() - timedelta(days=period_days)
+        recent_history = [(t, s) for t, s in self.metrics.load_success_history if t >= start_time]
+        if not recent_history:
+            return 0.0  # Если нет данных за период, считаем 0%
+        successful_loads = sum(1 for _, success in recent_history if success)
+        total_loads = len(recent_history)
+        return (successful_loads / total_loads) * 100 if total_loads > 0 else 0.0
+
+    def calculate_update_frequency_score(self):
+        """Вычисляет оценку частоты обновлений (пример: средний интервал)."""
+        success_times = sorted([t for t, success in self.metrics.load_success_history if success], reverse=True)
+        if len(success_times) < 2:
+            return 0.0  # Недостаточно данных для расчета интервала
+        time_diffs = []
+        for i in range(len(success_times) - 1):
+            time_diffs.append((success_times[i] - success_times[i+1]).total_seconds() / 3600) # Интервалы в часах
+        if not time_diffs:
+            return 0.0
+        average_interval_hours = sum(time_diffs) / len(time_diffs)
+        # Оценка: чем меньше интервал, тем выше score (примерная шкала, настраивается)
+        if average_interval_hours == 0: # Избегаем деления на ноль, если обновления очень частые
+            return 100.0
+        frequency_score = max(0, min(100, 100 / (average_interval_hours + 1))) # +1 для избежания деления на ноль и сглаживания
+        return frequency_score
+
+    def calculate_success_rate_stability_score(self, period_days=METRIC_PERIOD_MEDIUM):
+        """Вычисляет стабильность успешности загрузок (стандартное отклонение)."""
+        daily_success_rates = []
+        today = datetime.now().date()
+        for day_offset in range(period_days):
+            current_day = today - timedelta(days=day_offset)
+            day_history = [(t, s) for t, s in self.metrics.load_success_history if t.date() == current_day]
+            if day_history:
+                successful_loads = sum(1 for _, success in day_history if success)
+                total_loads = len(day_history)
+                daily_rate = (successful_loads / total_loads) * 100 if total_loads > 0 else 0.0
+                daily_success_rates.append(daily_rate)
+            else:
+                daily_success_rates.append(0.0) # Если в какой-то день не было попыток, считаем 0%
+
+        if len(daily_success_rates) < 2: # Нужно минимум 2 точки для std dev
+            return 50.0 # Нейтральное значение, если недостаточно данных
+        std_dev = statistics.stdev(daily_success_rates)
+        # Инвертируем std_dev в score: чем меньше std_dev, тем выше score (примерная шкала)
+        stability_score = max(0, 100 - std_dev * 2) # Пример: std_dev 0 -> 100, std_dev 50 -> 0
+        return stability_score
+
+    def calculate_protocol_diversity_score(self):
+        """Вычисляет оценку разнообразия протоколов."""
+        protocol_counts = self.metrics.protocol_counts
+        total_configs = sum(protocol_counts.values())
+        if total_configs == 0:
+            return 0.0
+        unique_protocols = len(protocol_counts)
+        max_possible_protocols = len(ALLOWED_PROTOCOLS)
+        return (unique_protocols / max_possible_protocols) * 100
+
+    def calculate_uniqueness_ratio(self, current_configs):
+        """Вычисляет долю уникальных конфигураций среди новых."""
+        new_unique_configs_count = 0
+        total_new_configs = len(current_configs)
+        for config_str in current_configs:
+            if config_str not in ChannelConfig.GLOBAL_CONFIG_HISTORY:
+                new_unique_configs_count += 1
+                ChannelConfig.GLOBAL_CONFIG_HISTORY.add(config_str) # Добавляем в глобальную историю
+
+        return (new_unique_configs_count / total_new_configs) * 100 if total_new_configs > 0 else 0.0
+
+    def calculate_average_proxy_score(self):
+        """Вычисляет средний скор прокси."""
+        scores = self.metrics.protocol_scores # Используем накопленные скоры
+        all_scores = []
+        for protocol_score_list in scores.values():
+            all_scores.extend(protocol_score_list)
+        if not all_scores:
+            return 50.0 # Нейтральный скор, если нет данных
+        return sum(all_scores) / len(all_scores) if all_scores else 0.0
+
+    def calculate_invalid_config_ratio(self, invalid_count, total_count):
+        """Вычисляет долю невалидных конфигураций."""
+        return (invalid_count / total_count) * 100 if total_count > 0 else 0.0
+
+    def calculate_duplicate_config_ratio(self, duplicate_count, total_count):
+        """Вычисляет долю дубликатов конфигураций."""
+        return (duplicate_count / total_count) * 100 if total_count > 0 else 0.0
+
+    def calculate_config_completeness_score(self, config_objects):
+        """Вычисляет среднюю полноту конфигураций."""
+        if not config_objects:
+            return 50.0 # Нейтральное значение, если нет конфигураций
+        completeness_scores = []
+        for config_obj in config_objects:
+            fields = astuple(config_obj)
+            filled_fields = sum(1 for field_value in fields if field_value is not None and field_value != 'none' and field_value != False) # Adjust condition for "filled" as needed
+            max_fields = len(fields)
+            completeness_scores.append((filled_fields / max_fields) * 100 if max_fields > 0 else 0.0)
+        return sum(completeness_scores) / len(completeness_scores) if completeness_scores else 0.0
+
+
+    def calculate_overall_quality_score(self):
+        """Вычисляет общий скор качества канала на основе взвешенных метрик."""
+        weights = CHANNEL_SCORE_WEIGHTS
+        score = 0.0
+
+        score += self.calculate_load_success_rate() * weights["load_success_rate"]
+        score += self.calculate_update_frequency_score() * weights["update_frequency_score"]
+        score += self.calculate_success_rate_stability_score() * weights["success_rate_stability_score"]
+        score += self.calculate_average_proxy_score() * weights["average_proxy_score"]
+        score += self.calculate_protocol_diversity_score() * weights["protocol_diversity_score"]
+        score += self.calculate_uniqueness_ratio([]) * weights["uniqueness_ratio"] # Uniqueness needs current configs, calculated later
+
+        # Штрафы
+        score += self.metrics.invalid_config_ratio * weights["invalid_config_ratio_penalty"]
+        score += self.metrics.duplicate_config_ratio * weights["duplicate_config_ratio_penalty"]
+        # spam_config_penalty - requires spam detection, not implemented yet
+
+        return max(0, min(100, score)) # Clamp score between 0 and 100
+
+    def classify_quality_category(self):
+        """Классифицирует канал по категориям качества на основе скора."""
+        score = self.metrics.overall_quality_score
+        thresholds = CHANNEL_QUALITY_THRESHOLDS
+        if score >= thresholds["excellent"]:
+            return "Excellent"
+        elif score >= thresholds["good"]:
+            return "Good"
+        elif score >= thresholds["medium"]:
+            return "Medium"
+        elif score >= thresholds["low"]:
+            return "Low"
+        else:
+            return "Bad"
+
+    def update_channel_metrics(self, proxies, invalid_configs_count, duplicate_configs_count):
+        """Обновляет все метрики канала после обработки."""
+        self.metrics.average_proxy_score = self.calculate_average_proxy_score()
+        self.metrics.protocol_diversity_score = self.calculate_protocol_diversity_score()
+        self.metrics.invalid_config_ratio = self.calculate_invalid_config_ratio(invalid_configs_count, len(proxies) + invalid_configs_count) # Total checked configs
+        self.metrics.duplicate_config_ratio = self.calculate_duplicate_config_ratio(duplicate_configs_count, len(proxies) + duplicate_configs_count)
+        self.metrics.config_completeness_score = self.calculate_config_completeness_score([p['config_obj'] for p in proxies]) # Calculate completeness based on parsed config objects
+
+        self.metrics.overall_quality_score = self.calculate_overall_quality_score()
+        self.metrics.quality_category = self.classify_quality_category()
+
 
 class ProxyConfig:
     """Управляет конфигурациями прокси."""
@@ -452,6 +641,7 @@ class ProxyConfig:
         self.SOURCE_URLS = self._load_source_urls() # Still load source URLs, but need to adjust loading logic
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
         self.ALL_URLS_FILE = ALL_URLS_FILE
+        self.known_configs = set() # Set to store known configurations globally
 
     def _load_source_urls(self) -> List[ChannelConfig]:
         """Загружает URL каналов из файла и удаляет дубликаты."""
@@ -694,7 +884,6 @@ class ScoringWeights(Enum):
             logger.info(f"Scoring weights saved to {file_path}")
         except Exception as e:
             logger.error(f"Error saving scoring weights to {file_path}: {e}")
-
 
 
 # --- Вспомогательные функции ---
@@ -1020,7 +1209,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
     elif scheme == "ss":
         method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")
         if method == "CHACHA20-IETF-POLY1305":
-            return ProfileName.SS_CHACHA20_IETF_POLY1305.value
+            return ProfileName.SS_CHACHa20_IETF_POLY1305.value
         return ProfileName.SS_FORMAT.value.format(method=method)
 
     elif scheme == "ssconf": # Custom name for ssconf
@@ -1278,13 +1467,17 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
 
-    tasks = []
-
     for channel in channels:
+        channel.update_load_success_history(False) # Assume failure at start, corrected on success
+        invalid_configs_count = 0
+        duplicate_configs_count = 0
+        current_channel_configs = [] # Для расчета Uniqueness Ratio
+
         lines_str = ""
         try:
             with open(channel.url, 'r', encoding='utf-8') as f: # Treat channel.url as file path now
                 lines_str = f.read()
+            channel.update_load_success_history(True) # Mark channel load as success on file read success
         except Exception as e:
             logger.error(f"Error reading channel file: {channel.url}. Error: {e}")
             continue
@@ -1298,15 +1491,30 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
         for line in lines:
             line = line.strip()
             if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line): # Removed MIN_CONFIG_LENGTH
+                invalid_configs_count += 1 # Count invalid lines
                 continue
+            if line in proxy_config.known_configs: # Check for duplicates before processing
+                duplicate_configs_count += 1
+                continue
+            proxy_config.known_configs.add(line) # Add to known configs set immediately to avoid further duplicates in same channel processing
+
             task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
                                                         loaded_weights, proxy_semaphore, global_proxy_semaphore))
             proxy_tasks.append(task)
+            current_channel_configs.append(line) # Сохраняем для расчета Uniqueness Ratio
+
         results = await asyncio.gather(*proxy_tasks)
+        valid_proxies = []
         for result in results:
             if result:
+                valid_proxies.append(result)
                 proxies_all.append(result)
-        channel.metrics.valid_configs += len(proxies_all) # Counting valid configs per "channel file"
+
+        # Calculate channel-level metrics AFTER processing all proxies in the channel
+        channel.metrics.unique_configs = len(valid_proxies) # Valid proxies are unique within channel processing scope
+        channel.metrics.uniqueness_ratio = channel.calculate_uniqueness_ratio(current_channel_configs) # Calculate uniqueness ratio based on current configs
+        channel.update_channel_metrics(valid_proxies, invalid_configs_count, duplicate_configs_count) # Обновляем метрики канала
+        logger.info(f"📊 Канал {channel.url}: Качество - {channel.metrics.quality_category}, Общий скор - {channel.metrics.overall_quality_score:.2f}, Успешность загрузки - {channel.metrics.calculate_load_success_rate():.2f}%, Частота обновлений - {channel.metrics.calculate_update_frequency_score():.2f}") # Логируем результаты оценки канала
 
     return proxies_all
 
