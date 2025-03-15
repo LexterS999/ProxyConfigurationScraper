@@ -83,6 +83,7 @@ MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
 MAX_CONCURRENT_PROXIES_GLOBAL = 120
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
+BAD_CHANNELS_FILE = "configs/bad_channels.txt" # Файл для сохранения URL не прошедших фильтрацию каналов
 MAX_RETRIES = 1
 RETRY_DELAY_BASE = 1
 
@@ -98,7 +99,8 @@ CHANNEL_SCORE_WEIGHTS = {
     "success_rate_stability_score": 0.15,
     "average_proxy_score": 0.15,
     "protocol_diversity_score": 0.10,
-    "uniqueness_ratio": 0.10,
+    "config_diversity_score": 0.05, # New metric
+    "uniqueness_ratio": 0.05,
     "invalid_config_ratio_penalty": -0.20, # Штрафы
     "duplicate_config_ratio_penalty": -0.10,
     "spam_config_penalty": -0.50, # Сильный штраф за спам
@@ -115,20 +117,45 @@ CHANNEL_QUALITY_THRESHOLDS = {
 }
 
 # Минимальная категория качества канала для использования (настраиваемая)
-MIN_CHANNEL_QUALITY_CATEGORY = "Medium" # Каналы ниже этой категории будут игнорироваться
+MIN_CHANNEL_QUALITY_CATEGORY = "medium" # Каналы ниже этой категории будут игнорироваться
 
 # Ключевые слова для обнаружения спама (настраиваемые)
-SPAM_KEYWORDS = ["free proxy", "join channel", "telegram channel", "get free", "daily proxy"]
+SPAM_KEYWORDS = [
+    "free proxy",
+    "join channel",
+    "join @channel",
+    "join",
+    "telegram channel",
+    "get free",
+    "daily proxy",
+    "бесплатный прокси",
+    "прокси бесплатно",
+    "халява",
+    "подпишись",
+    "subscribe",
+    "follow us",
+    "vip proxy",
+    "premium proxy",
+    "best proxy",
+    "fast proxy",
+    "top proxy",
+    "working proxy",
+    "fresh proxy",
+    "unlimited proxy",
+    "gift proxy",
+    "promo proxy",
+]
 
 # Таймауты для протоколов (в секундах) - **ДОБАВЛЕНО**
 PROTOCOL_TIMEOUTS = {
-    "vless": 5.0,
-    "ss": 5.0,
-    "trojan": 5.0,
-    "tuic": 5.0,
-    "hy2": 5.0,
-    "ssconf": 5.0,
+    "vless": 3.0, # Reduced timeouts for faster processing
+    "ss": 3.0,
+    "trojan": 3.0,
+    "tuic": 3.0,
+    "hy2": 3.0,
+    "ssconf": 3.0,
 }
+CHANNEL_LOAD_TIMEOUT = 10 # Timeout for loading channel URLs
 
 
 # --- Исключения ---
@@ -452,6 +479,7 @@ class ChannelMetrics:
     # Метрики качества контента
     average_proxy_score: float = 0.0
     protocol_diversity_score: float = 0.0
+    config_diversity_score: float = 0.0 # New metric
     uniqueness_ratio: float = 0.0
 
     # Точечные метрики (чистота и глубина)
@@ -568,6 +596,18 @@ class ChannelConfig:
         max_possible_protocols = len(ALLOWED_PROTOCOLS)
         return (unique_protocols / max_possible_protocols) * 100
 
+    def calculate_config_diversity_score(self):
+        """Вычисляет оценку разнообразия параметров конфигураций (простой подсчет уникальных комбинаций)."""
+        config_signatures = set()
+        for protocol, configs in self.metrics.protocol_scores.items(): # Assuming protocol_scores stores config objects now
+            for score in configs: # We only need config type for diversity, not scores directly
+                config_obj_type_name = score.__class__.__name__ if isinstance(score, object) else "UnknownType" # Get config object type name
+                config_signatures.add(f"{protocol}-{config_obj_type_name}") # Create a simple signature
+        unique_config_types = len(config_signatures)
+        max_possible_config_types = len(ALLOWED_PROTOCOLS) * 5 # Estimating max types per protocol (adjust as needed)
+        return (unique_config_types / max_possible_config_types) * 100 if max_possible_config_types > 0 else 0.0
+
+
     def calculate_uniqueness_ratio(self, current_configs):
         """Вычисляет долю уникальных конфигураций среди новых."""
         new_unique_configs_count = 0
@@ -620,6 +660,7 @@ class ChannelConfig:
         score += self.calculate_success_rate_stability_score() * weights["success_rate_stability_score"]
         score += self.calculate_average_proxy_score() * weights["average_proxy_score"]
         score += self.calculate_protocol_diversity_score() * weights["protocol_diversity_score"]
+        score += self.calculate_config_diversity_score() * weights["config_diversity_score"] # New metric
         score += self.calculate_uniqueness_ratio([]) * weights["uniqueness_ratio"] # Uniqueness needs current configs, calculated later
 
         # Штрафы
@@ -649,6 +690,7 @@ class ChannelConfig:
         """Обновляет все метрики канала после обработки."""
         self.metrics.average_proxy_score = self.calculate_average_proxy_score()
         self.metrics.protocol_diversity_score = self.calculate_protocol_diversity_score()
+        self.metrics.config_diversity_score = self.calculate_config_diversity_score() # Calculate config diversity
         self.metrics.invalid_config_ratio = self.calculate_invalid_config_ratio(invalid_configs_count, len(proxies) + invalid_configs_count) # Total checked configs
         self.metrics.duplicate_config_ratio = self.calculate_duplicate_config_ratio(duplicate_configs_count, len(proxies) + duplicate_configs_count)
         self.metrics.config_completeness_score = self.calculate_config_completeness_score([p['config_obj'] for p in proxies]) # Calculate completeness based on parsed config objects
@@ -668,6 +710,7 @@ class ProxyConfig:
         self.SOURCE_URLS = self._load_source_urls() # Still load source URLs, but need to adjust loading logic
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
         self.ALL_URLS_FILE = ALL_URLS_FILE
+        self.BAD_CHANNELS_FILE = BAD_CHANNELS_FILE
         self.known_configs = set() # Set to store known configurations globally
         self.min_quality_category = MIN_CHANNEL_QUALITY_CATEGORY # Минимальная категория качества канала
 
@@ -675,18 +718,29 @@ class ProxyConfig:
         """Загружает содержимое URL асинхронно."""
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as response: # Добавлен таймаут для запроса
+                async with session.get(url, timeout=CHANNEL_LOAD_TIMEOUT) as response: # Добавлен таймаут для запроса
                     if response.status == 200:
                         return await response.text(encoding='utf-8')
                     else:
                         logger.warning(f"HTTP ошибка {response.status} при загрузке URL: {url}")
+                        self.save_bad_channel_url(url) # Save bad channel URL for HTTP errors
                         return None
         except aiohttp.ClientError as e:
             logger.warning(f"Ошибка при загрузке URL: {url} - {e}")
+            self.save_bad_channel_url(url) # Save bad channel URL for client errors
             return None
         except asyncio.TimeoutError:
             logger.warning(f"Таймаут при загрузке URL: {url}")
+            self.save_bad_channel_url(url) # Save bad channel URL for timeouts
             return None
+        except aiodns.error.DNSError as e: # Catch DNS errors explicitly
+            logger.warning(f"DNS ошибка при загрузке URL: {url} - {e}")
+            self.save_bad_channel_url(url) # Save bad channel URL for DNS errors
+            return None
+        except Exception as e:
+            logger.warning(f"Неизвестная ошибка при загрузке URL: {url} - {e}")
+            return None
+
 
     def _load_source_urls(self) -> List[ChannelConfig]:
         """Загружает URL каналов из файла и удаляет дубликаты."""
@@ -781,6 +835,16 @@ class ProxyConfig:
         except Exception as e:
             logger.error(f"Ошибка при удалении нерабочих каналов из {self.ALL_URLS_FILE}: {e}")
 
+    def save_bad_channel_url(self, channel_url: str):
+        """Сохраняет URL канала в файл bad_channels.txt."""
+        os.makedirs(os.path.dirname(BAD_CHANNELS_FILE), exist_ok=True) # Ensure directory exists
+        try:
+            with open(BAD_CHANNELS_FILE, 'a', encoding='utf-8') as f: # Append mode
+                f.write(channel_url + '\n')
+            logger.info(f"URL плохого канала сохранен в {BAD_CHANNELS_FILE}: {channel_url}")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения URL плохого канала в {BAD_CHANNELS_FILE}: {e}")
+
 
 # --- Enum для весов скоринга ---
 class ScoringWeights(Enum):
@@ -872,6 +936,8 @@ class ScoringWeights(Enum):
     COMMON_HEADERS = 3
     COMMON_RARE_PARAM = 4
     COMMON_HIDDEN_PARAM = 2
+    CONFIG_DIVERSITY = 5 # New weight for config diversity
+
 
     @staticmethod
     def load_weights_from_json(file_path: str = DEFAULT_SCORING_WEIGHTS_FILE) -> Dict[str, Any]:
@@ -1234,9 +1300,7 @@ async def compute_profile_score(config: str, loaded_weights: Dict = None, first_
         }
         score += protocol_calculators.get(protocol, lambda *args: 0)(parsed, query, loaded_weights) # Use get with default lambda
 
-    max_possible_score = sum(weight for weight in loaded_weights.values())
-    normalized_score = (score / max_possible_score) * 100 if max_possible_score > 0 else 0.0
-    return round(normalized_score, 2)
+    return round(max(0, min(100, score)), 2) # Ensure score is within 0-100 range and rounded
 
 
 def generate_custom_name(parsed: urlparse, query: Dict) -> str:
@@ -1515,7 +1579,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
             "config_obj": config_obj
         }
         channel.metrics.protocol_counts[protocol_type] += 1
-        channel.metrics.protocol_scores[protocol_type].append(score)
+        channel.metrics.protocol_scores[protocol_type].append(result['config_obj']) # Store config object instead of score
         return result
 
 
@@ -1585,7 +1649,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
         if channel.metrics.spam_configs_count > 0: # Если спам был обнаружен в канале, устанавливаем флаг
             channel.metrics.spam_detected = True
 
-        logger.info(f"📊 Канал {channel.url}: Качество - {channel.metrics.quality_category}, Общий скор - {channel.metrics.overall_quality_score:.2f}, Успешность загрузки - {channel.calculate_load_success_rate():.2f}%, Частота обновлений - {channel.calculate_update_frequency_score():.2f}, Спам конфигов - {channel.metrics.spam_configs_count}") # Логируем результаты оценки канала
+        logger.info(f"📊 Канал {channel.url}: Качество - {channel.metrics.quality_category}, Общий скор - {channel.metrics.overall_quality_score:.2f} (Успешность загрузки: {channel.calculate_load_success_rate():.2f}%, Частота обновлений: {channel.calculate_update_frequency_score():.2f}, Разнообразие протоколов: {channel.calculate_protocol_diversity_score():.2f}%, Разнообразие конфигов: {channel.calculate_config_diversity_score():.2f}%, Уникальность: {channel.metrics.uniqueness_ratio:.2f}%, Спам конфигов: {channel.metrics.spam_configs_count})") # Расширенная статистика
 
         # Фильтрация каналов по качеству
         if channel.metrics.quality_category.lower() not in ["excellent", "good", "medium", "low", "bad"]: # Defensive check
@@ -1594,8 +1658,12 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
         quality_rank = ["bad", "low", "medium", "good", "excellent"]
         if quality_rank.index(channel.metrics.quality_category.lower()) < quality_rank.index(min_quality_category):
-            logger.info(f"⛔️ Канал {channel.url} не прошел фильтрацию по качеству ({channel.metrics.quality_category} < {min_quality_category}). Пропускаем канал.")
+            logger.info(f"⛔️ Канал {channel.url} не прошел фильтрацию по качеству ({channel.metrics.quality_category} < {min_quality_category}). Канал будет сохранен в {BAD_CHANNELS_FILE}")
+            proxy_config.save_bad_channel_url(channel.url) # Сохраняем URL плохого канала
             continue # Пропускаем канал, если качество ниже минимального
+        elif channel.metrics.quality_category.lower() in ["medium", "good", "excellent"]:
+            logger.info(f"✔️ Канал {channel.url} прошел фильтрацию по качеству ({channel.metrics.quality_category} >= {min_quality_category}).")
+
 
         proxies_all.extend(valid_proxies) # Добавляем прокси только если канал прошел фильтрацию
 
