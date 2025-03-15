@@ -1318,7 +1318,7 @@ def generate_custom_name(parsed: urlparse, query: Dict) -> str:
     elif scheme == "ss":
         method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")
         if method == "CHACHA20-IETF-POLY1305":
-            return ProfileName.SS_CHACHa20_IETF_POLY1305.value
+            return ProfileName.SS_CHACHA20_IETF_POLY1305.value
         return ProfileName.SS_FORMAT.value.format(method=method)
 
     elif scheme == "ssconf": # Custom name for ssconf
