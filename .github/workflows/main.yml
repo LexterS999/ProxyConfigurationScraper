@@ -44,9 +44,28 @@ jobs:
     - name: Check scoring_weights.json exists
       run: |
         if [ ! -f configs/scoring_weights.json ]; then
-          echo "scoring_weights.json не найден. Будет создан дефолтный файл."
+          echo "configs/scoring_weights.json не найден. Будет создан дефолтный файл."
         else
-          echo "scoring_weights.json найден."
+          echo "configs/scoring_weights.json найден."
+        fi
+
+    - name: Check all_urls.txt exists
+      run: |
+        if [ ! -f all_urls.txt ]; then
+          echo "all_urls.txt не найден. Будет создан пустой файл."
+          touch all_urls.txt
+        else
+          echo "all_urls.txt найден."
+        fi
+
+    - name: Check bad_channels.txt exists
+      run: |
+        if [ ! -f configs/bad_channels.txt ]; then
+          echo "configs/bad_channels.txt не найден. Будет создан дефолтный файл."
+          mkdir -p configs
+          touch configs/bad_channels.txt
+        else
+          echo "configs/bad_channels.txt найден."
         fi
 
     - name: Run config fetcher script
@@ -60,6 +79,6 @@ jobs:
 
     - name: Commit and push changes
       run: |
-        git add configs/scoring_weights.json configs/proxy_configs.txt configs/bad_channels.txt # Added bad_channels.txt to commit
+        git add configs/scoring_weights.json configs/proxy_configs.txt configs/bad_channels.txt all_urls.txt # Ensure bad_channels.txt and all_urls.txt are added
         git commit --allow-empty -m "Update proxy configs, stats and reports"
         git push
