@@ -807,7 +807,7 @@ class ProxyConfig:
                 logger.warning(f"Неверная конфигурация пропущена: {config}")
                 continue
             try:
-                normalized_url = await self._normalize_url(config.url)
+                normalized_url = asyncio.run(self._normalize_url(config.url))
                 if normalized_url not in seen_urls:
                     seen_urls.add(normalized_url)
                     unique_configs.append(config)
