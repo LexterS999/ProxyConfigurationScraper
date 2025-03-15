@@ -9,4 +9,3 @@ aiodns
 scikit-learn
 numpy
 pysocks
-colorlog
