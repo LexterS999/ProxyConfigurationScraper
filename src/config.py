@@ -434,7 +434,7 @@ class ChannelConfig:
 
         parsed = urlsplit(url)
         if parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
-            expected_protocols = ', '.join(self.VALID_PROTOCOLS)
+            expected_protocols = ', '.join(self.VALID_PROTOCOлы)
             received_protocol_prefix = parsed.scheme or url[:10]
             raise UnsupportedProtocolError(
                 f"Неверный протокол URL. Ожидается: {expected_protocols}, получено: {received_protocol_prefix}..."
@@ -1282,7 +1282,11 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     async with aiohttp.ClientSession() as session: # Use aiohttp session for efficiency
         session_timeout = aiohttp.ClientTimeout(total=15) # Set timeout for session
         for channel in channels:
-            lines = []
+            proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
+            proxy_tasks = []
+            loaded_weights = ScoringWeights.load_weights_from_json()
+            lines = [] # Initialize lines here
+
             try:
                 async with session.get(channel.url, timeout=session_timeout) as response: # Fetch content from channel URL
                     if response.status == 200:
@@ -1298,9 +1302,6 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
                 logger.error(f"Timeout fetching from {channel.url}")
                 continue
 
-            proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
-            proxy_tasks = []
-            loaded_weights = ScoringWeights.load_weights_from_json()
 
             for line in lines:
                 line = line.strip()
