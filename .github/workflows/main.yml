@@ -60,6 +60,6 @@ jobs:
 
     - name: Commit and push changes
       run: |
-        git add configs/scoring_weights.json configs/proxy_configs.txt # Убедитесь, что scoring_weights.json тоже добавляется
+        git add configs/scoring_weights.json configs/proxy_configs.txt configs/bad_channels.txt # Added bad_channels.txt to commit
         git commit --allow-empty -m "Update proxy configs, stats and reports"
         git push
