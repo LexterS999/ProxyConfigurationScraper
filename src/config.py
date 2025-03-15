@@ -119,6 +119,16 @@ MIN_CHANNEL_QUALITY_CATEGORY = "Medium" # Каналы ниже этой кат�
 # Ключевые слова для обнаружения спама (настраиваемые)
 SPAM_KEYWORDS = ["free proxy", "join channel", "telegram channel", "get free", "daily proxy"]
 
+# Таймауты для протоколов (в секундах) - **ДОБАВЛЕНО**
+PROTOCOL_TIMEOUTS = {
+    "vless": 5.0,
+    "ss": 5.0,
+    "trojan": 5.0,
+    "tuic": 5.0,
+    "hy2": 5.0,
+    "ssconf": 5.0,
+}
+
 
 # --- Исключения ---
 class InvalidURLError(ValueError):
@@ -479,7 +489,7 @@ class ChannelConfig:
 
         parsed = urlsplit(url)
         if parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
-            expected_protocols = ', '.join(self.VALID_PROTOCOлы)
+            expected_protocols = ', '.join(self.VALID_PROTOколы)
             received_protocol_prefix = parsed.scheme or url[:10]
             raise UnsupportedProtocolError(
                 f"Неверный протокол URL. Ожидается: {expected_protocols}, получено: {received_protocol_prefix}..."
@@ -1410,7 +1420,7 @@ async def _minimal_tcp_connection_test(host: str, port: int, timeout: float, pro
         logger.debug(f"✅ {protocol_name} проверка: TCP соединение с {host}:{port} установлено за {timeout:.2f} секунд.")
         return True
     except asyncio.TimeoutError:
-        logger.debug(f"❌ {protocol_name} проверка: TCP таймаут ({timeout:.2f} сек) при подключении к {host}:{port}.")
+        logger.debug(f"❌ {protocol_name} проверка: TCP таймаут ({timeout:.2f} сек) при подключении к {host}:{port}:{timeout:.2f} секунд.") # Исправлено логирование таймаута
         return False
     except (ConnectionRefusedError, OSError, socket.gaierror) as e:
         logger.debug(f"❌ {protocol_name} проверка: Ошибка TCP соединения с {host}:{port}: {e}.")
