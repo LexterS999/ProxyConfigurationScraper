@@ -382,9 +382,14 @@ class TuicConfig:
         if congestion_control not in valid_congestion_controls:
             raise InvalidParameterError(f"Недопустимое значение congestion: {congestion_control}. Допустимые значения: {', '.join(valid_congestion_controls)}.")
 
-        udp_relay_mode = _get_value(query, 'udp_relay_mode', 'quic').lower()
-        if udp_relay_mode not in ['quic', 'none']:
-            raise InvalidParameterError(f"Недопустимое значение udp_relay_mode: {udp_relay_mode}. Допустимые значения: quic, none.")
+        udp_relay_mode_value = _get_value(query, 'udp_relay_mode', 'quic').lower()
+        if udp_relay_mode_value not in ['quic', 'none']:
+            # Log as warning instead of error for this specific case
+            logger.warning(f"Неверный параметр в конфигурации: {parsed_url.geturl()} - Недопустимое значение udp_relay_mode: {udp_relay_mode_value}. Допустимые значения: quic, none.")
+            udp_relay_mode = 'quic' # Default to 'quic' or handle as needed.
+
+        else:
+            udp_relay_mode = udp_relay_mode_value
 
 
         return cls(
@@ -984,7 +989,11 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
         logger.error(f"Ошибка парсинга конфигурации: {config_string} - {e}")
         return None
     except InvalidParameterError as e:
-        logger.error(f"Неверный параметр в конфигурации: {config_string} - {e}")
+        # Check if the error is specifically about udp_relay_mode and log as warning
+        if "udp_relay_mode" in str(e).lower():
+            logger.warning(f"Неверный параметр в конфигурации: {config_string} - {e}")
+        else:
+            logger.error(f"Неверный параметр в конфигурации: {config_string} - {e}")
         return None
     except Exception as e:
         logger.exception(f"Непредвиденная ошибка при парсинге конфигурации {config_string}: {e}")
