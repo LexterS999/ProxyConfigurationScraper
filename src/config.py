@@ -101,6 +101,7 @@ CHANNEL_SCORE_WEIGHTS = {
     "invalid_config_ratio_penalty": -0.20, # Штрафы
     "duplicate_config_ratio_penalty": -0.10,
     "spam_config_penalty": -0.50, # Сильный штраф за спам
+    "spam_detected_penalty": -50.0 # Единоразовый штраф, если спам обнаружен в канале
 }
 
 # Пороговые значения для классификации каналов (настраиваемые)
@@ -111,6 +112,13 @@ CHANNEL_QUALITY_THRESHOLDS = {
     "low": 25,
     "bad": 0,
 }
+
+# Минимальная категория качества канала для использования (настраиваемая)
+MIN_CHANNEL_QUALITY_CATEGORY = "Medium" # Каналы ниже этой категории будут игнорироваться
+
+# Ключевые слова для обнаружения спама (настраиваемые)
+SPAM_KEYWORDS = ["free proxy", "join channel", "telegram channel", "get free", "daily proxy"]
+
 
 # --- Исключения ---
 class InvalidURLError(ValueError):
@@ -439,9 +447,11 @@ class ChannelMetrics:
     invalid_config_ratio: float = 0.0
     duplicate_config_ratio: float = 0.0
     config_completeness_score: float = 0.0 # Средняя полнота конфигураций
+    spam_configs_count: int = 0 # Количество спам-конфигураций
 
     overall_quality_score: float = 0.0 # Общий скор качества канала
     quality_category: str = "Unknown"
+    spam_detected: bool = False # Флаг обнаружения спама в канале
 
 
 class ChannelConfig:
@@ -469,7 +479,7 @@ class ChannelConfig:
 
         parsed = urlsplit(url)
         if parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
-            expected_protocols = ', '.join(self.VALID_PROTOCOLS)
+            expected_protocols = ', '.join(self.VALID_PROTOCOлы)
             received_protocol_prefix = parsed.scheme or url[:10]
             raise UnsupportedProtocolError(
                 f"Неверный протокол URL. Ожидается: {expected_protocols}, получено: {received_protocol_prefix}..."
@@ -494,7 +504,7 @@ class ChannelConfig:
         return (successful_loads / total_loads) * 100 if total_loads > 0 else 0.0
 
     def calculate_update_frequency_score(self):
-        """Вычисляет оценку частоты обновлений (пример: средний интервал)."""
+        """Вычисляет оценку частоты обновлений (улучшенная формула)."""
         success_times = sorted([t for t, success in self.metrics.load_success_history if success], reverse=True)
         if len(success_times) < 2:
             return 0.0  # Недостаточно данных для расчета интервала
@@ -504,14 +514,19 @@ class ChannelConfig:
         if not time_diffs:
             return 0.0
         average_interval_hours = sum(time_diffs) / len(time_diffs)
-        # Оценка: чем меньше интервал, тем выше score (примерная шкала, настраивается)
-        if average_interval_hours == 0: # Избегаем деления на ноль, если обновления очень частые
+
+        # Улучшенная шкала оценки частоты обновлений
+        if average_interval_hours < 1:
             return 100.0
-        frequency_score = max(0, min(100, 100 / (average_interval_hours + 1))) # +1 для избежания деления на ноль и сглаживания
-        return frequency_score
+        elif average_interval_hours < 6:
+            return 100 - (average_interval_hours - 1) * (50 / 5) # Линейное снижение до 50
+        elif average_interval_hours < 24:
+            return 50 - (average_interval_hours - 6) * (30 / 18) # Линейное снижение до 20
+        else:
+            return 0.0 # Ниже 20 если интервал больше 24 часов
 
     def calculate_success_rate_stability_score(self, period_days=METRIC_PERIOD_MEDIUM):
-        """Вычисляет стабильность успешности загрузок (стандартное отклонение)."""
+        """Вычисляет стабильность успешности загрузок (стандартное отклонение, улучшенная формула)."""
         daily_success_rates = []
         today = datetime.now().date()
         for day_offset in range(period_days):
@@ -528,8 +543,8 @@ class ChannelConfig:
         if len(daily_success_rates) < 2: # Нужно минимум 2 точки для std dev
             return 50.0 # Нейтральное значение, если недостаточно данных
         std_dev = statistics.stdev(daily_success_rates)
-        # Инвертируем std_dev в score: чем меньше std_dev, тем выше score (примерная шкала)
-        stability_score = max(0, 100 - std_dev * 2) # Пример: std_dev 0 -> 100, std_dev 50 -> 0
+        # Улучшенная формула: нелинейное снижение score с ростом std_dev
+        stability_score = max(0, 100 - (std_dev ** 1.5)) #  ** 1.5 для более резкого снижения при увеличении std_dev
         return stability_score
 
     def calculate_protocol_diversity_score(self):
@@ -599,7 +614,8 @@ class ChannelConfig:
         # Штрафы
         score += self.metrics.invalid_config_ratio * weights["invalid_config_ratio_penalty"]
         score += self.metrics.duplicate_config_ratio * weights["duplicate_config_ratio_penalty"]
-        # spam_config_penalty - requires spam detection, not implemented yet
+        if self.metrics.spam_detected: # применяем штраф только если spam_detected == True
+            score += weights["spam_detected_penalty"] # Единоразовый штраф за обнаружение спама
 
         return max(0, min(100, score)) # Clamp score between 0 and 100
 
@@ -642,6 +658,7 @@ class ProxyConfig:
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
         self.ALL_URLS_FILE = ALL_URLS_FILE
         self.known_configs = set() # Set to store known configurations globally
+        self.min_quality_category = MIN_CHANNEL_QUALITY_CATEGORY # Минимальная категория качества канала
 
     def _load_source_urls(self) -> List[ChannelConfig]:
         """Загружает URL каналов из файла и удаляет дубликаты."""
@@ -1351,6 +1368,15 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             return None
 
 
+def is_spam_config(config_string: str) -> bool:
+    """Проверяет, является ли конфигурация прокси спамом на основе ключевых слов."""
+    config_lower = config_string.lower()
+    for keyword in SPAM_KEYWORDS:
+        if keyword in config_lower:
+            return True
+    return False
+
+
 # --- Функции для протокол-специфичных проверок (Улучшенные) ---
 async def test_vless_connection(config_obj: VlessConfig, timeout: float = PROTOCOL_TIMEOUTS.get("vless")) -> bool:
     """Проверка VLESS соединения: TCP handshake."""
@@ -1413,6 +1439,11 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
                               global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
     """Обрабатывает одну конфигурацию прокси: парсит, проверяет доступность (протокол-специфично), скорит и сохраняет результат."""
     async with proxy_semaphore, global_proxy_semaphore:
+        if is_spam_config(line): # Проверка на спам в начале обработки
+            channel.metrics.spam_configs_count += 1
+            logger.debug(f"🚫 Обнаружена спам-конфигурация: {line}")
+            return None # Возвращаем None, если конфигурация - спам
+
         config_obj = await parse_config(line, proxy_config.resolver)
         if config_obj is None:
             return None
@@ -1466,11 +1497,13 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
+    min_quality_category = proxy_config.min_quality_category.lower() # Получаем минимальную категорию из ProxyConfig
 
     for channel in channels:
         channel.update_load_success_history(False) # Assume failure at start, corrected on success
         invalid_configs_count = 0
         duplicate_configs_count = 0
+        spam_configs_count = 0 # Сброс счетчика спам-конфигураций для канала
         current_channel_configs = [] # Для расчета Uniqueness Ratio
 
         lines_str = ""
@@ -1514,7 +1547,23 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
         channel.metrics.unique_configs = len(valid_proxies) # Valid proxies are unique within channel processing scope
         channel.metrics.uniqueness_ratio = channel.calculate_uniqueness_ratio(current_channel_configs) # Calculate uniqueness ratio based on current configs
         channel.update_channel_metrics(valid_proxies, invalid_configs_count, duplicate_configs_count) # Обновляем метрики канала
-        logger.info(f"📊 Канал {channel.url}: Качество - {channel.metrics.quality_category}, Общий скор - {channel.metrics.overall_quality_score:.2f}, Успешность загрузки - {channel.metrics.calculate_load_success_rate():.2f}%, Частота обновлений - {channel.metrics.calculate_update_frequency_score():.2f}") # Логируем результаты оценки канала
+
+        if channel.metrics.spam_configs_count > 0: # Если спам был обнаружен в канале, устанавливаем флаг
+            channel.metrics.spam_detected = True
+
+        logger.info(f"📊 Канал {channel.url}: Качество - {channel.metrics.quality_category}, Общий скор - {channel.metrics.overall_quality_score:.2f}, Успешность загрузки - {channel.metrics.calculate_load_success_rate():.2f}%, Частота обновлений - {channel.metrics.calculate_update_frequency_score():.2f}, Спам конфигов - {channel.metrics.spam_configs_count}") # Логируем результаты оценки канала
+
+        # Фильтрация каналов по качеству
+        if channel.metrics.quality_category.lower() not in ["excellent", "good", "medium", "low", "bad"]: # Defensive check
+            logger.warning(f"⚠️ Неверная категория качества для канала {channel.url}: {channel.metrics.quality_category}. Пропускаем канал.")
+            continue # Пропускаем канал, если категория не распознана
+
+        quality_rank = ["bad", "low", "medium", "good", "excellent"]
+        if quality_rank.index(channel.metrics.quality_category.lower()) < quality_rank.index(min_quality_category):
+            logger.info(f"⛔️ Канал {channel.url} не прошел фильтрацию по качеству ({channel.metrics.quality_category} < {min_quality_category}). Пропускаем канал.")
+            continue # Пропускаем канал, если качество ниже минимального
+
+        proxies_all.extend(valid_proxies) # Добавляем прокси только если канал прошел фильтрацию
 
     return proxies_all
 
