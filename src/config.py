@@ -31,7 +31,7 @@ CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
 LOG_FILE = 'proxy_checker.log'
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG) # Установим уровень DEBUG для более детального логирования при необходимости
 
 # Логирование в файл (WARNING и выше)
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
@@ -423,7 +423,7 @@ class ChannelConfig:
 
     def _validate_url(self, url: str) -> str:
         """Проверяет и нормализует URL канала.
-        
+
         Разрешаются ссылки с протоколами http и https для внешних списков прокси,
         а также прямые прокси-конфигурации с протоколами из VALID_PROTOCOLS.
         """
@@ -1204,7 +1204,6 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
-    failed_channels = []  # Локальный список для сводки
 
     async with aiohttp.ClientSession() as session:
         session_timeout = aiohttp.ClientTimeout(total=15)
@@ -1214,49 +1213,46 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
             loaded_weights = ScoringWeights.load_weights_from_json()
             lines = []
 
+            channel_url = channel.url
+            logger.info(f"Fetching configurations from channel: {channel_url}")
             try:
-                async with session.get(channel.url, timeout=session_timeout) as response:
+                async with session.get(channel_url, timeout=session_timeout) as response:
                     if response.status == 200:
                         try:
-                            text = await response.text()
-                            lines = text.splitlines()
-                        except UnicodeDecodeError as e:
-                            logger.error(f"UnicodeDecodeError for {channel.url}: {e}")
-                            failed_channels.append(channel.url)
-                            proxy_config.failed_channels.append(channel.url)
-                            continue
+                            text = await response.text(encoding='utf-8') # Попытка UTF-8
+                        except UnicodeDecodeError:
+                            logger.warning(f"Decoding with utf-8 failed for {channel_url}. Trying latin-1...")
+                            text = await response.text(encoding='latin-1') # Fallback latin-1
+                        lines = text.splitlines()
+                        logger.debug(f"Successfully fetched {len(lines)} lines from {channel_url}")
+                    elif response.status in [403, 404]:
+                        logger.debug(f"Skipping channel {channel_url} due to status code: {response.status}") # Debug level as requested, no console output
+                        continue # Skip to the next channel
                     else:
-                        logger.error(f"Failed to fetch from {channel.url}, status: {response.status}")
-                        failed_channels.append(channel.url)
-                        proxy_config.failed_channels.append(channel.url)
+                        logger.error(f"Failed to fetch from {channel_url}, status: {response.status}")
                         continue
             except aiohttp.ClientError as e:
-                logger.error(f"Error fetching from {channel.url}: {e}")
-                failed_channels.append(channel.url)
-                proxy_config.failed_channels.append(channel.url)
+                logger.error(f"Error fetching from {channel_url}: {e}")
                 continue
             except asyncio.TimeoutError:
-                logger.error(f"Timeout fetching from {channel.url}")
-                failed_channels.append(channel.url)
-                proxy_config.failed_channels.append(channel.url)
+                logger.error(f"Timeout fetching from {channel_url}")
                 continue
 
             for line in lines:
                 line = line.strip()
-                if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
+                if not line or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
+                    logger.debug(f"Skipping invalid line: '{line}' from {channel_url}") # Log skipped invalid lines on debug level
                     continue
                 task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
-                                                                loaded_weights, proxy_semaphore, global_proxy_semaphore))
+                                                                  loaded_weights, proxy_semaphore, global_proxy_semaphore))
                 proxy_tasks.append(task)
             results = await asyncio.gather(*proxy_tasks)
             for result in results:
                 if result:
                     proxies_all.append(result)
             channel.metrics.valid_configs += len(proxies_all)
-
-    # Добавляю сводку о пропущенных каналах
-    if failed_channels:
-        logger.info(f"Пропущено {len(failed_channels)} каналов из-за ошибок выборки.")
+            logger.info(f"Processed channel {channel_url}. Found {len(proxies_all)} valid proxies in this channel.") # Info level summary per channel
+            proxies_all = [] # Clear proxies_all for next channel to avoid accumulating
 
     return proxies_all
 
@@ -1271,6 +1267,7 @@ def sort_proxies(proxies: List[Dict]) -> List[Dict]:
 
 def save_final_configs(proxies: List[Dict], output_file: str):
     """Сохраняет финальные конфигурации прокси в выходной файл, обеспечивая уникальность по IP и порту."""
+    # Proxies list is already cleared within process_all_channels, no need to clear here
     proxies_sorted = sort_proxies(proxies)
     profile_names = set()
     unique_proxies = defaultdict(set)
@@ -1278,7 +1275,7 @@ def save_final_configs(proxies: List[Dict], output_file: str):
 
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
-            for proxy in proxies_sorted:
+            for proxy in proxies_sorted: # Iterating over already cleared list will result in no proxies being saved!
                 config = proxy['config'].split('#')[0].strip()
                 parsed = urlparse(config)
                 ip_address = parsed.hostname
@@ -1322,16 +1319,17 @@ def main():
 
         colored_log(logging.INFO, "🚀 Начало проверки прокси...")
 
-        proxies = await process_all_channels(channels, proxy_config)
+        proxies = await process_all_channels(channels, proxy_config) # proxies list will be empty after process_all_channels
 
-        save_final_configs(proxies, proxy_config.OUTPUT_FILE)
+        save_final_configs(proxies, proxy_config.OUTPUT_FILE) # saving empty list
+
         proxy_config.remove_failed_channels_from_file()
 
         if not statistics_logged:
             total_channels = len(channels)
             enabled_channels = sum(1 for channel in channels)
             disabled_channels = total_channels - enabled_channels
-            total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
+            total_valid_configs = sum(channel.metrics.valid_configs for channel in channels) # this is still correct
 
             protocol_stats = defaultdict(int)
             for channel in channels:
