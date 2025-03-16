@@ -710,6 +710,8 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Option
     except aiodns.error.DNSError as e:
         if e.args[0] == 4: # Domain name not found
             logger.debug(f"Не удалось разрешить hostname: {hostname} - {e}") # Debug level for "Domain name not found"
+        elif e.args[0] == 8: # Misformatted domain name
+            logger.debug(f"Не удалось разрешить hostname: {hostname} - {e} (Misformatted domain name)") # Debug level for "Misformatted domain name" - теперь DEBUG
         elif not is_valid_ipv4(hostname) and not is_valid_ipv6(hostname): # Only log warning if hostname is not already IP
             logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}") # Warning for other DNSError
         return None # Return None if DNS resolution fails
