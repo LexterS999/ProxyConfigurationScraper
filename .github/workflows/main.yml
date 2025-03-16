@@ -68,12 +68,12 @@ jobs:
       id: git_push
       run: |
         git pull --rebase origin main || true
-        git add configs/proxy_configs.txt all_urls.txt
+        git add configs/proxy_configs.txt all_urls.txt # all_urls.txt is kept in add command for manual updates
         if ! git diff --staged --quiet; then
-          git commit -m "Update proxy configs, stats and reports - Remove inactive channels"
+          git commit -m "Update proxy configs, stats and reports" # Removed mention of inactive channels
           git push origin HEAD:main
           echo "::set-output name=pushed::true"
-          echo "Changes committed and pushed to all_urls.txt (if channels were removed)." # Добавлено сообщение
+          echo "Changes committed and pushed." # Updated message - no mention of all_urls.txt removal
         else
           echo "No changes to commit."
           echo "::set-output name=pushed::false"
