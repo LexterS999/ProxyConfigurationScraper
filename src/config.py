@@ -11,15 +11,14 @@ import string
 import socket
 import base64
 import aiohttp
-# import concurrent.futures  # Удален неиспользуемый импорт
 
-from enum import Enum # Оставлен, но ProfileName Enum упрощен
+from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field, astuple, replace
 from collections import defaultdict
-import functools # functools.lru_cache оставлен
+import functools
 
 # --- Настройка улучшенного логирования ---
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)"
@@ -31,14 +30,14 @@ logger.setLevel(logging.INFO)
 
 # Логирование в файл (WARNING и выше)
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
-file_handler.setLevel(logging.WARNING) # Уровень логирования в файл оставлен WARNING
+file_handler.setLevel(logging.WARNING)
 formatter_file = logging.Formatter(LOG_FORMAT)
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
 # Логирование в консоль (WARNING и выше - снижен уровень для production)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.WARNING) # Уровень логирования в консоль снижен до WARNING для уменьшения verbosity
+console_handler.setLevel(logging.WARNING)
 formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
@@ -70,7 +69,6 @@ def colored_log(level, message: str, *args, **kwargs):
     logger.log(level, f"{color}{message}{LogColors.RESET}", *args, **kwargs)
 
 # Константы
-# DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json" # Удалена неиспользуемая константа
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
 MAX_CONCURRENT_CHANNELS = 90
 MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
@@ -87,7 +85,6 @@ VALID_HY2_TRANSPORTS = ['udp', 'tcp']
 VALID_SECURITY_TYPES = ['tls', 'none']
 VALID_ENCRYPTION_TYPES_VLESS = ['none', 'auto', 'aes-128-gcm', 'chacha20-poly1305']
 VALID_CONGESTION_CONTROL_TUIC = ['bbr', 'cubic', 'new-reno']
-MAX_ZERO_RESULTS_COUNT = 4
 
 PROTOCOL_TIMEOUTS = {
     "vless": 4.0,
@@ -523,7 +520,6 @@ class ChannelConfig:
         self.metrics = ChannelMetrics()
         self.check_count = 0
         self.metrics.first_seen = datetime.now()
-        self.zero_results_count = 0
 
     def _validate_url(self, url: str) -> str:
         if not isinstance(url, str):
@@ -551,7 +547,6 @@ class ProxyConfig:
         self.SOURCE_URLS = self._load_source_urls()
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
         self.ALL_URLS_FILE = ALL_URLS_FILE
-        # self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=32) # Executor удален
 
     def _load_source_urls(self) -> List[ChannelConfig]:
         initial_urls = []
@@ -603,7 +598,7 @@ class ProxyConfig:
                     seen_urls.add(normalized_url)
                     unique_configs.append(config)
                 else:
-                    pass # Debug logging removed for efficiency, can be added back if needed for debugging duplicates
+                    pass
             except Exception:
                 continue
         return unique_configs
@@ -632,7 +627,7 @@ class ProxyConfig:
             updated_lines = [line for line in lines if line.strip() not in self.failed_channels]
             with open(self.ALL_URLS_FILE, 'w', encoding='utf-8') as f_write:
                 f_write.writelines(updated_lines)
-            logger.warning(f"Удалены нерабочие каналы из {self.ALL_URLS_FILE}: {', '.join(self.failed_channels)}") # Log level reduced to warning
+            logger.warning(f"Удалены нерабочие каналы из {self.ALL_URLS_FILE}: {', '.join(self.failed_channels)}")
             self.failed_channels = []
         except FileNotFoundError:
             logger.error(f"Файл не найден: {self.ALL_URLS_FILE}. Невозможно удалить нерабочие каналы.")
@@ -657,8 +652,6 @@ def _parse_headers(headers_str: Optional[str]) -> Optional[Dict[str, str]]:
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
     if is_valid_ipv4(hostname):
         return hostname
-    # if is_valid_ipv6(hostname): # IPv6 check removed for IPv4 focus
-    #     return None
     try:
         result = await resolver.query(hostname, 'A')
         resolved_address = result[0].host
@@ -668,61 +661,16 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Option
             return None
     except aiodns.error.DNSError as e:
         if e.args[0] == 4: # Domain name not found
-            pass # Debug level log removed for efficiency, can add back if needed for DNS debug
+            pass
         elif e.args[0] == 8: # Misformatted domain name
-            pass # Debug level log removed for efficiency
+            pass
         elif not is_valid_ipv4(hostname): # Only log warning if hostname is not already IP
-            logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}") # Log level kept at warning for DNS resolution failures
+            logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}")
         return None
     except Exception as e:
         logger.error(f"Неожиданная ошибка при резолвинге {hostname}: {e}")
         return None
 
-
-# def generate_custom_name(parsed: urlparse, query: Dict) -> str: # Функция generate_custom_name удалена
-#     """Генерирует кастомное имя профиля на основе URL."""
-#     scheme = parsed.scheme
-#     if scheme == "vless":
-#         transport_type = query.get("type", ["tcp"])[0].upper()
-#         security_type = query.get("security", ["none"])[0].upper()
-#         if transport_type == "WS" and security_type == "TLS":
-#             return ProfileName.VLESS_WS_TLS.value
-#         security_str = "" if security_type == "NONE" else security_type
-#         transport_str = transport_type if transport_type != "NONE" else ""
-#         return "🌌 VLESS - " + " - ".join(filter(None, [transport_str, security_str]))
-#     elif scheme == "ss":
-#         method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")
-#         if method == "CHACHA20-IETF-POLY1305":
-#             return ProfileName.SS_CHACHA20_IETF_POLY1305.value
-#         return ProfileName.SS_FORMAT.value.format(method=method)
-#     elif scheme == "ssconf":
-#         return ProfileName.SSCONF_FORMAT.value
-#     elif scheme == "trojan":
-#         transport_type = query.get("type", ["tcp"])[0].upper()
-#         security_type = query.get("security", ["tls"])[0].upper()
-#         if transport_type == "WS" and security_type == "TLS":
-#             return ProfileName.TROJAN_WS_TLS.value
-#         security_str = "" if security_type == "NONE" else security_type
-#         transport_str = transport_type if transport_type != "NONE" else ""
-#         return "🗡️ Trojan - " + " - ".join(filter(None, [transport_str, security_str]))
-#     elif scheme == "tuic":
-#         transport_type = query.get("type", ["udp"])[0].upper()
-#         security_type = query.get("security", ["tls"])[0].upper()
-#         congestion_control = query.get("congestion", ["bbr"])[0].upper()
-#         if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
-#             return ProfileName.TUIC_WS_TLS_BBR.value
-#         security_str = "" if security_type == "NONE" else security_type
-#         transport_str = transport_type if transport_type != "NONE" else ""
-#         return "🐢 TUIC - " + " - ".join(filter(None, [transport_str, security_str, congestion_control]))
-#     elif scheme == "hy2":
-#         transport_type = query.get("type", ["udp"])[0].upper()
-#         security_type = query.get("security", ["tls"])[0].upper()
-#         if transport_type == "UDP" and security_type == "TLS":
-#             return ProfileName.HY2_UDP_TLS.value
-#         security_str = "" if security_type == "NONE" else security_type
-#         transport_str = transport_type if transport_type != "NONE" else ""
-#         return "💧 HY2 - " + " - ".join(filter(None, [transport_str, security_str]))
-#     return f"⚠️ Неизвестный протокол: {scheme}. Проверьте URL или добавьте поддержку протокола."
 
 @functools.lru_cache(maxsize=1024)
 def is_valid_ipv4(hostname: str) -> bool:
@@ -734,12 +682,6 @@ def is_valid_ipv4(hostname: str) -> bool:
     except ipaddress.AddressValueError:
         return False
 
-# def is_valid_ipv6(hostname: str) -> bool: # Функция is_valid_ipv6 удалена
-#     try:
-#         ipaddress.IPv6Address(hostname)
-#         return True
-#     except ipaddress.AddressValueError:
-#         return False
 
 def is_valid_proxy_url(url: str) -> bool:
     if not any(url.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
@@ -762,7 +704,7 @@ def is_valid_proxy_url(url: str) -> bool:
             if parsed.username:
                 if parsed.username.lower() not in SS_VALID_METHODS:
                     return False
-        if not is_valid_ipv4(parsed.hostname): # IPv6 check removed, IPv4 only focus
+        if not is_valid_ipv4(parsed.hostname):
             if not re.match(r"^[a-zA-Z0-9.-]+$", parsed.hostname):
                 return False
         return True
@@ -864,14 +806,11 @@ async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", s
         channel.metrics.valid_configs = len(valid_results)
 
         if channel.metrics.valid_configs == 0:
-            channel.zero_results_count += 1
-            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} не вернул конфигураций. Нулевой результат {channel.zero_results_count}/{MAX_ZERO_RESULTS_COUNT}.")
-            if channel.zero_results_count >= MAX_ZERO_RESULTS_COUNT:
-                proxy_config.failed_channels.append(channel.url)
-                colored_log(logging.CRITICAL, f"🔥 Канал {channel.url} удален из-за {MAX_ZERO_RESULTS_COUNT} последовательных нулевых результатов.")
+            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} не вернул конфигураций.")
+            proxy_config.failed_channels.append(channel.url) # Mark channel as failed always if no valid configs are found in a run. Remove logic based on MAX_ZERO_RESULTS_COUNT.
+            colored_log(logging.CRITICAL, f"🔥 Канал {channel.url} помечен как нерабочий.") # Adjusted log message to reflect the simplified logic.
         else:
-            channel.zero_results_count = 0
-            colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}") # Log level kept at INFO, but consider reducing further if needed.
+            colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
         return valid_results
 
 
@@ -894,7 +833,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
     return proxies_all
 
 
-def save_final_configs(proxies: List[Dict], output_file: str): # Executor parameter removed
+def save_final_configs(proxies: List[Dict], output_file: str):
     unique_proxies = defaultdict(set)
     unique_proxy_count = 0
     try:
@@ -909,7 +848,6 @@ def save_final_configs(proxies: List[Dict], output_file: str): # Executor parame
                 if ip_port_tuple not in unique_proxies[protocol]:
                     unique_proxies[protocol].add(ip_port_tuple)
                     unique_proxy_count += 1
-                    # profile_name = generate_custom_name(parsed, query) # generate_custom_name removed
                     profile_name = f"{ProfileName(proxy['protocol'].upper()).value}" # Simplified profile name using Enum
                     final_line = f"{config}#{profile_name}\n"
                     f.write(final_line)
@@ -930,7 +868,7 @@ def main():
         proxy_config.set_event_loop(loop)
         colored_log(logging.INFO, "🚀 Начало проверки прокси...")
         proxies = await process_all_channels(channels, proxy_config)
-        save_final_configs(proxies, proxy_config.OUTPUT_FILE) # Executor removed from call
+        save_final_configs(proxies, proxy_config.OUTPUT_FILE)
         proxy_config.remove_failed_channels_from_file()
         if not statistics_logged:
             total_channels = len(channels)
@@ -955,7 +893,6 @@ def main():
             colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
             statistics_logged = True
             colored_log(logging.INFO, "✅ Проверка прокси завершена.")
-        # proxy_config.executor.shutdown(wait=True) # Executor shutdown removed
 
     asyncio.run(runner())
 
