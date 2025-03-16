@@ -51,6 +51,7 @@ https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/tw
 https://raw.githubusercontent.com/Mahdi0024/ProxyCollector/master/sub/proxies.txt
 https://raw.githubusercontent.com/SEDYY/vless-configs/refs/heads/main/servers.txt
 https://raw.githubusercontent.com/LexterS999/TG-Proxy-Parser/refs/heads/main/config-tg.txt
+https://raw.githubusercontent.com/LexterS999/multi-proxy-config-fetcher/refs/heads/main/configs/proxy_configs.txt
 https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt
 https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/reality
 https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/vless
