@@ -90,7 +90,7 @@ VALID_HY2_TRANSPORTS = ['udp', 'tcp']
 VALID_SECURITY_TYPES = ['tls', 'none']
 VALID_ENCRYPTION_TYPES_VLESS = ['none', 'auto', 'aes-128-gcm', 'chacha20-poly1305']
 VALID_CONGESTION_CONTROL_TUIC = ['bbr', 'cubic', 'new-reno']
-
+MAX_ZERO_RESULTS_COUNT = 4 # Новая константа для максимального количества нулевых результатов
 
 PROTOCOL_TIMEOUTS = {
     "vless": 4.0,
@@ -558,6 +558,7 @@ class ChannelConfig:
         self.metrics = ChannelMetrics()
         self.check_count = 0
         self.metrics.first_seen = datetime.now()
+        self.zero_results_count = 0 # Добавляем счетчик нулевых результатов
 
     def _validate_url(self, url: str) -> str:
         if not isinstance(url, str):
@@ -578,7 +579,7 @@ class ChannelConfig:
 
 class ProxyConfig:
     def __init__(self):
-        os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
+        os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=os.True)
         self.resolver = None
         self.failed_channels = []
         self.processed_configs = set()
@@ -911,11 +912,21 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
                 proxy_tasks.append(task)
             results = await asyncio.gather(*proxy_tasks)
             valid_results = [result for result in results if result]
-            for result in valid_results:
-                proxies_all.append(result)
             channel.metrics.valid_configs = len(valid_results)
-            # Логируем завершение обработки канала с количеством конфигураций
-            colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
+
+            if channel.metrics.valid_configs == 0: # Проверяем количество валидных конфигов
+                channel.zero_results_count += 1 # Увеличиваем счетчик нулевых результатов
+                colored_log(logging.WARNING, f"⚠️ Канал {channel.url} не вернул конфигураций. Нулевой результат {channel.zero_results_count}/{MAX_ZERO_RESULTS_COUNT}.")
+                if channel.zero_results_count >= MAX_ZERO_RESULTS_COUNT: # Проверяем, достигнут ли предел
+                    proxy_config.failed_channels.append(channel.url) # Добавляем URL канала в список нерабочих
+                    colored_log(logging.CRITICAL, f"🔥 Канал {channel.url} удален из-за {MAX_ZERO_RESULTS_COUNT} последовательных нулевых результатов.")
+            else:
+                channel.zero_results_count = 0 # Сбрасываем счетчик, если есть валидные результаты
+                # Логируем завершение обработки канала с количеством конфигураций
+                colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
+                for result in valid_results:
+                    proxies_all.append(result)
+
 
     return proxies_all
 
