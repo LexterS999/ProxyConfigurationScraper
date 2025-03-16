@@ -13,6 +13,7 @@ import string
 import socket
 import base64
 import aiohttp
+import concurrent.futures
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
@@ -76,8 +77,8 @@ def colored_log(level, message: str, *args, **kwargs):
 DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json" # Убрать неиспользуемые константы
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
 MAX_CONCURRENT_CHANNELS = 90
-MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
-MAX_CONCURRENT_PROXIES_GLOBAL = 120
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120 # Увеличено для ускорения
+MAX_CONCURRENT_PROXIES_GLOBAL = 240 # Глобальный лимит также увеличен
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 1
@@ -151,8 +152,8 @@ class VlessConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["VlessConfig"]:
-        address = await resolve_address(parsed_url.hostname, resolver)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["VlessConfig"]:
+        address = await resolve_address(parsed_url.hostname, resolver, executor)
         if address is None:
             logger.debug(f"Пропущен VLESS конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -217,8 +218,8 @@ class SSConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["SSConfig"]:
-        address = await resolve_address(parsed_url.hostname, resolver)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["SSConfig"]:
+        address = await resolve_address(parsed_url.hostname, resolver, executor)
         if address is None:
             logger.debug(f"Пропущен SS конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -268,7 +269,7 @@ class SSConfConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, config_string: str, resolver: aiodns.DNSResolver) -> Optional["SSConfConfig"]:
+    async def from_url(cls, config_string: str, resolver: aiodns.DNSResolver, executor=None) -> Optional["SSConfConfig"]:
         try:
             config_b64 = config_string.split("ssconf://")[1]
             config_json_str = base64.urlsafe_b64decode(config_b64 + '=' * (4 - len(config_b64) % 4)).decode('utf-8')
@@ -276,7 +277,7 @@ class SSConfConfig:
             config_json = {k.lower(): v for k, v in config_json.items()}
 
             server_host = config_json.get('server')
-            server_address = await resolve_address(server_host, resolver)
+            server_address = await resolve_address(server_host, resolver, executor)
             if server_address is None:
                 logger.debug(f"Пропущен SSCONF конфиг из-за не IPv4 адреса: {server_host}")
                 return None
@@ -345,8 +346,8 @@ class TrojanConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TrojanConfig"]:
-        address = await resolve_address(parsed_url.hostname, resolver)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["TrojanConfig"]:
+        address = await resolve_address(parsed_url.hostname, resolver, executor)
         if address is None:
             logger.debug(f"Пропущен Trojan конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -412,8 +413,8 @@ class TuicConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TuicConfig"]:
-        address = await resolve_address(parsed_url.hostname, resolver)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["TuicConfig"]:
+        address = await resolve_address(parsed_url.hostname, resolver, executor)
         if address is None:
             logger.debug(f"Пропущен TUIC конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -485,8 +486,8 @@ class Hy2Config:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["Hy2Config"]:
-        address = await resolve_address(parsed_url.hostname, resolver)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["Hy2Config"]:
+        address = await resolve_address(parsed_url.hostname, resolver, executor)
         if address is None:
             logger.debug(f"Пропущен HY2 конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -586,6 +587,7 @@ class ProxyConfig:
         self.SOURCE_URLS = self._load_source_urls()
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
         self.ALL_URLS_FILE = ALL_URLS_FILE
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=32) # Пул потоков для CPU-bound задач
 
     def _load_source_urls(self) -> List[ChannelConfig]:
         initial_urls = []
@@ -690,14 +692,15 @@ def _parse_headers(headers_str: Optional[str]) -> Optional[Dict[str, str]]:
         return None
 
 
-async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
+async def resolve_address(hostname: str, resolver: aiodns.DNSResolver, executor=None) -> Optional[str]:
     if is_valid_ipv4(hostname):
         return hostname # Return IPv4 directly if already valid
     if is_valid_ipv6(hostname): # Skip IPv6 addresses
         logger.debug(f"Пропущен hostname {hostname} так как это IPv6 адрес.")
         return None
     try:
-        result = await resolver.query(hostname, 'A')
+        # Run DNS query in thread pool to avoid blocking event loop if aiodns is CPU-bound (unlikely but as a precaution)
+        result = await asyncio.get_running_loop().run_in_executor(executor, lambda: resolver.query(hostname, 'A'))
         resolved_address = result[0].host
         if is_valid_ipv4(resolved_address):
             logger.debug(f"Hostname '{hostname}' успешно разрешен в IPv4-адрес: {resolved_address}") # Debug logging for success
@@ -816,11 +819,11 @@ def is_valid_uuid(uuid_string: str) -> bool:
     except ValueError:
         return False
 
-async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Optional[object]:
+async def parse_config(config_string: str, resolver: aiodns.DNSResolver, executor=None) -> Optional[object]:
     protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p)), None)
     if protocol == "ssconf://":
         try:
-            return await SSConfConfig.from_url(config_string, resolver)
+            return await SSConfConfig.from_url(config_string, resolver, executor)
         except ConfigParseError as e:
             logger.debug(f"Ошибка парсинга ssconf конфигурации: {config_string} - {e}") # Debug level
             return None
@@ -837,7 +840,7 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
                 "hy2": Hy2Config.from_url,
             }
             if scheme in config_parsers:
-                return await config_parsers[scheme](parsed, query, resolver)
+                return await config_parsers[scheme](parsed, query, resolver, executor)
             return None
         except (InvalidURLError, UnsupportedProtocolError) as e: # Removed InvalidParameterError and ConfigParseError from here
             logger.debug(f"Ошибка парсинга конфигурации: {config_string} - {e}") # Debug level
@@ -851,7 +854,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_semaphore: asyncio.Semaphore,
                               global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
     async with proxy_semaphore, global_proxy_semaphore:
-        config_obj = await parse_config(line, proxy_config.resolver)
+        config_obj = await parse_config(line, proxy_config.resolver, proxy_config.executor) # Передаем executor
         if config_obj is None:
             return None
 
@@ -865,73 +868,82 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
         channel.metrics.protocol_counts[result["protocol"]] += 1
         return result
 
+async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, global_proxy_semaphore: asyncio.Semaphore):
+    """Обрабатывает один канал, скачивая и обрабатывая прокси."""
+    async with channel_semaphore: # Semaphore на канал, чтобы ограничить количество параллельных каналов
+        colored_log(logging.INFO, f"🚀 Начало обработки канала: {channel.url}")
+        proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
+        proxy_tasks = []
+        lines = []
+        session_timeout = aiohttp.ClientTimeout(total=15)
+
+        try:
+            async with session.get(channel.url, timeout=session_timeout) as response:
+                if response.status == 200:
+                    try:
+                        text = await response.text(encoding='utf-8', errors='ignore')
+                        lines = text.splitlines()
+                    except UnicodeDecodeError as e:
+                        colored_log(logging.WARNING, f"⚠️ Ошибка декодирования для {channel.url}: {e}. Пропуск.")
+                        return [] # Возвращаем пустой список прокси для этого канала
+                elif response.status in (403, 404):
+                    logger.debug(f"ℹ️ Канал {channel.url} вернул статус {response.status}. Пропускаем.") # Debug logging for 403/404
+                    return [] # Возвращаем пустой список прокси для этого канала
+                else:
+                    colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}, статус: {response.status}")
+                    return [] # Возвращаем пустой список прокси для этого канала
+        except aiohttp.ClientError as e:
+            colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}: {e}")
+            return [] # Возвращаем пустой список прокси для этого канала
+        except asyncio.TimeoutError:
+            colored_log(logging.ERROR, f"⌛ Таймаут при получении {channel.url}")
+            return [] # Возвращаем пустой список прокси для этого канала
+
+        for line in lines:
+            line = line.strip()
+            if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
+                continue
+            task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
+                                                            proxy_semaphore, global_proxy_semaphore))
+            proxy_tasks.append(task)
+
+        results = await asyncio.gather(*proxy_tasks)
+        valid_results = [result for result in results if result]
+        channel.metrics.valid_configs = len(valid_results)
+
+        if channel.metrics.valid_configs == 0: # Проверяем количество валидных конфигов
+            channel.zero_results_count += 1 # Увеличиваем счетчик нулевых результатов
+            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} не вернул конфигураций. Нулевой результат {channel.zero_results_count}/{MAX_ZERO_RESULTS_COUNT}.")
+            if channel.zero_results_count >= MAX_ZERO_RESULTS_COUNT: # Проверяем, достигнут ли предел
+                proxy_config.failed_channels.append(channel.url) # Добавляем URL канала в список нерабочих
+                colored_log(logging.CRITICAL, f"🔥 Канал {channel.url} удален из-за {MAX_ZERO_RESULTS_COUNT} последовательных нулевых результатов.")
+        else:
+            channel.zero_results_count = 0 # Сбрасываем счетчик, если есть валидные результаты
+            # Логируем завершение обработки канала с количеством конфигураций
+            colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
+        return valid_results
+
+
 async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
-    """Обрабатывает все каналы в списке с улучшенным логированием и обработкой ошибок."""
+    """Обрабатывает все каналы в списке параллельно."""
     channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
     global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
     proxies_all: List[Dict] = []
 
     async with aiohttp.ClientSession() as session:
-        session_timeout = aiohttp.ClientTimeout(total=15)
-        for channel in channels:
-            # Логируем начало обработки канала
-            colored_log(logging.INFO, f"🚀 Начало обработки канала: {channel.url}")
-            proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
-            proxy_tasks = []
-            lines = []
+        channel_tasks = [
+            asyncio.create_task(process_channel(channel, proxy_config, session, channel_semaphore, global_proxy_semaphore))
+            for channel in channels
+        ]
+        channel_results = await asyncio.gather(*channel_tasks) # Запускаем задачи параллельно
 
-            try:
-                async with session.get(channel.url, timeout=session_timeout) as response:
-                    if response.status == 200:
-                        try:
-                            # Исправляем UnicodeDecodeError с помощью errors='ignore'
-                            text = await response.text(encoding='utf-8', errors='ignore')
-                            lines = text.splitlines()
-                        except UnicodeDecodeError as e:
-                            colored_log(logging.WARNING, f"⚠️ Ошибка декодирования для {channel.url}: {e}. Пропуск.")
-                            continue
-                    elif response.status in (403, 404):
-                        logger.debug(f"ℹ️ Канал {channel.url} вернул статус {response.status}. Пропускаем.") # Debug logging for 403/404
-                        continue
-                    else:
-                        colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}, статус: {response.status}")
-                        continue
-            except aiohttp.ClientError as e:
-                colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}: {e}")
-                continue
-            except asyncio.TimeoutError:
-                colored_log(logging.ERROR, f"⌛ Таймаут при получении {channel.url}")
-                continue
-
-            for line in lines:
-                line = line.strip()
-                if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
-                    continue
-                task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
-                                                                proxy_semaphore, global_proxy_semaphore))
-                proxy_tasks.append(task)
-            results = await asyncio.gather(*proxy_tasks)
-            valid_results = [result for result in results if result]
-            channel.metrics.valid_configs = len(valid_results)
-
-            if channel.metrics.valid_configs == 0: # Проверяем количество валидных конфигов
-                channel.zero_results_count += 1 # Увеличиваем счетчик нулевых результатов
-                colored_log(logging.WARNING, f"⚠️ Канал {channel.url} не вернул конфигураций. Нулевой результат {channel.zero_results_count}/{MAX_ZERO_RESULTS_COUNT}.")
-                if channel.zero_results_count >= MAX_ZERO_RESULTS_COUNT: # Проверяем, достигнут ли предел
-                    proxy_config.failed_channels.append(channel.url) # Добавляем URL канала в список нерабочих
-                    colored_log(logging.CRITICAL, f"🔥 Канал {channel.url} удален из-за {MAX_ZERO_RESULTS_COUNT} последовательных нулевых результатов.")
-            else:
-                channel.zero_results_count = 0 # Сбрасываем счетчик, если есть валидные результаты
-                # Логируем завершение обработки канала с количеством конфигураций
-                colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
-                for result in valid_results:
-                    proxies_all.append(result)
-
+        for channel_proxies in channel_results:
+            proxies_all.extend(channel_proxies) # Собираем прокси со всех каналов
 
     return proxies_all
 
 
-def save_final_configs(proxies: List[Dict], output_file: str):
+def save_final_configs(proxies: List[Dict], output_file: str, executor=None): # Executor для CPU-bound save_final_configs
     profile_names = set()
     unique_proxies = defaultdict(set)
     unique_proxy_count = 0
@@ -957,6 +969,7 @@ def save_final_configs(proxies: List[Dict], output_file: str):
     except Exception as e:
         logger.error(f"Ошибка сохранения конфигураций: {e}")
 
+
 def main():
     proxy_config = ProxyConfig()
     channels = proxy_config.get_enabled_channels()
@@ -968,7 +981,7 @@ def main():
         proxy_config.set_event_loop(loop)
         colored_log(logging.INFO, "🚀 Начало проверки прокси...")
         proxies = await process_all_channels(channels, proxy_config)
-        save_final_configs(proxies, proxy_config.OUTPUT_FILE)
+        save_final_configs(proxies, proxy_config.OUTPUT_FILE, proxy_config.executor) # Передаем executor
         proxy_config.remove_failed_channels_from_file()
         if not statistics_logged:
             total_channels = len(channels)
@@ -993,6 +1006,7 @@ def main():
             colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
             statistics_logged = True
             colored_log(logging.INFO, "✅ Проверка прокси завершена.")
+        proxy_config.executor.shutdown(wait=True) # Очистка пула потоков
 
     asyncio.run(runner())
 
