@@ -7,23 +7,19 @@ import logging
 import ipaddress
 import io
 import uuid
-import numbers
-import functools
 import string
 import socket
 import base64
 import aiohttp
-import concurrent.futures
+# import concurrent.futures  # Удален неиспользуемый импорт
 
-from enum import Enum
+from enum import Enum # Оставлен, но ProfileName Enum упрощен
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field, astuple, replace
 from collections import defaultdict
-
-import numpy as np
-from sklearn.linear_model import LinearRegression
+import functools # functools.lru_cache оставлен
 
 # --- Настройка улучшенного логирования ---
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)"
@@ -35,14 +31,14 @@ logger.setLevel(logging.INFO)
 
 # Логирование в файл (WARNING и выше)
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
-file_handler.setLevel(logging.WARNING)
+file_handler.setLevel(logging.WARNING) # Уровень логирования в файл оставлен WARNING
 formatter_file = logging.Formatter(LOG_FORMAT)
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
-# Логирование в консоль (INFO и выше)
+# Логирование в консоль (WARNING и выше - снижен уровень для production)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.WARNING) # Уровень логирования в консоль снижен до WARNING для уменьшения verbosity
 formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
@@ -74,16 +70,16 @@ def colored_log(level, message: str, *args, **kwargs):
     logger.log(level, f"{color}{message}{LogColors.RESET}", *args, **kwargs)
 
 # Константы
-DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json" # Убрать неиспользуемые константы
+# DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json" # Удалена неиспользуемая константа
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
 MAX_CONCURRENT_CHANNELS = 90
-MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120 # Увеличено для ускорения
-MAX_CONCURRENT_PROXIES_GLOBAL = 240 # Глобальный лимит также увеличен
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
+MAX_CONCURRENT_PROXIES_GLOBAL = 240
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 1
 RETRY_DELAY_BASE = 1
-SS_VALID_METHODS = ['chacha20-ietf-poly1305', 'aes-256-gcm', 'aes-128-gcm', 'none'] # Константа для валидных методов SS
+SS_VALID_METHODS = ['chacha20-ietf-poly1305', 'aes-256-gcm', 'aes-128-gcm', 'none']
 VALID_VLESS_TRANSPORTS = ['tcp', 'ws']
 VALID_TROJAN_TRANSPORTS = ['tcp', 'ws']
 VALID_TUIC_TRANSPORTS = ['udp', 'ws']
@@ -91,7 +87,7 @@ VALID_HY2_TRANSPORTS = ['udp', 'tcp']
 VALID_SECURITY_TYPES = ['tls', 'none']
 VALID_ENCRYPTION_TYPES_VLESS = ['none', 'auto', 'aes-128-gcm', 'chacha20-poly1305']
 VALID_CONGESTION_CONTROL_TUIC = ['bbr', 'cubic', 'new-reno']
-MAX_ZERO_RESULTS_COUNT = 4 # Новая константа для максимального количества нулевых результатов
+MAX_ZERO_RESULTS_COUNT = 4
 
 PROTOCOL_TIMEOUTS = {
     "vless": 4.0,
@@ -116,19 +112,16 @@ class InvalidParameterError(ValueError):
 class ConfigParseError(ValueError):
     pass
 
-# --- Enum для имен профилей ---
+# --- Enum для имен профилей --- (Упрощен)
 class ProfileName(Enum):
-    VLESS_FORMAT = "🌌 VLESS - {transport} - {security}"
-    VLESS_WS_TLS = "🚀 VLESS - WS - TLS"
-    SS_FORMAT = "🎭 SS - {method}"
-    SS_CHACHA20_IETF_POLY1305 = "🛡️ SS - CHACHA20-IETF-POLY1305"
-    SSCONF_FORMAT = "📦 SSCONF"
-    TROJAN_FORMAT = "🗡️ Trojan - {transport} - {security}"
-    TROJAN_WS_TLS = "⚔️ Trojan - WS - TLS"
-    TUIC_FORMAT = "🐢 TUIC - {transport} - {security} - {congestion_control}"
-    TUIC_WS_TLS_BBR = "🐇 TUIC - WS - TLS - BBR"
-    HY2_FORMAT = "💧 HY2 - {transport} - {security}"
-    HY2_UDP_TLS = "🐳 HY2 - UDP - TLS"
+    VLESS = "VLESS"
+    SS = "SS"
+    SSCONF = "SSCONF"
+    TROJAN = "Trojan"
+    TUIC = "TUIC"
+    HY2 = "HY2"
+    UNKNOWN = "Unknown Protocol"
+
 
 # --- Data classes для конфигураций ---
 @dataclass(frozen=True)
@@ -155,35 +148,29 @@ class VlessConfig:
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["VlessConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
-            logger.debug(f"Пропущен VLESS конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
         headers = _parse_headers(query.get("headers"))
-        alpn_list = query.get('alpn', []) # Используем query.get и получаем список
+        alpn_list = query.get('alpn', [])
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
 
         security = query.get('security', ['none'])[0].lower()
         if security not in VALID_SECURITY_TYPES:
-            logger.debug(f"Недопустимое значение security: {security} для vless, пропуск конфигурации.")
             return None
 
         transport = query.get('type', ['tcp'])[0].lower()
         if transport not in VALID_VLESS_TRANSPORTS:
-            logger.debug(f"Недопустимое значение type: {transport} для vless, пропуск конфигурации.")
             return None
 
         encryption = query.get('encryption', ['none'])[0].lower()
         if encryption not in VALID_ENCRYPTION_TYPES_VLESS:
-            logger.debug(f"Недопустимое значение encryption: {encryption} для vless, пропуск конфигурации.")
             return None
 
         port_str = parsed_url.port
         if port_str is None:
-            logger.debug(f"Отсутствует порт в URL для vless, пропуск конфигурации.")
             return None
         try:
             port = int(port_str)
         except (ValueError, TypeError):
-            logger.debug(f"Недопустимый порт: {port_str} для vless, пропуск конфигурации.")
             return None
 
         return cls(
@@ -196,13 +183,13 @@ class VlessConfig:
             sni=query.get('sni', [None])[0],
             alpn=alpn,
             path=query.get('path', [None])[0],
-            early_data=query.get('earlyData', ['0'])[0] == '1', # Используем query.get
-            utls=query.get('utls') or query.get('fp', ['none'])[0], # Используем query.get
+            early_data=query.get('earlyData', ['0'])[0] == '1',
+            utls=query.get('utls') or query.get('fp', ['none'])[0],
             obfs=query.get('obfs',[None])[0],
             headers=headers,
             first_seen=datetime.now()
         )
-        return None # Добавлено для явного возврата None в случае ошибок
+        return None
 
 @dataclass(frozen=True)
 class SSConfig:
@@ -221,20 +208,16 @@ class SSConfig:
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["SSConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
-            logger.debug(f"Пропущен SS конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
         method = parsed_url.username.lower() if parsed_url.username else 'none'
         if method not in SS_VALID_METHODS:
-            logger.debug(f"Недопустимый метод шифрования для ss://: {method}, пропуск конфигурации.")
             return None
         port_str = parsed_url.port
         if port_str is None:
-            logger.debug(f"Отсутствует порт в URL для ss, пропуск конфигурации.")
             return None
         try:
             port = int(port_str)
         except (ValueError, TypeError):
-            logger.debug(f"Недопустимый порт: {port_str} для ss, пропуск конфигурации.")
             return None
         return cls(
             method=method,
@@ -245,7 +228,7 @@ class SSConfig:
             obfs=query.get('obfs',[None])[0],
             first_seen=datetime.now()
         )
-        return None # Добавлено для явного возврата None в случае ошибок
+        return None
 
 @dataclass(frozen=True)
 class SSConfConfig:
@@ -279,13 +262,12 @@ class SSConfConfig:
             server_host = config_json.get('server')
             server_address = await resolve_address(server_host, resolver)
             if server_address is None:
-                logger.debug(f"Пропущен SSCONF конфиг из-за не IPv4 адреса: {server_host}")
                 return None
 
             server_port_str = config_json.get('server_port')
             timeout_str = config_json.get('timeout')
-            local_port_str = config_json.get('local_port', '1080') # default value as string to handle potential errors
-            udp_over_tcp_str = config_json.get('udp_over_tcp', False) # default value as bool to handle potential errors
+            local_port_str = config_json.get('local_port', '1080')
+            udp_over_tcp_str = config_json.get('udp_over_tcp', False)
 
             try:
                 server_port = int(server_port_str) if server_port_str is not None else None
@@ -306,7 +288,7 @@ class SSConfConfig:
 
 
             return cls(
-                server=server_address, # Use resolved IPv4 address
+                server=server_address,
                 server_port=server_port,
                 local_address=config_json.get('local_address', '127.0.0.1'),
                 local_port=local_port,
@@ -323,9 +305,8 @@ class SSConfConfig:
                 first_seen=datetime.now()
             )
         except (json.JSONDecodeError, KeyError, ValueError, ConfigParseError) as e:
-            logger.debug(f"Ошибка разбора ssconf: {e}, пропуск конфигурации.") # Debug level
             return None
-        return None # Добавлено для явного возврата None в случае ошибок
+        return None
 
 @dataclass(frozen=True)
 class TrojanConfig:
@@ -349,30 +330,25 @@ class TrojanConfig:
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TrojanConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
-            logger.debug(f"Пропущен Trojan конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
         headers = _parse_headers(query.get("headers"))
-        alpn_list = query.get('alpn', []) # Используем query.get и получаем список
+        alpn_list = query.get('alpn', [])
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
 
-        security = query.get('security', ['tls'])[0].lower() # default 'tls' as in original code
+        security = query.get('security', ['tls'])[0].lower()
         if security not in VALID_SECURITY_TYPES:
-            logger.debug(f"Недопустимое значение security: {security} для trojan, пропуск конфигурации.")
             return None
 
-        transport = query.get('type', ['tcp'])[0].lower() # default 'tcp' as in original code
+        transport = query.get('type', ['tcp'])[0].lower()
         if transport not in VALID_TROJAN_TRANSPORTS:
-            logger.debug(f"Недопустимое значение type: {transport} для trojan, пропуск конфигурации.")
             return None
 
         port_str = parsed_url.port
         if port_str is None:
-            logger.debug(f"Отсутствует порт в URL для trojan, пропуск конфигурации.")
             return None
         try:
             port = int(port_str)
         except (ValueError, TypeError):
-            logger.debug(f"Недопустимый порт: {port_str} для trojan, пропуск конфигурации.")
             return None
 
         return cls(
@@ -383,13 +359,13 @@ class TrojanConfig:
             transport=transport,
             sni=query.get('sni', [None])[0],
             alpn=alpn,
-            early_data=query.get('earlyData', ['0'])[0] == '1', # Используем query.get
-            utls=query.get('utls') or query.get('fp', ['none'])[0], # Используем query.get
+            early_data=query.get('earlyData', ['0'])[0] == '1',
+            utls=query.get('utls') or query.get('fp', ['none'])[0],
             obfs=query.get('obfs',[None])[0],
             headers=headers,
             first_seen=datetime.now()
         )
-        return None # Добавлено для явного возврата None в случае ошибок
+        return None
 
 @dataclass(frozen=True)
 class TuicConfig:
@@ -416,34 +392,28 @@ class TuicConfig:
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TuicConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
-            logger.debug(f"Пропущен TUIC конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
-        alpn_list = query.get('alpn', []) # Используем query.get и получаем список
+        alpn_list = query.get('alpn', [])
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
 
-        security = query.get('security', ['tls'])[0].lower() # default 'tls' as in original code
+        security = query.get('security', ['tls'])[0].lower()
         if security not in VALID_SECURITY_TYPES:
-            logger.debug(f"Недопустимое значение security: {security} для tuic, пропуск конфигурации.")
             return None
 
-        transport = query.get('type', ['udp'])[0].lower() # default 'udp' as in original code
+        transport = query.get('type', ['udp'])[0].lower()
         if transport not in VALID_TUIC_TRANSPORTS:
-            logger.debug(f"Недопустимое значение type: {transport} для tuic, пропуск конфигурации.")
             return None
 
-        congestion_control = query.get('congestion', ['bbr'])[0].lower() # default 'bbr' as in original code
+        congestion_control = query.get('congestion', ['bbr'])[0].lower()
         if congestion_control not in VALID_CONGESTION_CONTROL_TUIC:
-            logger.debug(f"Недопустимое значение congestion: {congestion_control} для tuic, пропуск конфигурации.")
             return None
 
         port_str = parsed_url.port
         if port_str is None:
-            logger.debug(f"Отсутствует порт в URL для tuic, пропуск конфигурации.")
             return None
         try:
             port = int(port_str)
         except (ValueError, TypeError):
-            logger.debug(f"Недопустимый порт: {port_str} для tuic, пропуск конфигурации.")
             return None
 
 
@@ -456,15 +426,15 @@ class TuicConfig:
             congestion_control=congestion_control,
             sni=query.get('sni', [None])[0],
             alpn=alpn,
-            early_data=query.get('earlyData', ['0'])[0] == '1', # Используем query.get
-            udp_relay_mode=query.get('udp_relay_mode', ['quic'])[0].lower(), # Используем query.get, default 'quic'
-            zero_rtt_handshake=query.get('zero_rtt_handshake', ['0'])[0] == '1', # Используем query.get, default '0'
-            utls=query.get('utls') or query.get('fp', ['none'])[0], # Используем query.get
+            early_data=query.get('earlyData', ['0'])[0] == '1',
+            udp_relay_mode=query.get('udp_relay_mode', ['quic'])[0].lower(),
+            zero_rtt_handshake=query.get('zero_rtt_handshake', ['0'])[0] == '1',
+            utls=query.get('utls') or query.get('fp', ['none'])[0],
             password=parsed_url.password,
             obfs=query.get('obfs',[None])[0],
             first_seen=datetime.now()
         )
-        return None # Добавлено для явного возврата None в случае ошибок
+        return None
 
 @dataclass(frozen=True)
 class Hy2Config:
@@ -489,38 +459,32 @@ class Hy2Config:
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["Hy2Config"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
-            logger.debug(f"Пропущен HY2 конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
-        hop_interval_str = query.get('hopInterval', [None])[0] # Используем query.get
+        hop_interval_str = query.get('hopInterval', [None])[0]
         hop_interval = None
         if hop_interval_str is not None:
             try:
                 hop_interval = int(hop_interval_str)
             except ValueError:
-                logger.debug(f"Неверное значение hopInterval: {hop_interval_str} для hy2, используется None.")
-                hop_interval = None # Use None instead of raising error, as in original logic
+                hop_interval = None
 
-        alpn_list = query.get('alpn', []) # Используем query.get и получаем список
+        alpn_list = query.get('alpn', [])
         alpn = tuple(sorted(alpn_list)) if alpn_list else None
 
-        security = query.get('security', ['tls'])[0].lower() # default 'tls' as in original code
+        security = query.get('security', ['tls'])[0].lower()
         if security not in VALID_SECURITY_TYPES:
-            logger.debug(f"Недопустимое значение security: {security} для hy2, пропуск конфигурации.")
             return None
 
-        transport = query.get('type', ['udp'])[0].lower() # default 'udp' as in original code
+        transport = query.get('type', ['udp'])[0].lower()
         if transport not in VALID_HY2_TRANSPORTS:
-            logger.debug(f"Недопустимое значение type: {transport} для hy2, пропуск конфигурации.")
             return None
 
         port_str = parsed_url.port
         if port_str is None:
-            logger.debug(f"Отсутствует порт в URL для hy2, пропуск конфигурации.")
             return None
         try:
             port = int(port_str)
         except (ValueError, TypeError):
-            logger.debug(f"Недопустимый порт: {port_str} для hy2, пропуск конфигурации.")
             return None
 
 
@@ -531,15 +495,15 @@ class Hy2Config:
             transport=transport,
             sni=query.get('sni', [None])[0],
             alpn=alpn,
-            early_data=query.get('earlyData', ['0'])[0] == '1', # Используем query.get
-            pmtud=query.get('pmtud', ['0'])[0] == '1', # Используем query.get, default '0'
+            early_data=query.get('earlyData', ['0'])[0] == '1',
+            pmtud=query.get('pmtud', ['0'])[0] == '1',
             hop_interval=hop_interval,
             password=parsed_url.password,
-            utls=query.get('utls') or query.get('fp', ['none'])[0], # Используем query.get
+            utls=query.get('utls') or query.get('fp', ['none'])[0],
             obfs=query.get('obfs',[None])[0],
             first_seen=datetime.now()
         )
-        return None # Добавлено для явного возврата None в случае ошибок
+        return None
 
 # --- Data classes для метрик и конфигураций каналов ---
 @dataclass
@@ -552,14 +516,14 @@ class ChannelMetrics:
 class ChannelConfig:
     RESPONSE_TIME_DECAY = 0.7
     VALID_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
-    REPEATED_CHARS_THRESHOLD = 100 # Константа для порога повторяющихся символов
+    REPEATED_CHARS_THRESHOLD = 100
 
     def __init__(self, url: str):
         self.url = self._validate_url(url)
         self.metrics = ChannelMetrics()
         self.check_count = 0
         self.metrics.first_seen = datetime.now()
-        self.zero_results_count = 0 # Добавляем счетчик нулевых результатов
+        self.zero_results_count = 0
 
     def _validate_url(self, url: str) -> str:
         if not isinstance(url, str):
@@ -567,27 +531,27 @@ class ChannelConfig:
         url = url.strip()
         if not url:
             raise InvalidURLError("URL не может быть пустым.")
-        if re.search(r'(.)\1{' + str(self.REPEATED_CHARS_THRESHOLD) + r',}', url): # Используем константу
+        if re.search(r'(.)\1{' + str(self.REPEATED_CHARS_THRESHOLD) + r',}', url):
             raise InvalidURLError("URL содержит слишком много повторяющихся символов.")
         parsed = urlsplit(url)
         if parsed.scheme not in ["http", "https"] and parsed.scheme not in [p.replace('://', '') for p in self.VALID_PROTOCOLS]:
             expected_protocols = ", ".join(["http", "https"] + self.VALID_PROTOCOLS)
             received_protocol_prefix = parsed.scheme or url[:10]
-            raise UnsupportedProtocolError( # Улучшенное сообщение об ошибке
+            raise UnsupportedProtocolError(
                 f"Неподдерживаемый протокол URL: '{received_protocol_prefix}...'. Ожидаются протоколы: {expected_protocols}."
             )
         return url
 
 class ProxyConfig:
     def __init__(self):
-        os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True) # Исправлено: os.True -> True
+        os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
         self.resolver = None
         self.failed_channels = []
         self.processed_configs = set()
         self.SOURCE_URLS = self._load_source_urls()
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
         self.ALL_URLS_FILE = ALL_URLS_FILE
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=32) # Пул потоков для CPU-bound задач
+        # self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=32) # Executor удален
 
     def _load_source_urls(self) -> List[ChannelConfig]:
         initial_urls = []
@@ -603,9 +567,9 @@ class ProxyConfig:
         except FileNotFoundError:
             logger.warning(f"Файл URL не найден: {ALL_URLS_FILE}. Создается пустой файл.")
             open(ALL_URLS_FILE, 'w', encoding='utf-8').close()
-        except UnicodeDecodeError as e: # Более гранулярная обработка исключений
+        except UnicodeDecodeError as e:
             logger.error(f"Ошибка декодирования при чтении {ALL_URLS_FILE}: {e}")
-        except Exception as e: # Общая ошибка
+        except Exception as e:
             logger.error(f"Ошибка чтения {ALL_URLS_FILE}: {e}")
         unique_configs = self._remove_duplicate_urls(initial_urls)
         if not unique_configs:
@@ -625,23 +589,21 @@ class ProxyConfig:
         if not all(c in (string.ascii_letters + string.digits + '.-:') for c in parsed.netloc):
             raise InvalidURLError(f"Недопустимые символы в netloc URL: '{parsed.netloc}'")
         path = parsed.path.rstrip('/')
-        return parsed._replace(scheme=parsed.scheme.lower(), path=path).geturl() # Приводим схему к нижнему регистру
+        return parsed._replace(scheme=parsed.scheme.lower(), path=path).geturl()
 
     def _remove_duplicate_urls(self, channel_configs: List[ChannelConfig]) -> List[ChannelConfig]:
         seen_urls = set()
         unique_configs = []
         for config in channel_configs:
             if not isinstance(config, ChannelConfig):
-                logger.debug(f"Неверная конфигурация пропущена: {config}") # Debug level logging
                 continue
             try:
                 normalized_url = asyncio.run(self._normalize_url(config.url))
                 if normalized_url not in seen_urls:
                     seen_urls.add(normalized_url)
                     unique_configs.append(config)
-                    logger.debug(f"Добавлен уникальный URL: {normalized_url}") # Debug level logging for successful addition
                 else:
-                    logger.debug(f"Дубликат URL пропущен: {normalized_url}") # Debug level logging for duplicates
+                    pass # Debug logging removed for efficiency, can be added back if needed for debugging duplicates
             except Exception:
                 continue
         return unique_configs
@@ -670,7 +632,7 @@ class ProxyConfig:
             updated_lines = [line for line in lines if line.strip() not in self.failed_channels]
             with open(self.ALL_URLS_FILE, 'w', encoding='utf-8') as f_write:
                 f_write.writelines(updated_lines)
-            logger.info(f"Удалены нерабочие каналы из {self.ALL_URLS_FILE}: {', '.join(self.failed_channels)}")
+            logger.warning(f"Удалены нерабочие каналы из {self.ALL_URLS_FILE}: {', '.join(self.failed_channels)}") # Log level reduced to warning
             self.failed_channels = []
         except FileNotFoundError:
             logger.error(f"Файл не найден: {self.ALL_URLS_FILE}. Невозможно удалить нерабочие каналы.")
@@ -688,84 +650,81 @@ def _parse_headers(headers_str: Optional[str]) -> Optional[Dict[str, str]]:
             raise ValueError("Headers must be a JSON object")
         return headers
     except (json.JSONDecodeError, ValueError) as e:
-        logger.warning(f"Неверный формат заголовков, ожидается JSON-объект: {headers_str} - {e}. Заголовки игнорируются.") # More informative message
+        logger.warning(f"Неверный формат заголовков, ожидается JSON-объект: {headers_str} - {e}. Заголовки игнорируются.")
         return None
 
 
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
     if is_valid_ipv4(hostname):
-        return hostname # Return IPv4 directly if already valid
-    if is_valid_ipv6(hostname): # Skip IPv6 addresses
-        logger.debug(f"Пропущен hostname {hostname} так как это IPv6 адрес.")
-        return None
+        return hostname
+    # if is_valid_ipv6(hostname): # IPv6 check removed for IPv4 focus
+    #     return None
     try:
         result = await resolver.query(hostname, 'A')
         resolved_address = result[0].host
         if is_valid_ipv4(resolved_address):
-            logger.debug(f"Hostname '{hostname}' успешно разрешен в IPv4-адрес: {resolved_address}") # Debug logging for success
             return resolved_address
         else:
-            logger.debug(f"Hostname '{hostname}' разрешен в не IPv4 адрес: {resolved_address}. Пропускаем.")
             return None
     except aiodns.error.DNSError as e:
         if e.args[0] == 4: # Domain name not found
-            logger.debug(f"Не удалось разрешить hostname: {hostname} - {e}") # Debug level for "Domain name not found"
+            pass # Debug level log removed for efficiency, can add back if needed for DNS debug
         elif e.args[0] == 8: # Misformatted domain name
-            logger.debug(f"Не удалось разрешить hostname: {hostname} - {e} (Misformatted domain name)") # Debug level for "Misformatted domain name" - теперь DEBUG
-        elif not is_valid_ipv4(hostname) and not is_valid_ipv6(hostname): # Only log warning if hostname is not already IP
-            logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}") # Warning for other DNSError
-        return None # Return None if DNS resolution fails
+            pass # Debug level log removed for efficiency
+        elif not is_valid_ipv4(hostname): # Only log warning if hostname is not already IP
+            logger.warning(f"Не удалось разрешить hostname: {hostname} - {e}") # Log level kept at warning for DNS resolution failures
+        return None
     except Exception as e:
-        logger.error(f"Неожиданная ошибка при резолвинге {hostname}: {e}") # Error for other exceptions
+        logger.error(f"Неожиданная ошибка при резолвинге {hostname}: {e}")
         return None
 
 
-def generate_custom_name(parsed: urlparse, query: Dict) -> str:
-    """Генерирует кастомное имя профиля на основе URL."""
-    scheme = parsed.scheme
-    if scheme == "vless":
-        transport_type = query.get("type", ["tcp"])[0].upper()
-        security_type = query.get("security", ["none"])[0].upper()
-        if transport_type == "WS" and security_type == "TLS":
-            return ProfileName.VLESS_WS_TLS.value
-        security_str = "" if security_type == "NONE" else security_type
-        transport_str = transport_type if transport_type != "NONE" else ""
-        return "🌌 VLESS - " + " - ".join(filter(None, [transport_str, security_str]))
-    elif scheme == "ss":
-        method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")
-        if method == "CHACHA20-IETF-POLY1305":
-            return ProfileName.SS_CHACHA20_IETF_POLY1305.value
-        return ProfileName.SS_FORMAT.value.format(method=method)
-    elif scheme == "ssconf":
-        return ProfileName.SSCONF_FORMAT.value
-    elif scheme == "trojan":
-        transport_type = query.get("type", ["tcp"])[0].upper()
-        security_type = query.get("security", ["tls"])[0].upper()
-        if transport_type == "WS" and security_type == "TLS":
-            return ProfileName.TROJAN_WS_TLS.value
-        security_str = "" if security_type == "NONE" else security_type
-        transport_str = transport_type if transport_type != "NONE" else ""
-        return "🗡️ Trojan - " + " - ".join(filter(None, [transport_str, security_str]))
-    elif scheme == "tuic":
-        transport_type = query.get("type", ["udp"])[0].upper()
-        security_type = query.get("security", ["tls"])[0].upper()
-        congestion_control = query.get("congestion", ["bbr"])[0].upper()
-        if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
-            return ProfileName.TUIC_WS_TLS_BBR.value
-        security_str = "" if security_type == "NONE" else security_type
-        transport_str = transport_type if transport_type != "NONE" else ""
-        return "🐢 TUIC - " + " - ".join(filter(None, [transport_str, security_str, congestion_control]))
-    elif scheme == "hy2":
-        transport_type = query.get("type", ["udp"])[0].upper()
-        security_type = query.get("security", ["tls"])[0].upper()
-        if transport_type == "UDP" and security_type == "TLS":
-            return ProfileName.HY2_UDP_TLS.value
-        security_str = "" if security_type == "NONE" else security_type
-        transport_str = transport_type if transport_type != "NONE" else ""
-        return "💧 HY2 - " + " - ".join(filter(None, [transport_str, security_str]))
-    return f"⚠️ Неизвестный протокол: {scheme}. Проверьте URL или добавьте поддержку протокола." # Improved unknown protocol message
+# def generate_custom_name(parsed: urlparse, query: Dict) -> str: # Функция generate_custom_name удалена
+#     """Генерирует кастомное имя профиля на основе URL."""
+#     scheme = parsed.scheme
+#     if scheme == "vless":
+#         transport_type = query.get("type", ["tcp"])[0].upper()
+#         security_type = query.get("security", ["none"])[0].upper()
+#         if transport_type == "WS" and security_type == "TLS":
+#             return ProfileName.VLESS_WS_TLS.value
+#         security_str = "" if security_type == "NONE" else security_type
+#         transport_str = transport_type if transport_type != "NONE" else ""
+#         return "🌌 VLESS - " + " - ".join(filter(None, [transport_str, security_str]))
+#     elif scheme == "ss":
+#         method = quote_plus(parsed.username.upper() if parsed.username else "UNKNOWN")
+#         if method == "CHACHA20-IETF-POLY1305":
+#             return ProfileName.SS_CHACHA20_IETF_POLY1305.value
+#         return ProfileName.SS_FORMAT.value.format(method=method)
+#     elif scheme == "ssconf":
+#         return ProfileName.SSCONF_FORMAT.value
+#     elif scheme == "trojan":
+#         transport_type = query.get("type", ["tcp"])[0].upper()
+#         security_type = query.get("security", ["tls"])[0].upper()
+#         if transport_type == "WS" and security_type == "TLS":
+#             return ProfileName.TROJAN_WS_TLS.value
+#         security_str = "" if security_type == "NONE" else security_type
+#         transport_str = transport_type if transport_type != "NONE" else ""
+#         return "🗡️ Trojan - " + " - ".join(filter(None, [transport_str, security_str]))
+#     elif scheme == "tuic":
+#         transport_type = query.get("type", ["udp"])[0].upper()
+#         security_type = query.get("security", ["tls"])[0].upper()
+#         congestion_control = query.get("congestion", ["bbr"])[0].upper()
+#         if transport_type == "WS" and security_type == "TLS" and congestion_control == "BBR":
+#             return ProfileName.TUIC_WS_TLS_BBR.value
+#         security_str = "" if security_type == "NONE" else security_type
+#         transport_str = transport_type if transport_type != "NONE" else ""
+#         return "🐢 TUIC - " + " - ".join(filter(None, [transport_str, security_str, congestion_control]))
+#     elif scheme == "hy2":
+#         transport_type = query.get("type", ["udp"])[0].upper()
+#         security_type = query.get("security", ["tls"])[0].upper()
+#         if transport_type == "UDP" and security_type == "TLS":
+#             return ProfileName.HY2_UDP_TLS.value
+#         security_str = "" if security_type == "NONE" else security_type
+#         transport_str = transport_type if transport_type != "NONE" else ""
+#         return "💧 HY2 - " + " - ".join(filter(None, [transport_str, security_str]))
+#     return f"⚠️ Неизвестный протокол: {scheme}. Проверьте URL или добавьте поддержку протокола."
 
-@functools.lru_cache(maxsize=1024) # Ограничение размера кэша lru_cache
+@functools.lru_cache(maxsize=1024)
 def is_valid_ipv4(hostname: str) -> bool:
     if not hostname:
         return False
@@ -775,13 +734,12 @@ def is_valid_ipv4(hostname: str) -> bool:
     except ipaddress.AddressValueError:
         return False
 
-@functools.lru_cache(maxsize=1024) # Ограничение размера кэша lru_cache # Убрать неиспользуемую функцию
-def is_valid_ipv6(hostname: str) -> bool:
-    try:
-        ipaddress.IPv6Address(hostname)
-        return True
-    except ipaddress.AddressValueError:
-        return False
+# def is_valid_ipv6(hostname: str) -> bool: # Функция is_valid_ipv6 удалена
+#     try:
+#         ipaddress.IPv6Address(hostname)
+#         return True
+#     except ipaddress.AddressValueError:
+#         return False
 
 def is_valid_proxy_url(url: str) -> bool:
     if not any(url.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
@@ -799,14 +757,12 @@ def is_valid_proxy_url(url: str) -> bool:
             if not parsed.hostname or not parsed.port:
                 return False
         else:
-            # Уточненная логика проверки hostname для ss://
-            if not parsed.hostname and not parsed.netloc.startswith('@'): # Проверка netloc для ss://
+            if not parsed.hostname and not parsed.netloc.startswith('@'):
                 return False
             if parsed.username:
                 if parsed.username.lower() not in SS_VALID_METHODS:
-                    logger.debug(f"Недопустимый метод шифрования для ss://: {parsed.username}")
                     return False
-        if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)): # Оставить только IPv4
+        if not is_valid_ipv4(parsed.hostname): # IPv6 check removed, IPv4 only focus
             if not re.match(r"^[a-zA-Z0-9.-]+$", parsed.hostname):
                 return False
         return True
@@ -826,7 +782,6 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
         try:
             return await SSConfConfig.from_url(config_string, resolver)
         except ConfigParseError as e:
-            logger.debug(f"Ошибка парсинга ssconf конфигурации: {config_string} - {e}") # Debug level
             return None
     else:
         try:
@@ -843,11 +798,10 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             if scheme in config_parsers:
                 return await config_parsers[scheme](parsed, query, resolver)
             return None
-        except (InvalidURLError, UnsupportedProtocolError) as e: # Removed InvalidParameterError and ConfigParseError from here
-            logger.debug(f"Ошибка парсинга конфигурации: {config_string} - {e}") # Debug level
+        except (InvalidURLError, UnsupportedProtocolError) as e:
             return None
         except Exception as e:
-            logger.exception(f"Непредвиденная ошибка при парсинге конфигурации {config_string}: {e}")
+            logger.error(f"Непредвиденная ошибка при парсинге конфигурации {config_string}: {e}")
             return None
 
 async def process_single_proxy(line: str, channel: ChannelConfig,
@@ -855,11 +809,9 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_semaphore: asyncio.Semaphore,
                               global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
     async with proxy_semaphore, global_proxy_semaphore:
-        config_obj = await parse_config(line, proxy_config.resolver) # Передаем executor
+        config_obj = await parse_config(line, proxy_config.resolver)
         if config_obj is None:
             return None
-
-        logger.debug(f"✅ Прокси {line} считается доступной.")
 
         result = {
             "config": line,
@@ -871,7 +823,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
 
 async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, global_proxy_semaphore: asyncio.Semaphore):
     """Обрабатывает один канал, скачивая и обрабатывая прокси."""
-    async with channel_semaphore: # Semaphore на канал, чтобы ограничить количество параллельных каналов
+    async with channel_semaphore:
         colored_log(logging.INFO, f"🚀 Начало обработки канала: {channel.url}")
         proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
         proxy_tasks = []
@@ -886,19 +838,18 @@ async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", s
                         lines = text.splitlines()
                     except UnicodeDecodeError as e:
                         colored_log(logging.WARNING, f"⚠️ Ошибка декодирования для {channel.url}: {e}. Пропуск.")
-                        return [] # Возвращаем пустой список прокси для этого канала
+                        return []
                 elif response.status in (403, 404):
-                    logger.debug(f"ℹ️ Канал {channel.url} вернул статус {response.status}. Пропускаем.") # Debug logging for 403/404
-                    return [] # Возвращаем пустой список прокси для этого канала
+                    return []
                 else:
                     colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}, статус: {response.status}")
-                    return [] # Возвращаем пустой список прокси для этого канала
+                    return []
         except aiohttp.ClientError as e:
             colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}: {e}")
-            return [] # Возвращаем пустой список прокси для этого канала
+            return []
         except asyncio.TimeoutError:
             colored_log(logging.ERROR, f"⌛ Таймаут при получении {channel.url}")
-            return [] # Возвращаем пустой список прокси для этого канала
+            return []
 
         for line in lines:
             line = line.strip()
@@ -912,16 +863,15 @@ async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", s
         valid_results = [result for result in results if result]
         channel.metrics.valid_configs = len(valid_results)
 
-        if channel.metrics.valid_configs == 0: # Проверяем количество валидных конфигов
-            channel.zero_results_count += 1 # Увеличиваем счетчик нулевых результатов
+        if channel.metrics.valid_configs == 0:
+            channel.zero_results_count += 1
             colored_log(logging.WARNING, f"⚠️ Канал {channel.url} не вернул конфигураций. Нулевой результат {channel.zero_results_count}/{MAX_ZERO_RESULTS_COUNT}.")
-            if channel.zero_results_count >= MAX_ZERO_RESULTS_COUNT: # Проверяем, достигнут ли предел
-                proxy_config.failed_channels.append(channel.url) # Добавляем URL канала в список нерабочих
+            if channel.zero_results_count >= MAX_ZERO_RESULTS_COUNT:
+                proxy_config.failed_channels.append(channel.url)
                 colored_log(logging.CRITICAL, f"🔥 Канал {channel.url} удален из-за {MAX_ZERO_RESULTS_COUNT} последовательных нулевых результатов.")
         else:
-            channel.zero_results_count = 0 # Сбрасываем счетчик, если есть валидные результаты
-            # Логируем завершение обработки канала с количеством конфигураций
-            colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
+            channel.zero_results_count = 0
+            colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}") # Log level kept at INFO, but consider reducing further if needed.
         return valid_results
 
 
@@ -936,16 +886,15 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
             asyncio.create_task(process_channel(channel, proxy_config, session, channel_semaphore, global_proxy_semaphore))
             for channel in channels
         ]
-        channel_results = await asyncio.gather(*channel_tasks) # Запускаем задачи параллельно
+        channel_results = await asyncio.gather(*channel_tasks)
 
         for channel_proxies in channel_results:
-            proxies_all.extend(channel_proxies) # Собираем прокси со всех каналов
+            proxies_all.extend(channel_proxies)
 
     return proxies_all
 
 
-def save_final_configs(proxies: List[Dict], output_file: str, executor=None): # Executor для CPU-bound save_final_configs
-    profile_names = set()
+def save_final_configs(proxies: List[Dict], output_file: str): # Executor parameter removed
     unique_proxies = defaultdict(set)
     unique_proxy_count = 0
     try:
@@ -960,10 +909,9 @@ def save_final_configs(proxies: List[Dict], output_file: str, executor=None): # 
                 if ip_port_tuple not in unique_proxies[protocol]:
                     unique_proxies[protocol].add(ip_port_tuple)
                     unique_proxy_count += 1
-                    query = parse_qs(parsed.query)
-                    profile_name = generate_custom_name(parsed, query) # Use base name directly
-                    profile_names.add(profile_name)
-                    final_line = f"{config}#{profile_name}\n" # Removed score from output
+                    # profile_name = generate_custom_name(parsed, query) # generate_custom_name removed
+                    profile_name = f"{ProfileName(proxy['protocol'].upper()).value}" # Simplified profile name using Enum
+                    final_line = f"{config}#{profile_name}\n"
                     f.write(final_line)
         colored_log(logging.INFO, f"✅ Финальные конфигурации сохранены в {output_file}. Уникальность прокси обеспечена.")
         colored_log(logging.INFO, f"✨ Всего уникальных прокси сохранено: {unique_proxy_count}")
@@ -982,7 +930,7 @@ def main():
         proxy_config.set_event_loop(loop)
         colored_log(logging.INFO, "🚀 Начало проверки прокси...")
         proxies = await process_all_channels(channels, proxy_config)
-        save_final_configs(proxies, proxy_config.OUTPUT_FILE, proxy_config.executor) # Передаем executor
+        save_final_configs(proxies, proxy_config.OUTPUT_FILE) # Executor removed from call
         proxy_config.remove_failed_channels_from_file()
         if not statistics_logged:
             total_channels = len(channels)
@@ -1007,7 +955,7 @@ def main():
             colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
             statistics_logged = True
             colored_log(logging.INFO, "✅ Проверка прокси завершена.")
-        proxy_config.executor.shutdown(wait=True) # Очистка пула потоков
+        # proxy_config.executor.shutdown(wait=True) # Executor shutdown removed
 
     asyncio.run(runner())
 
