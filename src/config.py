@@ -152,8 +152,8 @@ class VlessConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["VlessConfig"]:
-        address = await resolve_address(parsed_url.hostname, resolver, executor)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["VlessConfig"]:
+        address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
             logger.debug(f"Пропущен VLESS конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -218,8 +218,8 @@ class SSConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["SSConfig"]:
-        address = await resolve_address(parsed_url.hostname, resolver, executor)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["SSConfig"]:
+        address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
             logger.debug(f"Пропущен SS конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -269,7 +269,7 @@ class SSConfConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, config_string: str, resolver: aiodns.DNSResolver, executor=None) -> Optional["SSConfConfig"]:
+    async def from_url(cls, config_string: str, resolver: aiodns.DNSResolver) -> Optional["SSConfConfig"]:
         try:
             config_b64 = config_string.split("ssconf://")[1]
             config_json_str = base64.urlsafe_b64decode(config_b64 + '=' * (4 - len(config_b64) % 4)).decode('utf-8')
@@ -277,7 +277,7 @@ class SSConfConfig:
             config_json = {k.lower(): v for k, v in config_json.items()}
 
             server_host = config_json.get('server')
-            server_address = await resolve_address(server_host, resolver, executor)
+            server_address = await resolve_address(server_host, resolver)
             if server_address is None:
                 logger.debug(f"Пропущен SSCONF конфиг из-за не IPv4 адреса: {server_host}")
                 return None
@@ -346,8 +346,8 @@ class TrojanConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["TrojanConfig"]:
-        address = await resolve_address(parsed_url.hostname, resolver, executor)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TrojanConfig"]:
+        address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
             logger.debug(f"Пропущен Trojan конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -413,8 +413,8 @@ class TuicConfig:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["TuicConfig"]:
-        address = await resolve_address(parsed_url.hostname, resolver, executor)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TuicConfig"]:
+        address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
             logger.debug(f"Пропущен TUIC конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -486,8 +486,8 @@ class Hy2Config:
         return hash(astuple(self))
 
     @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver, executor=None) -> Optional["Hy2Config"]:
-        address = await resolve_address(parsed_url.hostname, resolver, executor)
+    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["Hy2Config"]:
+        address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
             logger.debug(f"Пропущен HY2 конфиг из-за не IPv4 адреса: {parsed_url.hostname}")
             return None
@@ -692,15 +692,14 @@ def _parse_headers(headers_str: Optional[str]) -> Optional[Dict[str, str]]:
         return None
 
 
-async def resolve_address(hostname: str, resolver: aiodns.DNSResolver, executor=None) -> Optional[str]:
+async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
     if is_valid_ipv4(hostname):
         return hostname # Return IPv4 directly if already valid
     if is_valid_ipv6(hostname): # Skip IPv6 addresses
         logger.debug(f"Пропущен hostname {hostname} так как это IPv6 адрес.")
         return None
     try:
-        # Run DNS query in thread pool to avoid blocking event loop if aiodns is CPU-bound (unlikely but as a precaution)
-        result = await asyncio.get_running_loop().run_in_executor(executor, lambda: resolver.query(hostname, 'A'))
+        result = await resolver.query(hostname, 'A')
         resolved_address = result[0].host
         if is_valid_ipv4(resolved_address):
             logger.debug(f"Hostname '{hostname}' успешно разрешен в IPv4-адрес: {resolved_address}") # Debug logging for success
@@ -819,11 +818,11 @@ def is_valid_uuid(uuid_string: str) -> bool:
     except ValueError:
         return False
 
-async def parse_config(config_string: str, resolver: aiodns.DNSResolver, executor=None) -> Optional[object]:
+async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Optional[object]:
     protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p)), None)
     if protocol == "ssconf://":
         try:
-            return await SSConfConfig.from_url(config_string, resolver, executor)
+            return await SSConfConfig.from_url(config_string, resolver)
         except ConfigParseError as e:
             logger.debug(f"Ошибка парсинга ssconf конфигурации: {config_string} - {e}") # Debug level
             return None
@@ -840,7 +839,7 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver, executo
                 "hy2": Hy2Config.from_url,
             }
             if scheme in config_parsers:
-                return await config_parsers[scheme](parsed, query, resolver, executor)
+                return await config_parsers[scheme](parsed, query, resolver)
             return None
         except (InvalidURLError, UnsupportedProtocolError) as e: # Removed InvalidParameterError and ConfigParseError from here
             logger.debug(f"Ошибка парсинга конфигурации: {config_string} - {e}") # Debug level
@@ -854,7 +853,7 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_semaphore: asyncio.Semaphore,
                               global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
     async with proxy_semaphore, global_proxy_semaphore:
-        config_obj = await parse_config(line, proxy_config.resolver, proxy_config.executor) # Передаем executor
+        config_obj = await parse_config(line, proxy_config.resolver) # Передаем executor
         if config_obj is None:
             return None
 
