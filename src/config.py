@@ -73,7 +73,7 @@ def colored_log(level, message: str, *args, **kwargs):
     logger.log(level, f"{color}{message}{LogColors.RESET}", *args, **kwargs)
 
 # Константы
-DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json"
+DEFAULT_SCORING_WEIGHTS_FILE = "configs/scoring_weights.json" # Убрать неиспользуемые константы
 ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
 MAX_CONCURRENT_CHANNELS = 90
 MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
@@ -546,7 +546,6 @@ class ChannelMetrics:
     valid_configs: int = 0
     unique_configs: int = 0
     protocol_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    protocol_scores: Dict[str, List[float]] = field(default_factory=lambda: defaultdict(list))
     first_seen: Optional[datetime] = None
 
 class ChannelConfig:
@@ -675,149 +674,8 @@ class ProxyConfig:
         except Exception as e:
             logger.error(f"Ошибка при удалении нерабочих каналов из {self.ALL_URLS_FILE}: {e}")
 
-# --- Enum для весов скоринга ---
-class ScoringWeights(Enum):
-    PROTOCOL_BASE = 20
-    CONFIG_LENGTH = 5
-    AGE_PENALTY = -0.05
-    VLESS_SECURITY_TLS = 15
-    VLESS_SECURITY_NONE = -10
-    VLESS_TRANSPORT_WS = 10
-    VLESS_TRANSPORT_TCP = 2
-    VLESS_ENCRYPTION_NONE = -5
-    VLESS_ENCRYPTION_AUTO = 5
-    VLESS_ENCRYPTION_AES_128_GCM = 8
-    VLESS_ENCRYPTION_CHACHA20_POLY1305 = 8
-    VLESS_UUID_PRESENT = 5
-    VLESS_EARLY_DATA = 3
-    VLESS_SNI_PRESENT = 7
-    VLESS_ALPN_PRESENT = 5
-    VLESS_PATH_PRESENT = 3
-    SS_METHOD_CHACHA20_IETF_POLY1305 = 15
-    SS_METHOD_AES_256_GCM = 14
-    SS_METHOD_AES_128_GCM = 12
-    SS_METHOD_NONE = -20
-    SS_PASSWORD_LENGTH = 5
-    SS_PLUGIN_OBFS_TLS = 10
-    SS_PLUGIN_OBFS_HTTP = 8
-    SS_PLUGIN_NONE = 0
-    SSCONF_SERVER_PORT = 5
-    SSCONF_METHOD_CHACHA20_IETF_POLY1305 = 15
-    SSCONF_METHOD_AES_256_GCM = 14
-    SSCONF_METHOD_AES_128_GCM = 12
-    SSCONF_METHOD_NONE = -20
-    SSCONF_PASSWORD_LENGTH = 5
-    SSCONF_PROTOCOL_ORIGIN = 3
-    SSCONF_PROTOCOL_AUTH_SHA1_V4 = 7
-    SSCONF_PROTOCOL_AUTH_AES128_CFB = 7
-    SSCONF_OBFS_PLAIN = 0
-    SSCONF_OBFS_TLS = 10
-    SSCONF_OBFS_HTTP = 8
-    SSCONF_OBFS_WEBSOCKET = 10
-    SSCONF_UDP_OVER_TCP = 5
-    TROJAN_SECURITY_TLS = 15
-    TROJAN_TRANSPORT_WS = 10
-    TROJAN_TRANSPORT_TCP = 2
-    TROJAN_PASSWORD_LENGTH = 5
-    TROJAN_SNI_PRESENT = 7
-    TROJAN_ALPN_PRESENT = 5
-    TROJAN_EARLY_DATA = 3
-    TUIC_SECURITY_TLS = 15
-    TUIC_TRANSPORT_WS = 10
-    TUIC_TRANSPORT_UDP = 5
-    TUIC_CONGESTION_CONTROL_BBR = 8
-    TUIC_CONGESTION_CONTROL_CUBIC = 5
-    TUIC_CONGESTION_CONTROL_NEW_RENO = 3
-    TUIC_UUID_PRESENT = 5
-    TUIC_PASSWORD_LENGTH = 5
-    TUIC_SNI_PRESENT = 7
-    TUIC_ALPN_PRESENT = 5
-    TUIC_EARLY_DATA = 3
-    TUIC_UDP_RELAY_MODE = 7
-    TUIC_ZERO_RTT_HANDSHAKE = 6
-    HY2_SECURITY_TLS = 15
-    HY2_TRANSPORT_UDP = 5
-    HY2_TRANSPORT_TCP = 2
-    HY2_PASSWORD_LENGTH = 5
-    HY2_SNI_PRESENT = 7
-    HY2_ALPN_PRESENT = 5
-    HY2_EARLY_DATA = 3
-    HY2_PMTUD_ENABLED = 4
-    HY2_HOP_INTERVAL = 2
-    COMMON_PORT_443 = 10
-    COMMON_PORT_80 = 5
-    COMMON_PORT_OTHER = 2
-    COMMON_UTLS_CHROME = 7
-    COMMON_UTLS_FIREFOX = 6
-    COMMON_UTLS_RANDOMIZED = 5
-    COMMON_UTLS_OTHER = 2
-    COMMON_CDN = 8
-    COMMON_OBFS = 4
-    COMMON_HEADERS = 3
-    COMMON_RARE_PARAM = 4
-    COMMON_HIDDEN_PARAM = 2
-
-    @staticmethod
-    def load_weights_from_json(file_path: str = DEFAULT_SCORING_WEIGHTS_FILE) -> Dict[str, Any]:
-        all_weights_loaded_successfully = True
-        loaded_weights = {}
-        try:
-            if not os.path.exists(file_path):
-                ScoringWeights._create_default_weights_file(file_path)
-            with open(file_path, 'r', encoding='utf-8') as f:
-                weights_data: Dict[str, Any] = json.load(f)
-                for name, value in weights_data.items():
-                    if not isinstance(value, (int, float)):
-                        raise ValueError(f"Invalid weight value (must be a number) for {name}: {value}")
-                    loaded_weights[name] = value
-            # Проверка наличия всех ключей из Enum в загруженных весах
-            for member in ScoringWeights:
-                if member.name not in loaded_weights:
-                    logger.error(f"Файл весов не содержит значение для '{member.name}'. Используются значения по умолчанию.")
-                    all_weights_loaded_successfully = False
-
-        except FileNotFoundError as e: # Более информативные сообщения об ошибках
-            logger.warning(f"Файл весов не найден: {file_path}. Используются значения по умолчанию. Ошибка: {e}")
-            all_weights_loaded_successfully = False
-        except json.JSONDecodeError as e:
-            logger.warning(f"Ошибка разбора JSON в файле весов {file_path}. Используются значения по умолчанию. Ошибка: {e}")
-            all_weights_loaded_successfully = False
-        except ValueError as e:
-            logger.warning(f"Ошибка валидации значений весов в {file_path}. Используются значения по умолчанию. Ошибка: {e}")
-            all_weights_loaded_successfully = False
-        except Exception as e:
-            logger.critical(f"Критическая ошибка при загрузке весов из {file_path}: {e}. Используются значения по умолчанию.") # Critical error
-            all_weights_loaded_successfully = False
-
-        if not all_weights_loaded_successfully:
-            loaded_weights = {member.name: member.value for member in ScoringWeights}
-        return loaded_weights
-
-    @staticmethod
-    def _create_default_weights_file(file_path: str) -> None:
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        default_weights = {member.name: member.value for member in ScoringWeights}
-        try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(default_weights, f, indent=4)
-            logger.info(f"Создан файл весов по умолчанию: {file_path}")
-            logger.debug(f"Содержимое файла весов по умолчанию: {default_weights}") # Debug logging of content
-        except Exception as e:
-            logger.error(f"Ошибка создания файла весов: {e}")
-
-    @staticmethod
-    def save_weights_to_json(weights: Dict[str, float], file_path: str = DEFAULT_SCORING_WEIGHTS_FILE):
-        try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(weights, f, indent=4)
-            logger.info(f"Веса сохранены в {file_path}")
-        except Exception as e:
-            logger.error(f"Ошибка сохранения весов в {file_path}: {e}")
 
 # --- Вспомогательные функции ---
-def _get_value(query: Dict, key: str, default_value: Any = None) -> Any:
-    return query.get(key, (default_value,))[0]
-
 def _parse_headers(headers_str: Optional[str]) -> Optional[Dict[str, str]]:
     if not headers_str:
         return None
@@ -830,14 +688,6 @@ def _parse_headers(headers_str: Optional[str]) -> Optional[Dict[str, str]]:
         logger.warning(f"Неверный формат заголовков, ожидается JSON-объект: {headers_str} - {e}. Заголовки игнорируются.") # More informative message
         return None
 
-def _parse_hop_interval(hop_interval_str: Optional[str]) -> Optional[int]:
-    if hop_interval_str is None:
-        return None
-    try:
-        return int(hop_interval_str)
-    except ValueError:
-        logger.warning(f"Неверное значение hopInterval, ожидается целое число, используется None: {hop_interval_str}") # More informative message
-        return None
 
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
     if is_valid_ipv4(hostname):
@@ -864,236 +714,6 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Option
         logger.error(f"Неожиданная ошибка при резолвинге {hostname}: {e}") # Error for other exceptions
         return None
 
-# --- Функции для расчета скоринга ---
-def _calculate_vless_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    score = 0
-    security = query.get('security', ['none'])[0].lower()
-    score += loaded_weights.get("VLESS_SECURITY_TLS", ScoringWeights.VLESS_SECURITY_TLS.value) if security == 'tls' else loaded_weights.get("VLESS_SECURITY_NONE", ScoringWeights.VLESS_SECURITY_NONE.value)
-    transport = query.get('type', ['tcp'])[0].lower()
-    score += loaded_weights.get("VLESS_TRANSPORT_WS", ScoringWeights.VLESS_TRANSPORT_WS.value) if transport == 'ws' else loaded_weights.get("VLESS_TRANSPORT_TCP", ScoringWeights.VLESS_TRANSPORT_TCP.value)
-    encryption = query.get('encryption', ['none'])[0].lower()
-    encryption_scores = {
-        'none': loaded_weights.get("VLESS_ENCRYPTION_NONE", ScoringWeights.VLESS_ENCRYPTION_NONE.value),
-        'auto': loaded_weights.get("VLESS_ENCRYPTION_AUTO", ScoringWeights.VLESS_ENCRYPTION_AUTO.value),
-        'aes-128-gcm': loaded_weights.get("VLESS_ENCRYPTION_AES_128_GCM", ScoringWeights.VLESS_ENCRYPTION_AES_128_GCM.value),
-        'chacha20-poly1305': loaded_weights.get("VLESS_ENCRYPTION_CHACHA20_POLY1305", ScoringWeights.VLESS_ENCRYPTION_CHACHA20_POLY1305.value)
-    }
-    score += encryption_scores.get(encryption, 0)
-    if parsed.username:
-        score += loaded_weights.get("VLESS_UUID_PRESENT", ScoringWeights.VLESS_UUID_PRESENT.value)
-    if query.get('earlyData', ['0'])[0] == '1':
-        score += loaded_weights.get("VLESS_EARLY_DATA", ScoringWeights.VLESS_EARLY_DATA.value)
-    if query.get('sni'):
-        score += loaded_weights.get("VLESS_SNI_PRESENT", ScoringWeights.VLESS_SNI_PRESENT.value)
-    if query.get('alpn'):
-        score += loaded_weights.get("VLESS_ALPN_PRESENT", ScoringWeights.VLESS_ALPN_PRESENT.value)
-    if query.get('path'):
-        score += loaded_weights.get("VLESS_PATH_PRESENT", ScoringWeights.VLESS_PATH_PRESENT.value)
-    return score
-
-def _calculate_ss_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    score = 0
-    method = parsed.username.lower() if parsed.username else 'none'
-    method_scores = {
-        'chacha20-ietf-poly1305': loaded_weights.get("SS_METHOD_CHACHA20_IETF_POLY1305", ScoringWeights.SS_METHOD_CHACHA20_IETF_POLY1305.value),
-        'aes-256-gcm': loaded_weights.get("SS_METHOD_AES_256_GCM", ScoringWeights.SS_METHOD_AES_256_GCM.value),
-        'aes-128-gcm': loaded_weights.get("SS_METHOD_AES_128_GCM", ScoringWeights.SS_METHOD_AES_128_GCM.value),
-        'none': loaded_weights.get("SS_METHOD_NONE", ScoringWeights.SS_METHOD_NONE.value)
-    }
-    score += method_scores.get(method, 0)
-    score += min(loaded_weights.get("SS_PASSWORD_LENGTH", ScoringWeights.SS_PASSWORD_LENGTH.value),
-                 len(parsed.password or '') / 16 * loaded_weights.get("SS_PASSWORD_LENGTH", ScoringWeights.SS_PASSWORD_LENGTH.value)) if parsed.password else 0
-    plugin = query.get('plugin', ['none'])[0].lower()
-    plugin_scores = {
-        'obfs-http': loaded_weights.get("SS_PLUGIN_OBFS_HTTP", ScoringWeights.SS_PLUGIN_OBFS_HTTP.value),
-        'obfs-tls': loaded_weights.get("SS_PLUGIN_OBFS_TLS", ScoringWeights.SS_PLUGIN_OBFS_TLS.value)
-    }
-    if plugin != 'none':
-        score += plugin_scores.get(plugin, 0)
-    else:
-        score += loaded_weights.get("SS_PLUGIN_NONE", ScoringWeights.SS_PLUGIN_NONE.value)
-    return score
-
-def _calculate_ssconf_score(config_obj: SSConfConfig, loaded_weights: Dict) -> float:
-    score = 0
-    score += loaded_weights.get("SSCONF_SERVER_PORT", ScoringWeights.SSCONF_SERVER_PORT.value) if config_obj.server_port in [80, 443, 8080, 8443] else 0
-    method_scores = {
-        'chacha20-ietf-poly1305': loaded_weights.get("SSCONF_METHOD_CHACHA20_IETF_POLY1305", ScoringWeights.SSCONF_METHOD_CHACHA20_IETF_POLY1305.value),
-        'aes-256-gcm': loaded_weights.get("SSCONF_METHOD_AES_256_GCM", ScoringWeights.SSCONF_METHOD_AES_256_GCM.value),
-        'aes-128-gcm': loaded_weights.get("SSCONF_METHOD_AES_128_GCM", ScoringWeights.SSCONF_METHOD_AES_128_GCM.value),
-        'none': loaded_weights.get("SSCONF_METHOD_NONE", ScoringWeights.SSCONF_METHOD_NONE.value)
-    }
-    score += method_scores.get(config_obj.method, 0)
-    score += min(loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value),
-                 len(config_obj.password or '') / 16 * loaded_weights.get("SSCONF_PASSWORD_LENGTH", ScoringWeights.SSCONF_PASSWORD_LENGTH.value)) if config_obj.password else 0
-    protocol_scores = {
-        'origin': loaded_weights.get("SSCONF_PROTOCOL_ORIGIN", ScoringWeights.SSCONF_PROTOCOL_ORIGIN.value),
-        'auth_sha1_v4': loaded_weights.get("SSCONF_PROTOCOL_AUTH_SHA1_V4", ScoringWeights.SSCONF_PROTOCOL_AUTH_SHA1_V4.value),
-        'auth_aes128_cfb': loaded_weights.get("SSCONF_PROTOCOL_AUTH_AES128_CFB", ScoringWeights.SSCONF_PROTOCOL_AUTH_AES128_CFB.value),
-    }
-    score += protocol_scores.get(config_obj.protocol, loaded_weights.get("SSCONF_PROTOCOL_ORIGIN", ScoringWeights.SSCONF_PROTOCOL_ORIGIN.value))
-    obfs_scores = {
-        'plain': loaded_weights.get("SSCONF_OBFS_PLAIN", ScoringWeights.SSCONF_OBFS_PLAIN.value),
-        'tls': loaded_weights.get("SSCONF_OBFS_TLS", ScoringWeights.SSCONF_OBFS_TLS.value),
-        'http': loaded_weights.get("SSCONF_OBFS_HTTP", ScoringWeights.SSCONF_OBFS_HTTP.value),
-        'websocket': loaded_weights.get("SSCONF_OBFS_WEBSOCKET", ScoringWeights.SSCONF_OBFS_WEBSOCKET.value),
-    }
-    score += obfs_scores.get(config_obj.obfs, loaded_weights.get("SSCONF_OBFS_PLAIN", ScoringWeights.SSCONF_OBFS_PLAIN.value))
-    if config_obj.udp_over_tcp:
-        score += loaded_weights.get("SSCONF_UDP_OVER_TCP", ScoringWeights.SSCONF_UDP_OVER_TCP.value)
-    return score
-
-def _calculate_trojan_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    score = 0
-    security = query.get('security', ['tls'])[0].lower()
-    score += loaded_weights.get("TROJAN_SECURITY_TLS", ScoringWeights.TROJAN_SECURITY_TLS.value) if security == 'tls' else 0
-    transport = query.get('type', ['tcp'])[0].lower()
-    score += loaded_weights.get("TROJAN_TRANSPORT_WS", ScoringWeights.TROJAN_TRANSPORT_WS.value) if transport == 'ws' else loaded_weights.get("TROJAN_TRANSPORT_TCP", ScoringWeights.TROJAN_TRANSPORT_TCP.value)
-    score += min(loaded_weights.get("TROJAN_PASSWORD_LENGTH", ScoringWeights.TROJAN_PASSWORD_LENGTH.value),
-                 len(parsed.password or '') / 16 * loaded_weights.get("TROJAN_PASSWORD_LENGTH", ScoringWeights.TROJAN_PASSWORD_LENGTH.value)) if parsed.password else 0
-    if query.get('sni'):
-        score += loaded_weights.get("TROJAN_SNI_PRESENT", ScoringWeights.TROJAN_SNI_PRESENT.value)
-    if query.get('alpn'):
-        score += loaded_weights.get("TROJAN_ALPN_PRESENT", ScoringWeights.TROJAN_ALPN_PRESENT.value)
-    if query.get('earlyData', ['0'])[0] == '1':
-        score += loaded_weights.get("TROJAN_EARLY_DATA", ScoringWeights.TROJAN_EARLY_DATA.value)
-    return score
-
-def _calculate_tuic_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    score = 0
-    security = query.get('security', ['tls'])[0].lower()
-    score += loaded_weights.get("TUIC_SECURITY_TLS", ScoringWeights.TUIC_SECURITY_TLS.value) if security == 'tls' else 0
-    transport = query.get('type', ['udp'])[0].lower()
-    score += loaded_weights.get("TUIC_TRANSPORT_WS", ScoringWeights.TUIC_TRANSPORT_WS.value) if transport == 'ws' else loaded_weights.get("TUIC_TRANSPORT_UDP", ScoringWeights.TUIC_TRANSPORT_UDP.value)
-    congestion_control = query.get('congestion', ['bbr'])[0].lower()
-    congestion_scores = {
-        'bbr': loaded_weights.get("TUIC_CONGESTION_CONTROL_BBR", ScoringWeights.TUIC_CONGESTION_CONTROL_BBR.value),
-        'cubic': loaded_weights.get("TUIC_CONGESTION_CONTROL_CUBIC", ScoringWeights.TUIC_CONGESTION_CONTROL_CUBIC.value),
-        'new-reno': loaded_weights.get("TUIC_CONGESTION_CONTROL_NEW_RENO", ScoringWeights.TUIC_CONGESTION_CONTROL_NEW_RENO.value)
-    }
-    score += congestion_scores.get(congestion_control, 0)
-    if parsed.username:
-        score += loaded_weights.get("TUIC_UUID_PRESENT", ScoringWeights.TUIC_UUID_PRESENT.value)
-    score += min(loaded_weights.get("TUIC_PASSWORD_LENGTH", ScoringWeights.TUIC_PASSWORD_LENGTH.value),
-                 len(parsed.password or '') / 16 * loaded_weights.get("TUIC_PASSWORD_LENGTH", ScoringWeights.TUIC_PASSWORD_LENGTH.value)) if parsed.password else 0
-    if query.get('sni'):
-        score += loaded_weights.get("TUIC_SNI_PRESENT", ScoringWeights.TUIC_SNI_PRESENT.value)
-    if query.get('alpn'):
-        score += loaded_weights.get("TUIC_ALPN_PRESENT", ScoringWeights.TUIC_ALPN_PRESENT.value)
-    if query.get('earlyData', ['0'])[0] == '1':
-        score += loaded_weights.get("TUIC_EARLY_DATA", ScoringWeights.TUIC_EARLY_DATA.value)
-    if query.get('udp_relay_mode', ['quic'])[0].lower() == 'quic':
-        score += loaded_weights.get("TUIC_UDP_RELAY_MODE", ScoringWeights.TUIC_UDP_RELAY_MODE.value)
-    if query.get('zero_rtt_handshake', ['0'])[0] == '1':
-        score += loaded_weights.get("TUIC_ZERO_RTT_HANDSHAKE", ScoringWeights.TUIC_ZERO_RTT_HANDSHAKE.value)
-    return score
-
-def _calculate_hy2_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    score = 0
-    security = query.get('security', ['tls'])[0].lower()
-    score += loaded_weights.get("HY2_SECURITY_TLS", ScoringWeights.HY2_SECURITY_TLS.value) if security == 'tls' else 0
-    transport = query.get('type', ['udp'])[0].lower()
-    score += loaded_weights.get("HY2_TRANSPORT_UDP", ScoringWeights.HY2_TRANSPORT_UDP.value) if transport == 'udp' else loaded_weights.get("HY2_TRANSPORT_TCP", ScoringWeights.HY2_TRANSPORT_TCP.value)
-    score += min(loaded_weights.get("HY2_PASSWORD_LENGTH", ScoringWeights.HY2_PASSWORD_LENGTH.value),
-                 len(parsed.password or '') / 16 * loaded_weights.get("HY2_PASSWORD_LENGTH", ScoringWeights.HY2_PASSWORD_LENGTH.value)) if parsed.password else 0
-    if query.get('sni'):
-        score += loaded_weights.get("HY2_SNI_PRESENT", ScoringWeights.HY2_SNI_PRESENT.value)
-    if query.get('alpn'):
-        score += loaded_weights.get("HY2_ALPN_PRESENT", ScoringWeights.HY2_ALPN_PRESENT.value)
-    if query.get('earlyData', ['0'])[0] == '1':
-        score += loaded_weights.get("HY2_EARLY_DATA", ScoringWeights.HY2_EARLY_DATA.value)
-    if query.get('pmtud', ['0'])[0] == '1':
-        score += loaded_weights.get("HY2_PMTUD_ENABLED", ScoringWeights.HY2_PMTUD_ENABLED.value)
-    hop_interval = query.get('hopInterval', [None])[0]
-    if hop_interval:
-        try:
-            score += int(hop_interval) * loaded_weights.get("HY2_HOP_INTERVAL", ScoringWeights.HY2_HOP_INTERVAL.value)
-        except ValueError:
-            pass
-    return score
-
-def _calculate_common_score(parsed: urlparse, query: Dict, loaded_weights: Dict) -> float:
-    score = 0
-    port_scores = {
-        443: loaded_weights.get("COMMON_PORT_443", ScoringWeights.COMMON_PORT_443.value),
-        80: loaded_weights.get("COMMON_PORT_80", ScoringWeights.COMMON_PORT_80.value)
-    }
-    score += port_scores.get(parsed.port, loaded_weights.get("COMMON_PORT_OTHER", ScoringWeights.COMMON_PORT_OTHER.value))
-    utls = query.get('utls') or query.get('fp', ['none'])[0]
-    utls = utls.lower()
-    utls_scores = {
-        'chrome': loaded_weights.get("COMMON_UTLS_CHROME", ScoringWeights.COMMON_UTLS_CHROME.value),
-        'firefox': loaded_weights.get("COMMON_UTLS_FIREFOX", ScoringWeights.COMMON_UTLS_FIREFOX.value),
-        'randomized': loaded_weights.get("COMMON_UTLS_RANDOMIZED", ScoringWeights.COMMON_UTLS_RANDOMIZED.value)
-    }
-    score += utls_scores.get(utls, loaded_weights.get("COMMON_UTLS_OTHER", ScoringWeights.COMMON_UTLS_OTHER.value))
-    if query.get('sni') and '.cdn.' in query.get('sni', [''])[0]:
-        score += loaded_weights.get("COMMON_CDN", ScoringWeights.COMMON_CDN.value)
-    if query.get('obfs'):
-        score += loaded_weights.get("COMMON_OBFS", ScoringWeights.COMMON_OBFS.value)
-    if query.get('headers'):
-        score += loaded_weights.get("COMMON_HEADERS", ScoringWeights.COMMON_HEADERS.value)
-    known_params_general = (
-        'security', 'type', 'encryption', 'sni', 'alpn', 'path',
-        'headers', 'fp', 'utls', 'earlyData', 'id', 'method',
-        'plugin', 'congestion', 'udp_relay_mode', 'zero_rtt_handshake', 'pmtud', 'hopInterval',
-        'bufferSize', 'tcpFastOpen', 'obfs', 'debug', 'comment'
-    )
-    for key, value in query.items():
-        if key not in known_params_general:
-            score += loaded_weights.get("COMMON_HIDDEN_PARAM", ScoringWeights.COMMON_HIDDEN_PARAM.value)
-            if value and value[0]:
-                score += min(loaded_weights.get("COMMON_RARE_PARAM", ScoringWeights.COMMON_RARE_PARAM.value),
-                             loaded_weights.get("COMMON_RARE_PARAM", ScoringWeights.COMMON_RARE_PARAM.value) / len(value[0]))
-    return score
-
-async def compute_profile_score(config: str, loaded_weights: Dict = None, first_seen: Optional[datetime] = None) -> float:
-    if loaded_weights is None:
-        loaded_weights = ScoringWeights.load_weights_from_json()
-    protocol = next((p for p in ALLOWED_PROTOCOLS if config.startswith(p)), None)
-    if not protocol:
-        return 0.0
-    if protocol == "ssconf://":
-        try:
-            config_obj = await SSConfConfig.from_url(config, None)
-            score = _calculate_ssconf_score(config_obj, loaded_weights)
-        except ConfigParseError as e:
-            logger.debug(f"Ошибка парсинга ssconf: {e}, пропуск конфигурации.") # Debug level
-            return 0.0
-    else:
-        try:
-            parsed = urlparse(config)
-            query = parse_qs(parsed.query)
-        except Exception as e:
-            logger.debug(f"Ошибка парсинга URL {config}: {e}, пропуск конфигурации.") # Debug level
-            return 0.0
-        score = loaded_weights.get("PROTOCOL_BASE", ScoringWeights.PROTOCOL_BASE.value)
-        score += _calculate_common_score(parsed, query, loaded_weights)
-        score += min(loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value),
-                     (200.0 / (len(config) + 1)) * loaded_weights.get("CONFIG_LENGTH", ScoringWeights.CONFIG_LENGTH.value))
-        if first_seen:
-            days_old = (datetime.now() - first_seen).days
-            score += days_old * loaded_weights.get("AGE_PENALTY", ScoringWeights.AGE_PENALTY.value)
-        protocol_calculators = {
-            "vless://": _calculate_vless_score,
-            "ss://": _calculate_ss_score,
-            "trojan://": _calculate_trojan_score,
-            "tuic://": _calculate_tuic_score,
-            "hy2://": _calculate_hy2_score,
-        }
-        score += protocol_calculators.get(protocol, lambda *args: 0)(parsed, query, loaded_weights)
-    max_possible_score = sum(weight for weight in loaded_weights.values())
-    normalized_score = (score / max_possible_score) * 100 if max_possible_score > 0 else 0.0
-    return round(normalized_score, 2)
-
-def _generate_profile_name_suffix(profile_names: Set[str], base_name: str) -> str:
-    """Генерирует уникальное имя профиля с суффиксом, если имя уже существует."""
-    suffix = 1
-    profile_name = base_name
-    while profile_name in profile_names:
-        profile_name = f"{base_name} ({suffix})"
-        suffix += 1
-    return profile_name
 
 def generate_custom_name(parsed: urlparse, query: Dict) -> str:
     """Генерирует кастомное имя профиля на основе URL."""
@@ -1150,7 +770,7 @@ def is_valid_ipv4(hostname: str) -> bool:
     except ipaddress.AddressValueError:
         return False
 
-@functools.lru_cache(maxsize=1024) # Ограничение размера кэша lru_cache
+@functools.lru_cache(maxsize=1024) # Ограничение размера кэша lru_cache # Убрать неиспользуемую функцию
 def is_valid_ipv6(hostname: str) -> bool:
     try:
         ipaddress.IPv6Address(hostname)
@@ -1181,7 +801,7 @@ def is_valid_proxy_url(url: str) -> bool:
                 if parsed.username.lower() not in SS_VALID_METHODS:
                     logger.debug(f"Недопустимый метод шифрования для ss://: {parsed.username}")
                     return False
-        if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)):
+        if not (is_valid_ipv4(parsed.hostname) or is_valid_ipv6(parsed.hostname)): # Оставить только IPv4
             if not re.match(r"^[a-zA-Z0-9.-]+$", parsed.hostname):
                 return False
         return True
@@ -1226,37 +846,22 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             return None
 
 async def process_single_proxy(line: str, channel: ChannelConfig,
-                              proxy_config: ProxyConfig, loaded_weights: Dict,
+                              proxy_config: ProxyConfig,
                               proxy_semaphore: asyncio.Semaphore,
                               global_proxy_semaphore: asyncio.Semaphore) -> Optional[Dict]:
     async with proxy_semaphore, global_proxy_semaphore:
         config_obj = await parse_config(line, proxy_config.resolver)
         if config_obj is None:
             return None
-        # is_reachable = True # Удален вводящий в заблуждение код
-        # if not is_reachable:
-        #     logger.debug(f"❌ Прокси {line} не прошла проверку.")
-        #     return None
-        # else:
+
         logger.debug(f"✅ Прокси {line} считается доступной.")
-        try:
-            score = await compute_profile_score(
-                line,
-                loaded_weights=loaded_weights,
-                first_seen=config_obj.first_seen
-            )
-        except (InvalidURLError, ConfigParseError) as e: # Обработка исключений compute_profile_score
-            logger.error(f"Ошибка при вычислении score для {line}: {e}")
-            return None
 
         result = {
             "config": line,
             "protocol": config_obj.__class__.__name__.replace("Config", "").lower(),
-            "score": score,
             "config_obj": config_obj
         }
         channel.metrics.protocol_counts[result["protocol"]] += 1
-        channel.metrics.protocol_scores[result["protocol"]].append(score)
         return result
 
 async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "ProxyConfig") -> List[Dict]:
@@ -1272,7 +877,6 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
             colored_log(logging.INFO, f"🚀 Начало обработки канала: {channel.url}")
             proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
             proxy_tasks = []
-            loaded_weights = ScoringWeights.load_weights_from_json()
             lines = []
 
             try:
@@ -1303,7 +907,7 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
                 if len(line) < 1 or not any(line.startswith(protocol) for protocol in ALLOWED_PROTOCOLS) or not is_valid_proxy_url(line):
                     continue
                 task = asyncio.create_task(process_single_proxy(line, channel, proxy_config,
-                                                                loaded_weights, proxy_semaphore, global_proxy_semaphore))
+                                                                proxy_semaphore, global_proxy_semaphore))
                 proxy_tasks.append(task)
             results = await asyncio.gather(*proxy_tasks)
             valid_results = [result for result in results if result]
@@ -1315,20 +919,14 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 
     return proxies_all
 
-def sort_proxies(proxies: List[Dict]) -> List[Dict]:
-    def config_completeness(proxy_dict):
-        config_obj = proxy_dict['config_obj']
-        return sum(1 for field_value in astuple(config_obj) if field_value is not None)
-    return sorted(proxies, key=config_completeness, reverse=True)
 
 def save_final_configs(proxies: List[Dict], output_file: str):
-    proxies_sorted = sort_proxies(proxies)
     profile_names = set()
     unique_proxies = defaultdict(set)
     unique_proxy_count = 0
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
-            for proxy in proxies_sorted:
+            for proxy in proxies:
                 config = proxy['config'].split('#')[0].strip()
                 parsed = urlparse(config)
                 ip_address = parsed.hostname
@@ -1339,10 +937,9 @@ def save_final_configs(proxies: List[Dict], output_file: str):
                     unique_proxies[protocol].add(ip_port_tuple)
                     unique_proxy_count += 1
                     query = parse_qs(parsed.query)
-                    base_name = generate_custom_name(parsed, query)
-                    profile_name = _generate_profile_name_suffix(profile_names, base_name) # Refactored profile name generation
+                    profile_name = generate_custom_name(parsed, query) # Use base name directly
                     profile_names.add(profile_name)
-                    final_line = f"{config}#{profile_name} - Score: {proxy['score']:.2f}\n"
+                    final_line = f"{config}#{profile_name}\n" # Removed score from output
                     f.write(final_line)
         colored_log(logging.INFO, f"✅ Финальные конфигурации сохранены в {output_file}. Уникальность прокси обеспечена.")
         colored_log(logging.INFO, f"✨ Всего уникальных прокси сохранено: {unique_proxy_count}")
@@ -1352,7 +949,6 @@ def save_final_configs(proxies: List[Dict], output_file: str):
 def main():
     proxy_config = ProxyConfig()
     channels = proxy_config.get_enabled_channels()
-    loaded_weights = ScoringWeights.load_weights_from_json()
     statistics_logged = False
 
     async def runner():
