@@ -18,10 +18,10 @@ jobs:
       with:
         token: ${{ secrets.SECRET_TOKEN }}
 
-    - name: Set up Python 3.9
+    - name: Set up Python 3.11
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: '3.11'
 
     - name: Set up cache for pip
       uses: actions/cache@v3
@@ -40,14 +40,6 @@ jobs:
       run: |
         mkdir -p assets
         mkdir -p configs
-
-    - name: Check scoring_weights.json exists
-      run: |
-        if [ ! -f configs/scoring_weights.json ]; then
-          echo "configs/scoring_weights.json не найден. Будет создан дефолтный файл."
-        else
-          echo "configs/scoring_weights.json найден."
-        fi
 
     - name: Check all_urls.txt exists
       run: |
@@ -73,7 +65,7 @@ jobs:
         git pull --rebase origin main || true # Added git pull to sync with remote
         git add configs/scoring_weights.json configs/proxy_configs.txt all_urls.txt
         if ! git diff --staged --quiet; then # Check if there are changes to commit
-          git commit -m "Update proxy configs, stats and reports"
+          git commit -m "Update proxy configs, stats and reports - Remove inactive channels"
           git push origin HEAD:main
           echo "::set-output name=pushed::true" # Set output if push happened
         else
