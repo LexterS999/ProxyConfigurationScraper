@@ -506,10 +506,22 @@ class Hy2Config:
 # --- Data classes для метрик и конфигураций каналов ---
 @dataclass
 class ChannelMetrics:
+    url: str # Добавлено для хранения URL канала в metrics
     valid_configs: int = 0
     unique_configs: int = 0
     protocol_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    fetch_status: str = "pending" # pending, success, warning, error, critical
+    retries_count: int = 0
     first_seen: Optional[datetime] = None
+
+    def update_status_from_exception(self, exception_type: str):
+        if exception_type in ["aiohttp.ClientError", "asyncio.TimeoutError"]:
+            if self.retries_count <= MAX_RETRIES:
+                self.fetch_status = "warning" # Transient issue, retrying
+            else:
+                self.fetch_status = "error"   # Retries exhausted, but not critical yet
+        else:
+            self.fetch_status = "critical" # Other errors are more serious
 
 class ChannelConfig:
     RESPONSE_TIME_DECAY = 0.7
@@ -518,7 +530,7 @@ class ChannelConfig:
 
     def __init__(self, url: str):
         self.url = self._validate_url(url)
-        self.metrics = ChannelMetrics()
+        self.metrics = ChannelMetrics(url=url) # Передаём URL в ChannelMetrics
         self.check_count = 0
         self.metrics.first_seen = datetime.now()
 
@@ -761,25 +773,32 @@ async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", s
         lines = []
         session_timeout = aiohttp.ClientTimeout(total=15)
         retries_attempted = 0
+        channel_content_received = False # Flag to track if content was received
 
         while retries_attempted <= MAX_RETRIES:
+            channel.metrics.retries_count = retries_attempted # Update retry count in metrics
             try:
                 async with session.get(channel.url, timeout=session_timeout) as response:
                     if response.status == 200:
                         try:
                             text = await response.text(encoding='utf-8', errors='ignore')
                             lines = text.splitlines()
+                            channel_content_received = True # Mark content as received
+                            channel.metrics.fetch_status = "success"
                             break # Успешно получили, выходим из цикла retry
                         except UnicodeDecodeError as e:
                             colored_log(logging.WARNING, f"⚠️ Ошибка декодирования для {channel.url}: {e}. Пропуск.")
+                            channel.metrics.fetch_status = "warning" # Decoding issue
                             return [] # Не можем декодировать, нет смысла retry
                     elif response.status in (403, 404):
                         if retries_attempted == 0: # Логируем 403/404 только при первой попытке, чтобы не спамить в лог при retry
                             colored_log(logging.WARNING, f"⚠️ Канал {channel.url} вернул статус {response.status}. Пропуск.")
+                        channel.metrics.fetch_status = "warning" # Treat 403/404 as warning for channel status
                         return [] # 403/404 скорее всего постоянная проблема, нет смысла retry
                     else:
                         colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}, статус: {response.status}")
                         if retries_attempted == MAX_RETRIES:
+                            channel.metrics.fetch_status = "error" # Max retries reached, error status
                             return [] # Достигнуто макс. количество попыток, выходим
                     # Для других ошибок, статус не 200, но и не 403/404, продолжаем retry
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -787,12 +806,16 @@ async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", s
                 colored_log(logging.WARNING, f"⚠️ Ошибка при получении {channel.url} (попытка {retries_attempted+1}/{MAX_RETRIES+1}): {e}. Пауза {retry_delay} сек перед повтором...")
                 if retries_attempted == MAX_RETRIES:
                     colored_log(logging.ERROR, f"❌ Максимальное количество попыток ({MAX_RETRIES+1}) исчерпано для {channel.url}. Канал пропускается.")
+                    channel.metrics.fetch_status = "error" # Max retries exhausted due to network issues
+                    channel.metrics.update_status_from_exception(e.__class__.__module__ + '.' + e.__class__.__name__) # Более детальный статус по Exception
                     return [] # Достигнуто макс. количество попыток, выходим
                 await asyncio.sleep(retry_delay)
             retries_attempted += 1
-        else: # Выполнится, если цикл while завершился без break (т.е., все retry исчерпаны, но response.status все еще не 200)
-            colored_log(logging.CRITICAL, f"🔥 Не удалось получить данные из канала {channel.url} после {MAX_RETRIES+1} попыток. Канал пропускается.")
-            return []
+
+        if not channel_content_received: # If loop completes without receiving content (no break)
+             channel.metrics.fetch_status = "critical" # Mark as critical if content was never received after retries
+             colored_log(logging.CRITICAL, f"🔥 Не удалось получить данные из канала {channel.url} после {MAX_RETRIES+1} попыток. Канал пропускается.")
+             return []
 
         for line in lines:
             line = line.strip()
@@ -805,11 +828,14 @@ async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", s
         results = await asyncio.gather(*proxy_tasks)
         valid_results = [result for result in results if result]
         channel.metrics.valid_configs = len(valid_results)
+        channel.metrics.unique_configs = len(set(r['config'] for r in valid_results)) # Count unique configs
 
-        if channel.metrics.valid_configs == 0:
-            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} временно не вернул конфигураций.") # Сообщение предупреждения оставлено
-        else:
-            colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
+        if channel.metrics.valid_configs == 0 and channel.metrics.fetch_status == "success": # Only warn if fetch was successful but no configs found
+            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} успешно обработан, но временно не вернул конфигураций.")
+            channel.metrics.fetch_status = "warning" # Update status to warning if no configs but successful fetch
+        elif channel.metrics.valid_configs > 0:
+            colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено {channel.metrics.valid_configs} конфигураций ({channel.metrics.unique_configs} уникальных).")
+
         return valid_results
 
 
@@ -854,41 +880,74 @@ def save_final_configs(proxies: List[Dict], output_file: str):
         colored_log(logging.INFO, f"✨ Всего уникальных прокси сохранено: {unique_proxy_count}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфигураций: {e}")
-
+    return unique_proxies # Return unique_proxies for statistics
 
 def main():
     proxy_config = ProxyConfig()
     channels = proxy_config.get_enabled_channels()
     statistics_logged = False
+    start_time = time.time() # Record start time
 
     async def runner():
-        nonlocal statistics_logged
+        nonlocal statistics_logged, start_time
         loop = asyncio.get_running_loop()
         proxy_config.set_event_loop(loop)
         colored_log(logging.INFO, "🚀 Начало проверки прокси...")
         proxies = await process_all_channels(channels, proxy_config)
-        save_final_configs(proxies, proxy_config.OUTPUT_FILE)
+        unique_proxy_stats = save_final_configs(proxies, proxy_config.OUTPUT_FILE) # Get unique proxy stats
         proxy_config.remove_failed_channels_from_file() # remove_failed_channels_from_file call is kept, but it's empty now.
+
         if not statistics_logged:
+            end_time = time.time() # Record end time
+            elapsed_time = end_time - start_time # Calculate elapsed time
+
             total_channels = len(channels)
             enabled_channels = sum(1 for channel in channels)
             disabled_channels = total_channels - enabled_channels
             total_valid_configs = sum(channel.metrics.valid_configs for channel in channels)
+            total_unique_configs_saved = sum(len(protos) for protos in unique_proxy_stats.values()) # Count saved unique proxies
             protocol_stats = defaultdict(int)
+            channel_status_counts = defaultdict(int) # Track channel status counts
+
             for channel in channels:
                 for protocol, count in channel.metrics.protocol_counts.items():
                     protocol_stats[protocol] += count
+                channel_status_counts[channel.metrics.fetch_status] += 1 # Count channel status
+
             colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ПРОВЕРКИ ПРОКСИ ====================")
-            colored_log(logging.INFO, f"🔄 Всего файлов-каналов обработано: {total_channels}")
-            colored_log(logging.INFO, f"✅ Включено файлов-каналов: {enabled_channels}")
-            colored_log(logging.INFO, f"❌ Отключено файлов-каналов: {disabled_channels}")
-            colored_log(logging.INFO, f"✨ Всего найдено валидных конфигураций: {total_valid_configs}")
-            colored_log(logging.INFO, "\n breakdown by protocol:")
+            colored_log(logging.INFO, f"⏱️  Время выполнения скрипта: {elapsed_time:.2f} сек")
+            colored_log(logging.INFO, f"🔗 Всего URL-источников: {total_channels}")
+
+            # Detailed Channel Status Section
+            colored_log(logging.INFO, "\n📊 Статус обработки URL-источников:")
+            for status in ["success", "warning", "error", "critical", "pending"]: # Explicit order
+                count = channel_status_counts.get(status, 0)
+                if count > 0:
+                    status_text = status.upper()
+                    color = LogColors.GREEN if status == "success" else (LogColors.YELLOW if status == "warning" else (LogColors.RED if status in ["error", "critical"] else LogColors.RESET))
+                    colored_log(logging.INFO, f"  - {color}{status_text}{LogColors.RESET}: {count} каналов")
+
+            colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций: {total_valid_configs}")
+            colored_log(logging.INFO, f"✅ Всего уникальных прокси сохранено: {total_unique_configs_saved}")
+
+            # Protocol Breakdown
+            colored_log(logging.INFO, "\n🔬 Разбивка по протоколам (найдено):")
             if protocol_stats:
                 for protocol, count in protocol_stats.items():
-                    colored_log(logging.INFO, f"   - {protocol}: {count} configs")
+                    colored_log(logging.INFO, f"   - {protocol.upper()}: {count}")
             else:
-                colored_log(logging.INFO, "   No protocol statistics available.")
+                colored_log(logging.INFO, "   Нет статистики по протоколам.")
+
+            # Example URLs for each status (optional, can be verbose)
+            if logger.level <= logging.DEBUG: # Only show detailed URL status in DEBUG mode to avoid verbose output in normal runs.
+                colored_log(logging.DEBUG, "\n🔎 Детализация по URL-источникам (DEBUG):")
+                for status in ["success", "warning", "error", "critical"]:
+                    colored_log(logging.DEBUG, f"  --- URL-источники со статусом {status.upper()}:")
+                    for channel in channels:
+                        if channel.metrics.fetch_status == status:
+                            log_level = logging.DEBUG if status == "success" else (logging.WARNING if status == "warning" else logging.ERROR)
+                            colored_log(log_level, f"    - {channel.url} (Найдено: {channel.metrics.valid_configs}, Уникальных: {channel.metrics.unique_configs}, Попыток: {channel.metrics.retries_count})")
+
             colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
             statistics_logged = True
             colored_log(logging.INFO, "✅ Проверка прокси завершена.")
