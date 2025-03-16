@@ -580,7 +580,7 @@ class ChannelConfig:
 
 class ProxyConfig:
     def __init__(self):
-        os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=os.True)
+        os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True) # Исправлено: os.True -> True
         self.resolver = None
         self.failed_channels = []
         self.processed_configs = set()
