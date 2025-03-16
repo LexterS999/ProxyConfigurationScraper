@@ -542,7 +542,7 @@ class ProxyConfig:
     def __init__(self):
         os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
         self.resolver = None
-        self.failed_channels = []
+        self.failed_channels = [] # failed_channels list is kept but not used in logic anymore
         self.processed_configs = set()
         self.SOURCE_URLS = self._load_source_urls()
         self.OUTPUT_FILE = OUTPUT_CONFIG_FILE
@@ -619,20 +619,8 @@ class ProxyConfig:
         self.resolver = aiodns.DNSResolver(loop=loop)
 
     def remove_failed_channels_from_file(self):
-        if not self.failed_channels:
-            return
-        try:
-            with open(self.ALL_URLS_FILE, 'r', encoding='utf-8') as f_read:
-                lines = f_read.readlines()
-            updated_lines = [line for line in lines if line.strip() not in self.failed_channels]
-            with open(self.ALL_URLS_FILE, 'w', encoding='utf-8') as f_write:
-                f_write.writelines(updated_lines)
-            logger.warning(f"Удалены нерабочие каналы из {self.ALL_URLS_FILE}: {', '.join(self.failed_channels)}")
-            self.failed_channels = []
-        except FileNotFoundError:
-            logger.error(f"Файл не найден: {self.ALL_URLS_FILE}. Невозможно удалить нерабочие каналы.")
-        except Exception as e:
-            logger.error(f"Ошибка при удалении нерабочих каналов из {self.ALL_URLS_FILE}: {e}")
+        # Functionality to remove failed channels is removed. Kept as empty function to avoid breaking calls.
+        pass
 
 
 # --- Вспомогательные функции ---
@@ -806,9 +794,7 @@ async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", s
         channel.metrics.valid_configs = len(valid_results)
 
         if channel.metrics.valid_configs == 0:
-            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} не вернул конфигураций.")
-            proxy_config.failed_channels.append(channel.url) # Mark channel as failed always if no valid configs are found in a run. Remove logic based on MAX_ZERO_RESULTS_COUNT.
-            colored_log(logging.CRITICAL, f"🔥 Канал {channel.url} помечен как нерабочий.") # Adjusted log message to reflect the simplified logic.
+            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} временно не вернул конфигураций.") # изменили сообщение и уровень лога
         else:
             colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
         return valid_results
@@ -869,7 +855,7 @@ def main():
         colored_log(logging.INFO, "🚀 Начало проверки прокси...")
         proxies = await process_all_channels(channels, proxy_config)
         save_final_configs(proxies, proxy_config.OUTPUT_FILE)
-        proxy_config.remove_failed_channels_from_file()
+        proxy_config.remove_failed_channels_from_file() # remove_failed_channels_from_file call is kept, but it's empty now.
         if not statistics_logged:
             total_channels = len(channels)
             enabled_channels = sum(1 for channel in channels)
