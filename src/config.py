@@ -11,6 +11,7 @@ import string
 import socket
 import base64
 import aiohttp
+import time
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, quote_plus, urlsplit
@@ -75,8 +76,8 @@ MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
 MAX_CONCURRENT_PROXIES_GLOBAL = 240
 OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
-MAX_RETRIES = 1
-RETRY_DELAY_BASE = 1
+MAX_RETRIES = 3 # Увеличено количество попыток
+RETRY_DELAY_BASE = 2 # Увеличена базовая задержка
 SS_VALID_METHODS = ['chacha20-ietf-poly1305', 'aes-256-gcm', 'aes-128-gcm', 'none']
 VALID_VLESS_TRANSPORTS = ['tcp', 'ws']
 VALID_TROJAN_TRANSPORTS = ['tcp', 'ws']
@@ -114,7 +115,7 @@ class ProfileName(Enum):
     VLESS = "VLESS"
     SS = "SS"
     SSCONF = "SSCONF"
-    TROJAN = "Trojan"
+    TROJAN = "TROJAN" # Исправлено написание на заглавные буквы, как в Enum
     TUIC = "TUIC"
     HY2 = "HY2"
     UNKNOWN = "Unknown Protocol"
@@ -752,33 +753,45 @@ async def process_single_proxy(line: str, channel: ChannelConfig,
         return result
 
 async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", session: aiohttp.ClientSession, channel_semaphore: asyncio.Semaphore, global_proxy_semaphore: asyncio.Semaphore):
-    """Обрабатывает один канал, скачивая и обрабатывая прокси."""
+    """Обрабатывает один канал, скачивая и обрабатывая прокси с retry logic."""
     async with channel_semaphore:
         colored_log(logging.INFO, f"🚀 Начало обработки канала: {channel.url}")
         proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_PER_CHANNEL)
         proxy_tasks = []
         lines = []
         session_timeout = aiohttp.ClientTimeout(total=15)
+        retries_attempted = 0
 
-        try:
-            async with session.get(channel.url, timeout=session_timeout) as response:
-                if response.status == 200:
-                    try:
-                        text = await response.text(encoding='utf-8', errors='ignore')
-                        lines = text.splitlines()
-                    except UnicodeDecodeError as e:
-                        colored_log(logging.WARNING, f"⚠️ Ошибка декодирования для {channel.url}: {e}. Пропуск.")
-                        return []
-                elif response.status in (403, 404):
-                    return []
-                else:
-                    colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}, статус: {response.status}")
-                    return []
-        except aiohttp.ClientError as e:
-            colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}: {e}")
-            return []
-        except asyncio.TimeoutError:
-            colored_log(logging.ERROR, f"⌛ Таймаут при получении {channel.url}")
+        while retries_attempted <= MAX_RETRIES:
+            try:
+                async with session.get(channel.url, timeout=session_timeout) as response:
+                    if response.status == 200:
+                        try:
+                            text = await response.text(encoding='utf-8', errors='ignore')
+                            lines = text.splitlines()
+                            break # Успешно получили, выходим из цикла retry
+                        except UnicodeDecodeError as e:
+                            colored_log(logging.WARNING, f"⚠️ Ошибка декодирования для {channel.url}: {e}. Пропуск.")
+                            return [] # Не можем декодировать, нет смысла retry
+                    elif response.status in (403, 404):
+                        if retries_attempted == 0: # Логируем 403/404 только при первой попытке, чтобы не спамить в лог при retry
+                            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} вернул статус {response.status}. Пропуск.")
+                        return [] # 403/404 скорее всего постоянная проблема, нет смысла retry
+                    else:
+                        colored_log(logging.ERROR, f"❌ Ошибка при получении {channel.url}, статус: {response.status}")
+                        if retries_attempted == MAX_RETRIES:
+                            return [] # Достигнуто макс. количество попыток, выходим
+                    # Для других ошибок, статус не 200, но и не 403/404, продолжаем retry
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                retry_delay = RETRY_DELAY_BASE * (2 ** retries_attempted)
+                colored_log(logging.WARNING, f"⚠️ Ошибка при получении {channel.url} (попытка {retries_attempted+1}/{MAX_RETRIES+1}): {e}. Пауза {retry_delay} сек перед повтором...")
+                if retries_attempted == MAX_RETRIES:
+                    colored_log(logging.ERROR, f"❌ Максимальное количество попыток ({MAX_RETRIES+1}) исчерпано для {channel.url}. Канал пропускается.")
+                    return [] # Достигнуто макс. количество попыток, выходим
+                await asyncio.sleep(retry_delay)
+            retries_attempted += 1
+        else: # Выполнится, если цикл while завершился без break (т.е., все retry исчерпаны, но response.status все еще не 200)
+            colored_log(logging.CRITICAL, f"🔥 Не удалось получить данные из канала {channel.url} после {MAX_RETRIES+1} попыток. Канал пропускается.")
             return []
 
         for line in lines:
@@ -794,7 +807,7 @@ async def process_channel(channel: ChannelConfig, proxy_config: "ProxyConfig", s
         channel.metrics.valid_configs = len(valid_results)
 
         if channel.metrics.valid_configs == 0:
-            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} временно не вернул конфигураций.") # изменили сообщение и уровень лога
+            colored_log(logging.WARNING, f"⚠️ Канал {channel.url} временно не вернул конфигураций.") # Сообщение предупреждения оставлено
         else:
             colored_log(logging.INFO, f"✅ Завершена обработка канала: {channel.url}. Найдено конфигураций: {len(valid_results)}")
         return valid_results
@@ -834,7 +847,7 @@ def save_final_configs(proxies: List[Dict], output_file: str):
                 if ip_port_tuple not in unique_proxies[protocol]:
                     unique_proxies[protocol].add(ip_port_tuple)
                     unique_proxy_count += 1
-                    profile_name = f"{ProfileName(proxy['protocol'].upper()).value}" # Simplified profile name using Enum
+                    profile_name = f"{ProfileName[proxy['protocol'].upper()].value}" # Используем ProfileName[] для доступа по строке и .value для значения
                     final_line = f"{config}#{profile_name}\n"
                     f.write(final_line)
         colored_log(logging.INFO, f"✅ Финальные конфигурации сохранены в {output_file}. Уникальность прокси обеспечена.")
