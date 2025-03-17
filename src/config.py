@@ -66,12 +66,12 @@ def colored_log(level, message: str, *args, **kwargs):
 # --- Константы ---
 ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "ss://"]
 ALL_URLS_FILE = "channel_urls.txt"
-OUTPUT_ALL_CONFIG_FILE = "proxy_configs_all.txt"
-MAX_RETRIES = 3
+OUTPUT_ALL_CONFIG_FILE = "configs/proxy_configs_all.txt"
+MAX_RETRIES = 4
 RETRY_DELAY_BASE = 2
-MAX_CONCURRENT_CHANNELS = 90
-MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
-MAX_CONCURRENT_PROXIES_GLOBAL = 240
+MAX_CONCURRENT_CHANNELS = 60
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
+MAX_CONCURRENT_PROXIES_GLOBAL = 50
 
 class ProfileName(Enum):
     VLESS = "VLESS"
