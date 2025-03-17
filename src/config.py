@@ -345,9 +345,9 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
         retries_attempted += 1
     return [], "critical" # Should not reach here, but for type hinting
 
-def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver, event_loop: asyncio.AbstractEventLoop) -> List[ProxyParsedConfig]:
+async def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
     """Parses and filters valid proxy configurations from lines with batched DNS resolution and protocol-specific parsing (synchronous version for thread pool).
-       Теперь принимает event_loop как аргумент.
+       Теперь асинхронная функция, запускающая свой event loop.
     """
     parsed_configs = []
     configs_to_resolve = []
@@ -383,8 +383,8 @@ def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver
         return config, None
 
     resolution_tasks = [resolve_config(config) for config in configs_to_resolve] # Создаем задачи
-    # Используем переданный event_loop для запуска asyncio.gather
-    resolution_results = event_loop.run_until_complete(asyncio.gather(*resolution_tasks)) # Запускаем асинхронное разрешение в потоке
+    # Запускаем event loop и выполняем asyncio.gather внутри thread pool
+    resolution_results = await asyncio.gather(*resolution_tasks) # await здесь, так как функция теперь async
 
     for config, resolved_ip in resolution_results: # Обрабатываем результаты
         if resolved_ip:
@@ -401,13 +401,15 @@ def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
     """Асинхронно парсит и фильтрует прокси, используя thread pool для CPU-bound парсинга."""
-    event_loop = asyncio.get_running_loop() # Получаем текущий event loop
-    return await asyncio.get_running_loop().run_in_executor( # Запускаем синхронную функцию в thread pool
+    # event_loop = asyncio.get_running_loop() # Больше не нужно получать event loop здесь
+
+    # Запускаем parse_and_filter_proxies_sync в thread pool, и теперь она сама управляет своим event loop
+    return await asyncio.get_running_loop().run_in_executor(
         CPU_BOUND_EXECUTOR,
-        parse_and_filter_proxies_sync, # Синхронная функция парсинга
+        functools.partial(asyncio.run, parse_and_filter_proxies_sync), # Запускаем asyncio.run для sync функции
         lines,
         resolver,
-        event_loop # Передаем event loop в синхронную функцию
+        # event_loop # Больше не передаем event loop
     )
 
 
