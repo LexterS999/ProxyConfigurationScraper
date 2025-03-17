@@ -10,6 +10,7 @@ import string
 import base64
 import aiohttp
 import time
+import toml  # Импортируем toml
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, urlsplit
@@ -19,22 +20,62 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import functools
 
+# --- Загрузка конфигурации из файла ---
+CONFIG_FILE = 'config.toml'
+default_config = {
+    "log": {
+        "log_file": 'proxy_downloader.log',
+        "log_level_file": "WARNING",
+        "log_level_console": "INFO",
+        "log_format": "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)",
+        "console_log_format": "[%(levelname)s] %(message)s"
+    },
+    "proxy_sources": {
+        "all_urls_file": "channel_urls.txt",
+        "output_all_config_file": "configs/proxy_configs_all.json", # Изменено на JSON
+        "allowed_protocols": ["vless://", "tuic://", "hy2://", "ss://"]
+    },
+    "download_settings": {
+        "max_retries": 4,
+        "retry_delay_base": 2,
+        "max_concurrent_channels": 60,
+        "max_concurrent_proxies_per_channel": 50,
+        "max_concurrent_proxies_global": 50,
+        "download_timeout": 15
+    }
+}
+
+try:
+    config = toml.load(CONFIG_FILE)
+    # Merge loaded config with defaults to ensure all keys exist
+    config = defaultdict(dict, {**default_config, **config}) # Use defaultdict for nested levels too if needed for robustness
+    for section, defaults in default_config.items():
+        config[section] = {**defaults, **config[section]}
+
+except FileNotFoundError:
+    config = defaultdict(dict, default_config) # Use defaultdict for nested levels too for robustness
+    colored_log(logging.WARNING, f"Файл конфигурации {CONFIG_FILE} не найден. Используются настройки по умолчанию.")
+except toml.TomlDecodeError as e:
+    config = defaultdict(dict, default_config) # Use defaultdict for nested levels too for robustness
+    colored_log(logging.ERROR, f"Ошибка при чтении файла конфигурации {CONFIG_FILE}: {e}. Используются настройки по умолчанию.")
+
+
 # --- Настройка улучшенного логирования ---
-LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)"
-CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
-LOG_FILE = 'proxy_downloader.log'
+LOG_FORMAT = config["log"]["log_format"]
+CONSOLE_LOG_FORMAT = config["log"]["console_log_format"]
+LOG_FILE = config["log"]["log_file"]
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.INFO) # Основной уровень логгера
 
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
-file_handler.setLevel(logging.WARNING)
+file_handler.setLevel(getattr(logging, config["log"]["log_level_file"].upper(), logging.WARNING)) # Динамический уровень из конфига
 formatter_file = logging.Formatter(LOG_FORMAT)
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(getattr(logging, config["log"]["log_level_console"].upper(), logging.INFO)) # Динамический уровень из конфига
 formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
@@ -63,15 +104,17 @@ def colored_log(level, message: str, *args, **kwargs):
         color = LogColors.BOLD + LogColors.RED
     logger.log(level, f"{color}{message}{LogColors.RESET}", *args, **kwargs)
 
-# --- Константы ---
-ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "ss://"]
-ALL_URLS_FILE = "channel_urls.txt"
-OUTPUT_ALL_CONFIG_FILE = "configs/proxy_configs_all.txt"
-MAX_RETRIES = 4
-RETRY_DELAY_BASE = 2
-MAX_CONCURRENT_CHANNELS = 60
-MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
-MAX_CONCURRENT_PROXIES_GLOBAL = 50
+# --- Константы из конфигурации ---
+ALLOWED_PROTOCOLS = config["proxy_sources"]["allowed_protocols"]
+ALL_URLS_FILE = config["proxy_sources"]["all_urls_file"]
+OUTPUT_ALL_CONFIG_FILE = config["proxy_sources"]["output_all_config_file"]
+MAX_RETRIES = config["download_settings"]["max_retries"]
+RETRY_DELAY_BASE = config["download_settings"]["retry_delay_base"]
+MAX_CONCURRENT_CHANNELS = config["download_settings"]["max_concurrent_channels"]
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = config["download_settings"]["max_concurrent_proxies_per_channel"]
+MAX_CONCURRENT_PROXIES_GLOBAL = config["download_settings"]["max_concurrent_proxies_global"]
+DOWNLOAD_TIMEOUT_SEC = config["download_settings"]["download_timeout"]
+
 
 class ProfileName(Enum):
     VLESS = "VLESS"
@@ -94,14 +137,19 @@ class ProxyParsedConfig:
     port: int
 
     def __hash__(self):
-        return hash((self.protocol, self.address, self.port))
+        return hash((self.protocol, self.address, self.port, self.config_string)) # config_string for full deduplication
+
+    def __eq__(self, other):
+        if isinstance(other, ProxyParsedConfig):
+            return (self.protocol, self.address, self.port, self.config_string) == \
+                   (other.protocol, other.address, other.port, other.config_string)
+        return False
 
     @classmethod
     def from_url(cls, config_string: str) -> Optional["ProxyParsedConfig"]:
         protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p)), None)
         if not protocol:
             return None
-
         try:
             parsed_url = urlparse(config_string)
             address = parsed_url.hostname
@@ -116,6 +164,172 @@ class ProxyParsedConfig:
             )
         except ValueError:
             return None
+
+@dataclass(frozen=True)
+class VlessParsedConfig(ProxyParsedConfig):
+    uuid: Optional[str] = None
+    encryption: Optional[str] = None
+    flow: Optional[str] = None
+    security: Optional[str] = None
+    sni: Optional[str] = None
+    alpn: Optional[str] = None
+
+    @classmethod
+    def from_url(cls, config_string: str) -> Optional["VlessParsedConfig"]:
+        if not config_string.startswith("vless://"):
+            return None
+        try:
+            parsed_url = urlparse(config_string)
+            address = parsed_url.hostname
+            port = parsed_url.port
+            userinfo = parsed_url.username + ":" + parsed_url.password if parsed_url.username else None
+            query_params = parse_qs(parsed_url.query)
+
+            uuid_val = parsed_url.username if parsed_url.username else None
+            if not uuid_val and "uuid" in query_params:
+                uuid_val = query_params["uuid"][0]
+
+            return cls(
+                config_string=config_string,
+                protocol="vless",
+                address=address,
+                port=port,
+                uuid=uuid_val,
+                encryption=query_params.get("encryption", [None])[0],
+                flow=query_params.get("flow", [None])[0],
+                security=query_params.get("security", [None])[0],
+                sni=query_params.get("sni", [None])[0],
+                alpn=query_params.get("alpn", [None])[0],
+            )
+        except ValueError:
+            return None
+
+    def __hash__(self):
+        return hash((super().__hash__(), self.uuid, self.encryption, self.flow, self.security, self.sni, self.alpn))
+
+    def __eq__(self, other):
+        if not isinstance(other, VlessParsedConfig):
+            return False
+        return super().__eq__(other) and \
+               (self.uuid, self.encryption, self.flow, self.security, self.sni, self.alpn) == \
+               (other.uuid, other.encryption, other.flow, other.security, other.sni, other.alpn)
+
+# --- Добавьте классы TuicParsedConfig, Hy2ParsedConfig, SsParsedConfig по аналогии, если необходимо парсить специфичные параметры ---
+@dataclass(frozen=True)
+class TuicParsedConfig(ProxyParsedConfig): # Пример, расширьте по необходимости
+    congestion_control: Optional[str] = None
+
+    @classmethod
+    def from_url(cls, config_string: str) -> Optional["TuicParsedConfig"]:
+        if not config_string.startswith("tuic://"):
+            return None
+        try:
+            parsed_url = urlparse(config_string)
+            address = parsed_url.hostname
+            port = parsed_url.port
+            query_params = parse_qs(parsed_url.query)
+
+            return cls(
+                config_string=config_string,
+                protocol="tuic",
+                address=address,
+                port=port,
+                congestion_control=query_params.get("c", [None])[0], # 'c' for congestion control is a guess, check TUIC spec
+            )
+        except ValueError:
+            return None
+
+    def __hash__(self):
+        return hash((super().__hash__(), self.congestion_control))
+
+    def __eq__(self, other):
+        if not isinstance(other, TuicParsedConfig):
+            return False
+        return super().__eq__(other) and self.congestion_control == other.congestion_control
+
+@dataclass(frozen=True)
+class Hy2ParsedConfig(ProxyParsedConfig): # Пример, расширьте по необходимости
+    encryption_method: Optional[str] = None
+
+    @classmethod
+    def from_url(cls, config_string: str) -> Optional["Hy2ParsedConfig"]:
+        if not config_string.startswith("hy2://"):
+            return None
+        try:
+            parsed_url = urlparse(config_string)
+            address = parsed_url.hostname
+            port = parsed_url.port
+            query_params = parse_qs(parsed_url.query)
+
+            return cls(
+                config_string=config_string,
+                protocol="hy2",
+                address=address,
+                port=port,
+                encryption_method=query_params.get("enc", [None])[0], # 'enc' for encryption is a guess, check HY2 spec
+            )
+        except ValueError:
+            return None
+
+    def __hash__(self):
+        return hash((super().__hash__(), self.encryption_method))
+
+    def __eq__(self, other):
+        if not isinstance(other, Hy2ParsedConfig):
+            return False
+        return super().__eq__(other) and self.encryption_method == other.encryption_method
+
+
+@dataclass(frozen=True)
+class SsParsedConfig(ProxyParsedConfig): # Пример, расширьте по необходимости
+    encryption_method: Optional[str] = None
+    password: Optional[str] = None
+    plugin: Optional[str] = None
+
+    @classmethod
+    def from_url(cls, config_string: str) -> Optional["SsParsedConfig"]:
+        if not config_string.startswith("ss://"):
+            return None
+        try:
+            parsed_url = urlparse(config_string)
+            address = parsed_url.hostname
+            port = parsed_url.port
+
+            userinfo = parsed_url.username + ":" + parsed_url.password if parsed_url.username else None
+            encryption_password_b64 = parsed_url.netloc.split('@')[0] # extract b64 encoded part
+            try:
+                encryption_password_decoded = base64.b64decode(encryption_password_b64 + "==").decode('utf-8') # Padding might be needed
+                encryption_method = encryption_password_decoded.split(':')[0]
+                password = encryption_password_decoded.split(':')[1] if len(encryption_password_decoded.split(':')) > 1 else None
+            except Exception: # Decoding errors, handle as needed
+                encryption_method = None
+                password = None
+
+            query_params = parse_qs(parsed_url.query)
+            plugin = query_params.get('plugin', [None])[0]
+
+            return cls(
+                config_string=config_string,
+                protocol="ss",
+                address=address,
+                port=port,
+                encryption_method=encryption_method,
+                password=password,
+                plugin=plugin
+            )
+        except ValueError:
+            return None
+
+    def __hash__(self):
+        return hash((super().__hash__(), self.encryption_method, self.password, self.plugin))
+
+    def __eq__(self, other):
+        if not isinstance(other, SsParsedConfig):
+            return False
+        return super().__eq__(other) and \
+               (self.encryption_method, self.password, self.plugin) == \
+               (other.encryption_method, other.password, other.plugin)
+
 
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
     if is_valid_ipv4(hostname):
@@ -143,7 +357,7 @@ def is_valid_ipv4(hostname: str) -> bool:
 async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession) -> Tuple[List[str], str]:
     """Downloads proxy configurations from a single channel URL with retry logic."""
     retries_attempted = 0
-    session_timeout = aiohttp.ClientTimeout(total=15)
+    session_timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT_SEC)
     while retries_attempted <= MAX_RETRIES:
         try:
             async with session.get(channel_url, timeout=session_timeout) as response:
@@ -164,38 +378,108 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
     return [], "critical" # Should not reach here, but for type hinting
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
-    """Parses and filters valid proxy configurations from lines."""
+    """Parses and filters valid proxy configurations from lines with batched DNS resolution and protocol-specific parsing."""
     parsed_configs = []
-    for line in lines:
+    configs_to_resolve = []
+    unique_configs = set()
+
+    for line in lines: # Первый проход: парсим и собираем на разрешение
         line = line.strip()
         if not line or not any(line.startswith(proto) for proto in ALLOWED_PROTOCOLS):
             continue
-        parsed_config = ProxyParsedConfig.from_url(line)
-        if parsed_config:
-            resolved_ip = await resolve_address(parsed_config.address, resolver)
-            if resolved_ip:
-                 parsed_configs.append(parsed_config)
+
+        protocol = next((p for p in ALLOWED_PROTOCOLS if line.startswith(p)), None)
+        if protocol:
+            if protocol == "vless://":
+                parsed_config = VlessParsedConfig.from_url(line)
+            elif protocol == "tuic://":
+                parsed_config = TuicParsedConfig.from_url(line)
+            elif protocol == "hy2://":
+                parsed_config = Hy2ParsedConfig.from_url(line)
+            elif protocol == "ss://":
+                parsed_config = SsParsedConfig.from_url(line)
+            else:
+                parsed_config = ProxyParsedConfig.from_url(line) # Fallback for unknown protocols in ALLOWED_PROTOCOLS
+
+            if parsed_config and parsed_config not in unique_configs:
+                unique_configs.add(parsed_config) # Дедупликация на раннем этапе
+                configs_to_resolve.append(parsed_config)
+
+    async def resolve_config(config): # Функция для разрешения одного конфига
+        resolved_ip = await resolve_address(config.address, resolver)
+        if resolved_ip:
+            return config, resolved_ip
+        return config, None
+
+    resolution_tasks = [resolve_config(config) for config in configs_to_resolve] # Создаем задачи
+    resolution_results = await asyncio.gather(*resolution_tasks) # Запускаем все асинхронно
+
+    for config, resolved_ip in resolution_results: # Обрабатываем результаты
+        if resolved_ip:
+            parsed_configs.append(config) # Добавляем только успешно разрешенные
     return parsed_configs
 
+import json # Импортируем json
+
 def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
-    """Saves all downloaded proxies to the output file with protocol names (including duplicates)."""
+    """Saves all downloaded proxies to a JSON output file with structured data and "beautiful" names."""
     total_proxies_count = 0
     try:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
-            protocol_grouped_proxies = defaultdict(list)
+            proxy_data_list = []
+            protocol_grouped_proxies = defaultdict(list) # Group by protocol for structured output
+
             for proxy_conf in all_proxies:
                 protocol_grouped_proxies[proxy_conf.protocol].append(proxy_conf)
 
-            for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке
+            for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке протоколов
                 if protocol in protocol_grouped_proxies:
                     colored_log(logging.INFO, f"\n📝 Протокол (все): {ProfileName[protocol.upper()].value}")
                     for proxy_conf in protocol_grouped_proxies[protocol]:
-                        config_line = proxy_conf.config_string + f"#{ProfileName[protocol.upper()].value}"
-                        f.write(config_line + "\n")
-                        colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {config_line}")
+                        proxy_data = {
+                            "config_string": proxy_conf.config_string,
+                            "protocol": proxy_conf.protocol,
+                            "address": proxy_conf.address,
+                            "port": proxy_conf.port,
+                        }
+                        if isinstance(proxy_conf, VlessParsedConfig):
+                            proxy_data.update({
+                                "uuid": proxy_conf.uuid,
+                                "encryption": proxy_conf.encryption,
+                                "flow": proxy_conf.flow,
+                                "security": proxy_conf.security,
+                                "sni": proxy_conf.sni,
+                                "alpn": proxy_conf.alpn,
+                            })
+                        elif isinstance(proxy_conf, TuicParsedConfig):
+                            proxy_data.update({
+                                "congestion_control": proxy_conf.congestion_control,
+                            })
+                        elif isinstance(proxy_conf, Hy2ParsedConfig):
+                            proxy_data.update({
+                                "encryption_method": proxy_conf.encryption_method,
+                            })
+                        elif isinstance(proxy_conf, SsParsedConfig):
+                            proxy_data.update({
+                                "encryption_method": proxy_conf.encryption_method,
+                                "plugin": proxy_conf.plugin,
+                            })
+
+                        proxy_data_list.append(proxy_data)
+
+                        # Beautiful naming in logs (can be extended for file output if needed in text format)
+                        proxy_name_parts = [ProfileName[protocol.upper()].value, proxy_conf.address, str(proxy_conf.port)]
+                        if isinstance(proxy_conf, VlessParsedConfig) and proxy_conf.sni:
+                            proxy_name_parts.append(f"sni:{proxy_conf.sni}")
+                        if isinstance(proxy_conf, SsParsedConfig) and proxy_conf.encryption_method:
+                            proxy_name_parts.append(f"enc:{proxy_conf.encryption_method}")
+                        proxy_name = " - ".join(proxy_name_parts)
+                        colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {proxy_name}")
                         total_proxies_count += 1
-        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file}")
+
+            json.dump(proxy_data_list, f, indent=4, ensure_ascii=False) # Save as JSON
+        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file} (JSON)")
     except Exception as e:
         logger.error(f"Ошибка при сохранении всех прокси в файл: {e}")
     return total_proxies_count
@@ -298,4 +582,10 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Create default config file if not exists for easy first run
+    if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f_config:
+            toml.dump(default_config, f_config)
+        print(f"Создан файл конфигурации по умолчанию: {CONFIG_FILE}. Отредактируйте его при необходимости.")
+
     asyncio.run(main())
