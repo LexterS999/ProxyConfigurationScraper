@@ -425,20 +425,25 @@ def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: 
 
             for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке
                 if protocol in protocol_grouped_proxies:
-                    colored_log(logging.INFO, f"\n📝 Протокол (все, уникальные IPv4): {ProfileName[protocol.upper()].value}")
+                    protocol_name = ProfileName[protocol.upper()].value
+                    colored_log(logging.INFO, f"\n📝 Протокол ({LogColors.CYAN}{protocol_name}{LogColors.RESET}, всего, уникальные IPv4):")
                     for proxy_conf in protocol_grouped_proxies[protocol]:
-                        # Beautiful naming for logs and file output
-                        proxy_name_parts = [ProfileName[protocol.upper()].value, proxy_conf.address, str(proxy_conf.port)]
-                        if isinstance(proxy_conf, VlessParsedConfig) and proxy_conf.sni:
-                            proxy_name_parts.append(f"sni:{proxy_conf.sni}")
-                        if isinstance(proxy_conf, SsParsedConfig) and proxy_conf.encryption_method:
-                            proxy_name_parts.append(f"enc:{proxy_conf.encryption_method}")
-                        proxy_name = " - ".join(proxy_name_parts)
+                        # Красивое и компактное именование
+                        proxy_name_parts = [f"{LogColors.CYAN}{protocol_name}{LogColors.RESET}"] # Начинаем с протокола в цвете
+                        proxy_name_parts.append(f"{LogColors.GREEN}{proxy_conf.address}:{proxy_conf.port}{LogColors.RESET}") # IP:PORT зеленым
 
-                        config_line = proxy_conf.config_string + f"#{proxy_name}" # Beautiful name as comment
+                        if isinstance(proxy_conf, VlessParsedConfig) and proxy_conf.sni:
+                            proxy_name_parts.append(f"sni:{LogColors.YELLOW}{proxy_conf.sni}{LogColors.RESET}") # sni желтым
+                        if isinstance(proxy_conf, SsParsedConfig) and proxy_conf.encryption_method:
+                            proxy_name_parts.append(f"enc:{LogColors.MAGENTA}{proxy_conf.encryption_method}{LogColors.RESET}") # enc фиолетовым
+
+                        proxy_name = " ".join(proxy_name_parts) # Разделитель пробел
+                        config_line = proxy_conf.config_string + f"#{proxy_name}" # Имя как комментарий
                         f.write(config_line + "\n")
+                        colored_log(logging.INFO, f"   - {config_line}") # Выводим в консоль с оформлением
                         total_proxies_count += 1
-        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все, уникальные IPv4) в {output_file}")
+
+        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (всего, уникальные IPv4) в {output_file}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении всех прокси в файл: {e}")
     return total_proxies_count
@@ -471,6 +476,7 @@ async def main():
 
     total_channels = len(channel_urls)
     channels_processed_successfully = 0
+    channels_processed_with_issues = 0 # счетчик каналов, обработанных с предупреждениями или ошибками
     total_proxies_downloaded = 0
     protocol_counts = defaultdict(int)
     channel_status_counts = defaultdict(int)
@@ -485,6 +491,7 @@ async def main():
             async def process_channel_task(url):
                 channel_proxies_count_channel = 0 # Initialize count here
                 channel_success = 0 # Initialize success count
+                channel_issue = 0 # Initialize issue flag
                 async with channel_semaphore:
                     colored_log(logging.INFO, f"🚀 Начало обработки канала: {url}")
                     lines, status = await download_proxies_from_channel(url, session)
@@ -495,19 +502,21 @@ async def main():
                         channel_success = 1 # Mark channel as success after processing
                         for proxy in parsed_proxies:
                             protocol_counts[proxy.protocol] += 1
-                        return channel_proxies_count_channel, channel_success, parsed_proxies # Return counts and proxies
+                        return channel_proxies_count_channel, channel_success, 0, parsed_proxies # Return counts, success flag, no-issue flag and proxies
                     else:
                         colored_log(logging.WARNING, f"⚠️ Канал {url} обработан со статусом: {status}.")
-                        return 0, 0, [] # Return zero counts and empty list for failed channels
+                        channel_issue = 1 # Mark channel as having issues
+                        return 0, 0, channel_issue, [] # Return zero counts, no success, issue-flag and empty list for failed channels
 
             task = asyncio.create_task(process_channel_task(channel_url))
             channel_tasks.append(task)
 
         channel_results = await asyncio.gather(*channel_tasks)
         all_proxies = []
-        for proxies_count, success_flag, proxies_list in channel_results: # Unpack returned values
+        for proxies_count, success_flag, issue_flag, proxies_list in channel_results: # Unpack returned values, including issue_flag
             total_proxies_downloaded += proxies_count # Aggregate proxy counts
             channels_processed_successfully += success_flag # Aggregate success flags
+            channels_processed_with_issues += issue_flag # Aggregate issue flags
             all_proxies.extend(proxies_list) # Collect proxies
 
     # Сохранение всех загруженных прокси (включая дубликаты) в отдельный файл
@@ -519,23 +528,30 @@ async def main():
     colored_log(logging.INFO, f"⏱️  Время выполнения скрипта: {elapsed_time:.2f} сек")
     colored_log(logging.INFO, f"🔗 Всего URL-источников: {total_channels}")
 
-    colored_log(logging.INFO, "\n📊 Статус обработки URL-источников:")
-    for status in ["success", "warning", "error", "critical"]:
-        count = channel_status_counts.get(status, 0)
-        if count > 0:
-            status_text = status.upper()
-            color = LogColors.GREEN if status == "success" else (LogColors.YELLOW if status == "warning" else (LogColors.RED if status in ["error", "critical"] else LogColors.RESET))
-            colored_log(logging.INFO, f"  - {color}{status_text}{LogColors.RESET}: {count} каналов")
+    success_channels_percent = (channels_processed_successfully / total_channels) * 100 if total_channels else 0
+    issue_channels_percent = (channels_processed_with_issues / total_channels) * 100 if total_channels else 0
+    failed_channels_count = total_channels - channels_processed_successfully - channels_processed_with_issues # Calculate failed explicitly
 
-    colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций (уникальные IPv4): {total_proxies_downloaded}")
-    colored_log(logging.INFO, f"📝 Всего прокси (все, уникальные IPv4) сохранено: {all_proxies_saved_count} (в {OUTPUT_ALL_CONFIG_FILE})")
+    colored_log(logging.INFO, "\n✅ Успешно обработано URL-источников: {} из {} ({:.2f}%)".format(
+        channels_processed_successfully, total_channels, success_channels_percent))
+    if channels_processed_with_issues > 0:
+        colored_log(logging.WARNING, "⚠️ URL-источников с предупреждениями/ошибками: {} из {} ({:.2f}%)".format(
+            channels_processed_with_issues, total_channels, issue_channels_percent))
+    if failed_channels_count > 0: # If there are genuinely failed channels
+        failed_channels_percent = (failed_channels_count / total_channels) * 100 if total_channels else 0
+        colored_log(logging.ERROR, f"❌ Не удалось обработать URL-источников: {failed_channels_count} из {} ({:.2f}%)".format(
+            failed_channels_count, total_channels, failed_channels_percent))
 
-    colored_log(logging.INFO, "\n🔬 Разбивка по протоколам (найдено, уникальные IPv4):")
+    colored_log(logging.INFO, "\n✨ Всего найдено уникальных IPv4 прокси-конфигураций: {}".format(total_proxies_downloaded))
+    colored_log(logging.INFO, f"📝 Всего (все, уникальные IPv4) прокси-конфигураций сохранено в файл: {} ({})".format(
+        all_proxies_saved_count, OUTPUT_ALL_CONFIG_FILE))
+
+    colored_log(logging.INFO, "\n🔬 Разбивка найденных прокси-конфигураций по протоколам (уникальные IPv4):")
     if protocol_counts:
         for protocol, count in protocol_counts.items():
             colored_log(logging.INFO, f"   - {protocol.upper()}: {count}")
     else:
-        colored_log(logging.INFO, "   Нет статистики по протоколам.")
+        colored_log(logging.INFO, "   Нет статистики по протоколам (прокси не найдены).")
 
     colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
     colored_log(logging.INFO, "✅ Загрузка и обработка прокси завершена.")
