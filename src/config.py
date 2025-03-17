@@ -143,7 +143,10 @@ class VlessParsedConfig(ProxyParsedConfig):
             parsed_url = urlparse(config_string)
             address = parsed_url.hostname
             port = parsed_url.port
-            userinfo = parsed_url.username + ":" + parsed_url.password if parsed_url.username else None
+            username = parsed_url.username
+            password = parsed_url.password
+            userinfo = f"{username}:{password}" if username and password else username if username else None # исправлено
+
             query_params = parse_qs(parsed_url.query)
 
             uuid_val = parsed_url.username if parsed_url.username else None
@@ -256,7 +259,8 @@ class SsParsedConfig(ProxyParsedConfig): # Пример, расширьте по
             address = parsed_url.hostname
             port = parsed_url.port
 
-            userinfo = parsed_url.username + ":" + parsed_url.password if parsed_url.username else None
+            userinfo = parsed_url.username
+            password = parsed_url.password
             encryption_password_b64 = parsed_url.netloc.split('@')[0] # extract b64 encoded part
             try:
                 encryption_password_decoded = base64.b64decode(encryption_password_b64 + "==").decode('utf-8') # Padding might be needed
