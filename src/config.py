@@ -10,7 +10,6 @@ import string
 import base64
 import aiohttp
 import time
-import toml  # Импортируем toml
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, urlsplit
@@ -20,62 +19,24 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import functools
 
-# --- Загрузка конфигурации из файла ---
-CONFIG_FILE = 'config.toml'
-default_config = {
-    "log": {
-        "log_file": 'proxy_downloader.log',
-        "log_level_file": "WARNING",
-        "log_level_console": "INFO",
-        "log_format": "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)",
-        "console_log_format": "[%(levelname)s] %(message)s"
-    },
-    "proxy_sources": {
-        "all_urls_file": "channel_urls.txt",
-        "output_all_config_file": "configs/proxy_configs_all.json", # Изменено на JSON
-        "allowed_protocols": ["vless://", "tuic://", "hy2://", "ss://"]
-    },
-    "download_settings": {
-        "max_retries": 4,
-        "retry_delay_base": 2,
-        "max_concurrent_channels": 60,
-        "max_concurrent_proxies_per_channel": 50,
-        "max_concurrent_proxies_global": 50,
-        "download_timeout": 15
-    }
-}
-
-try:
-    config = toml.load(CONFIG_FILE)
-    # Merge loaded config with defaults to ensure all keys exist
-    config = defaultdict(dict, {**default_config, **config}) # Use defaultdict for nested levels too if needed for robustness
-    for section, defaults in default_config.items():
-        config[section] = {**defaults, **config[section]}
-
-except FileNotFoundError:
-    config = defaultdict(dict, default_config) # Use defaultdict for nested levels too for robustness
-    colored_log(logging.WARNING, f"Файл конфигурации {CONFIG_FILE} не найден. Используются настройки по умолчанию.")
-except toml.TomlDecodeError as e:
-    config = defaultdict(dict, default_config) # Use defaultdict for nested levels too for robustness
-    colored_log(logging.ERROR, f"Ошибка при чтении файла конфигурации {CONFIG_FILE}: {e}. Используются настройки по умолчанию.")
-
-
 # --- Настройка улучшенного логирования ---
-LOG_FORMAT = config["log"]["log_format"]
-CONSOLE_LOG_FORMAT = config["log"]["console_log_format"]
-LOG_FILE = config["log"]["log_file"]
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)"
+CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
+LOG_FILE = 'proxy_downloader.log'
+LOG_LEVEL_FILE = "WARNING"  # Уровень логирования для файла
+LOG_LEVEL_CONSOLE = "INFO" # Уровень логирования для консоли
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) # Основной уровень логгера
+logger.setLevel(logging.INFO)
 
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
-file_handler.setLevel(getattr(logging, config["log"]["log_level_file"].upper(), logging.WARNING)) # Динамический уровень из конфига
+file_handler.setLevel(getattr(logging, LOG_LEVEL_FILE.upper(), logging.WARNING)) # Уровень логирования из константы
 formatter_file = logging.Formatter(LOG_FORMAT)
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(getattr(logging, config["log"]["log_level_console"].upper(), logging.INFO)) # Динамический уровень из конфига
+console_handler.setLevel(getattr(logging, LOG_LEVEL_CONSOLE.upper(), logging.INFO)) # Уровень логирования из константы
 formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
@@ -104,16 +65,16 @@ def colored_log(level, message: str, *args, **kwargs):
         color = LogColors.BOLD + LogColors.RED
     logger.log(level, f"{color}{message}{LogColors.RESET}", *args, **kwargs)
 
-# --- Константы из конфигурации ---
-ALLOWED_PROTOCOLS = config["proxy_sources"]["allowed_protocols"]
-ALL_URLS_FILE = config["proxy_sources"]["all_urls_file"]
-OUTPUT_ALL_CONFIG_FILE = config["proxy_sources"]["output_all_config_file"]
-MAX_RETRIES = config["download_settings"]["max_retries"]
-RETRY_DELAY_BASE = config["download_settings"]["retry_delay_base"]
-MAX_CONCURRENT_CHANNELS = config["download_settings"]["max_concurrent_channels"]
-MAX_CONCURRENT_PROXIES_PER_CHANNEL = config["download_settings"]["max_concurrent_proxies_per_channel"]
-MAX_CONCURRENT_PROXIES_GLOBAL = config["download_settings"]["max_concurrent_proxies_global"]
-DOWNLOAD_TIMEOUT_SEC = config["download_settings"]["download_timeout"]
+# --- Константы ---
+ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "ss://"]
+ALL_URLS_FILE = "channel_urls.txt"
+OUTPUT_ALL_CONFIG_FILE = "configs/proxy_configs_all.txt" # Возвращено к .txt
+MAX_RETRIES = 4
+RETRY_DELAY_BASE = 2
+MAX_CONCURRENT_CHANNELS = 60
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
+MAX_CONCURRENT_PROXIES_GLOBAL = 50
+DOWNLOAD_TIMEOUT_SEC = 15
 
 
 class ProfileName(Enum):
@@ -419,56 +380,22 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
             parsed_configs.append(config) # Добавляем только успешно разрешенные
     return parsed_configs
 
-import json # Импортируем json
 
 def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
-    """Saves all downloaded proxies to a JSON output file with structured data and "beautiful" names."""
+    """Saves all downloaded proxies to the output file with protocol names (including duplicates) in text format."""
     total_proxies_count = 0
     try:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
-            proxy_data_list = []
-            protocol_grouped_proxies = defaultdict(list) # Group by protocol for structured output
-
+            protocol_grouped_proxies = defaultdict(list)
             for proxy_conf in all_proxies:
                 protocol_grouped_proxies[proxy_conf.protocol].append(proxy_conf)
 
-            for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке протоколов
+            for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке
                 if protocol in protocol_grouped_proxies:
                     colored_log(logging.INFO, f"\n📝 Протокол (все): {ProfileName[protocol.upper()].value}")
                     for proxy_conf in protocol_grouped_proxies[protocol]:
-                        proxy_data = {
-                            "config_string": proxy_conf.config_string,
-                            "protocol": proxy_conf.protocol,
-                            "address": proxy_conf.address,
-                            "port": proxy_conf.port,
-                        }
-                        if isinstance(proxy_conf, VlessParsedConfig):
-                            proxy_data.update({
-                                "uuid": proxy_conf.uuid,
-                                "encryption": proxy_conf.encryption,
-                                "flow": proxy_conf.flow,
-                                "security": proxy_conf.security,
-                                "sni": proxy_conf.sni,
-                                "alpn": proxy_conf.alpn,
-                            })
-                        elif isinstance(proxy_conf, TuicParsedConfig):
-                            proxy_data.update({
-                                "congestion_control": proxy_conf.congestion_control,
-                            })
-                        elif isinstance(proxy_conf, Hy2ParsedConfig):
-                            proxy_data.update({
-                                "encryption_method": proxy_conf.encryption_method,
-                            })
-                        elif isinstance(proxy_conf, SsParsedConfig):
-                            proxy_data.update({
-                                "encryption_method": proxy_conf.encryption_method,
-                                "plugin": proxy_conf.plugin,
-                            })
-
-                        proxy_data_list.append(proxy_data)
-
-                        # Beautiful naming in logs (can be extended for file output if needed in text format)
+                        # Beautiful naming for logs and file output
                         proxy_name_parts = [ProfileName[protocol.upper()].value, proxy_conf.address, str(proxy_conf.port)]
                         if isinstance(proxy_conf, VlessParsedConfig) and proxy_conf.sni:
                             proxy_name_parts.append(f"sni:{proxy_conf.sni}")
@@ -476,10 +403,11 @@ def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: 
                             proxy_name_parts.append(f"enc:{proxy_conf.encryption_method}")
                         proxy_name = " - ".join(proxy_name_parts)
                         colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {proxy_name}")
-                        total_proxies_count += 1
 
-            json.dump(proxy_data_list, f, indent=4, ensure_ascii=False) # Save as JSON
-        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file} (JSON)")
+                        config_line = proxy_conf.config_string + f"#{proxy_name}" # Beautiful name as comment
+                        f.write(config_line + "\n")
+                        total_proxies_count += 1
+        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении всех прокси в файл: {e}")
     return total_proxies_count
@@ -582,10 +510,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Create default config file if not exists for easy first run
-    if not os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f_config:
-            toml.dump(default_config, f_config)
-        print(f"Создан файл конфигурации по умолчанию: {CONFIG_FILE}. Отредактируйте его при необходимости.")
-
     asyncio.run(main())
