@@ -239,28 +239,33 @@ async def main():
         channel_tasks = []
         for channel_url in channel_urls:
             async def process_channel_task(url):
+                channel_proxies_count_channel = 0 # Initialize count here
+                channel_success = 0 # Initialize success count
                 async with channel_semaphore:
                     colored_log(logging.INFO, f"🚀 Начало обработки канала: {url}")
                     lines, status = await download_proxies_from_channel(url, session)
                     channel_status_counts[status] += 1
                     if status == "success":
                         parsed_proxies = await parse_and_filter_proxies(lines, resolver)
-                        total_proxies_downloaded_channel = len(parsed_proxies)
-                        total_proxies_downloaded += total_proxies_downloaded_channel
+                        channel_proxies_count_channel = len(parsed_proxies)
+                        channel_success = 1 # Mark channel as success after processing
                         for proxy in parsed_proxies:
                             protocol_counts[proxy.protocol] += 1
-                        channels_processed_successfully += 1
-                        colored_log(logging.INFO, f"✅ Канал {url} обработан. Найдено {total_proxies_downloaded_channel} прокси.")
-                        return parsed_proxies
+                        colored_log(logging.INFO, f"✅ Канал {url} обработан. Найдено {channel_proxies_count_channel} прокси.")
+                        return channel_proxies_count_channel, channel_success, parsed_proxies # Return counts and proxies
                     else:
                         colored_log(logging.WARNING, f"⚠️ Канал {url} обработан со статусом: {status}.")
-                        return [] # Return empty list for failed channels
+                        return 0, 0, [] # Return zero counts and empty list for failed channels
 
             task = asyncio.create_task(process_channel_task(channel_url))
             channel_tasks.append(task)
 
-        channel_proxy_lists = await asyncio.gather(*channel_tasks)
-        all_proxies = [proxy for proxy_list in channel_proxy_lists for proxy in proxy_list]
+        channel_results = await asyncio.gather(*channel_tasks)
+        all_proxies = []
+        for proxies_count, success_flag, proxies_list in channel_results: # Unpack returned values
+            total_proxies_downloaded += proxies_count # Aggregate proxy counts
+            channels_processed_successfully += success_flag # Aggregate success flags
+            all_proxies.extend(proxies_list) # Collect proxies
 
     unique_proxies_by_protocol = deduplicate_proxies(all_proxies)
     unique_proxies_saved_count = save_proxies_to_file(unique_proxies_by_protocol, OUTPUT_CONFIG_FILE)
