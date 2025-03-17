@@ -8,7 +8,6 @@ import ipaddress
 import io
 import uuid
 import string
-import socket
 import base64
 import aiohttp
 import time
@@ -24,7 +23,7 @@ import functools
 # --- Настройка улучшенного логирования ---
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)"
 CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
-LOG_FILE = 'proxy_checker.log'
+LOG_FILE = 'proxy_downloader.log'
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -36,9 +35,9 @@ formatter_file = logging.Formatter(LOG_FORMAT)
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
-# Логирование в консоль (WARNING и выше - снижен уровень для production)
+# Логирование в консоль (INFO и выше)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.WARNING)
+console_handler.setLevel(logging.INFO)
 formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
@@ -70,32 +69,14 @@ def colored_log(level, message: str, *args, **kwargs):
     logger.log(level, f"{color}{message}{LogColors.RESET}", *args, **kwargs)
 
 # Константы
-ALLOWED_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
+ALLOWED_PROTOCOLS = ["vless://", "ss://", "tuic://", "hy2://"]
 MAX_CONCURRENT_CHANNELS = 90
 MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
 MAX_CONCURRENT_PROXIES_GLOBAL = 240
-OUTPUT_CONFIG_FILE = "configs/proxy_configs.txt"
+OUTPUT_CONFIG_FILE = "proxy_configs.txt"
 ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 3 # Увеличено количество попыток
 RETRY_DELAY_BASE = 2 # Увеличена базовая задержка
-SS_VALID_METHODS = ['chacha20-ietf-poly1305', 'aes-256-gcm', 'aes-128-gcm', 'none']
-VALID_VLESS_TRANSPORTS = ['tcp', 'ws']
-VALID_TROJAN_TRANSPORTS = ['tcp', 'ws']
-VALID_TUIC_TRANSPORTS = ['udp', 'ws']
-VALID_HY2_TRANSPORTS = ['udp', 'tcp']
-VALID_SECURITY_TYPES = ['tls', 'none']
-VALID_ENCRYPTION_TYPES_VLESS = ['none', 'auto', 'aes-128-gcm', 'chacha20-poly1305']
-VALID_CONGESTION_CONTROL_TUIC = ['bbr', 'cubic', 'new-reno']
-
-PROTOCOL_TIMEOUTS = {
-    "vless": 4.0,
-    "trojan": 4.0,
-    "ss": 4.0,
-    "ssconf": 4.0,
-    "tuic": 4.0,
-    "hy2": 4.0,
-    "default": 4.0
-}
 
 # --- Исключения ---
 class InvalidURLError(ValueError):
@@ -114,8 +95,6 @@ class ConfigParseError(ValueError):
 class ProfileName(Enum):
     VLESS = "VLESS"
     SS = "SS"
-    SSCONF = "SSCONF"
-    TROJAN = "TROJAN" # Исправлено написание на заглавные буквы, как в Enum
     TUIC = "TUIC"
     HY2 = "HY2"
     UNKNOWN = "Unknown Protocol"
@@ -124,44 +103,17 @@ class ProfileName(Enum):
 # --- Data classes для конфигураций ---
 @dataclass(frozen=True)
 class VlessConfig:
-    uuid: str
     address: str
     port: int
-    security: str
-    transport: str
-    encryption: str
-    sni: Optional[str] = None
-    alpn: Optional[Tuple[str, ...]] = None
-    path: Optional[str] = None
-    early_data: Optional[bool] = None
-    utls: Optional[str] = None
-    obfs: Optional[str] = None
-    headers: Optional[Dict[str,str]] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
-        return hash(astuple(self))
+        return hash((self.address, self.port))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["VlessConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
             return None
-        headers = _parse_headers(query.get("headers"))
-        alpn_list = query.get('alpn', [])
-        alpn = tuple(sorted(alpn_list)) if alpn_list else None
-
-        security = query.get('security', ['none'])[0].lower()
-        if security not in VALID_SECURITY_TYPES:
-            return None
-
-        transport = query.get('type', ['tcp'])[0].lower()
-        if transport not in VALID_VLESS_TRANSPORTS:
-            return None
-
-        encryption = query.get('encryption', ['none'])[0].lower()
-        if encryption not in VALID_ENCRYPTION_TYPES_VLESS:
-            return None
 
         port_str = parsed_url.port
         if port_str is None:
@@ -172,174 +124,23 @@ class VlessConfig:
             return None
 
         return cls(
-            uuid=parsed_url.username,
             address=address,
             port=port,
-            security=security,
-            transport=transport,
-            encryption=encryption,
-            sni=query.get('sni', [None])[0],
-            alpn=alpn,
-            path=query.get('path', [None])[0],
-            early_data=query.get('earlyData', ['0'])[0] == '1',
-            utls=query.get('utls') or query.get('fp', ['none'])[0],
-            obfs=query.get('obfs',[None])[0],
-            headers=headers,
-            first_seen=datetime.now()
         )
-        return None
 
 @dataclass(frozen=True)
 class SSConfig:
-    method: str
-    password: str
     address: str
     port: int
-    plugin: Optional[str] = None
-    obfs: Optional[str] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
-        return hash(astuple(self))
+        return hash((self.address, self.port))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["SSConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
             return None
-        method = parsed_url.username.lower() if parsed_url.username else 'none'
-        if method not in SS_VALID_METHODS:
-            return None
-        port_str = parsed_url.port
-        if port_str is None:
-            return None
-        try:
-            port = int(port_str)
-        except (ValueError, TypeError):
-            return None
-        return cls(
-            method=method,
-            password=parsed_url.password,
-            address=address,
-            port=port,
-            plugin=query.get('plugin', [None])[0],
-            obfs=query.get('obfs',[None])[0],
-            first_seen=datetime.now()
-        )
-        return None
-
-@dataclass(frozen=True)
-class SSConfConfig:
-    server: str
-    server_port: int
-    local_address: str
-    local_port: int
-    password: str
-    timeout: int
-    method: str
-    protocol: str
-    obfs: str
-    protocol_param: Optional[str] = None
-    obfs_param: Optional[str] = None
-    remarks: Optional[str] = None
-    group: Optional[str] = None
-    udp_over_tcp: bool = False
-    first_seen: Optional[datetime] = field(default_factory=datetime.now)
-
-    def __hash__(self):
-        return hash(astuple(self))
-
-    @classmethod
-    async def from_url(cls, config_string: str, resolver: aiodns.DNSResolver) -> Optional["SSConfConfig"]:
-        try:
-            config_b64 = config_string.split("ssconf://")[1]
-            config_json_str = base64.urlsafe_b64decode(config_b64 + '=' * (4 - len(config_b64) % 4)).decode('utf-8')
-            config_json = json.loads(config_json_str)
-            config_json = {k.lower(): v for k, v in config_json.items()}
-
-            server_host = config_json.get('server')
-            server_address = await resolve_address(server_host, resolver)
-            if server_address is None:
-                return None
-
-            server_port_str = config_json.get('server_port')
-            timeout_str = config_json.get('timeout')
-            local_port_str = config_json.get('local_port', '1080')
-            udp_over_tcp_str = config_json.get('udp_over_tcp', False)
-
-            try:
-                server_port = int(server_port_str) if server_port_str is not None else None
-            except (ValueError, TypeError):
-                raise ConfigParseError(f"Ошибка разбора ssconf: Неверный server_port: {server_port_str}")
-            try:
-                timeout = int(timeout_str) if timeout_str is not None else None
-            except (ValueError, TypeError):
-                raise ConfigParseError(f"Ошибка разбора ssconf: Неверный timeout: {timeout_str}")
-            try:
-                local_port = int(local_port_str)
-            except (ValueError, TypeError):
-                raise ConfigParseError(f"Ошибка разбора ssconf: Неверный local_port: {local_port_str}")
-            try:
-                udp_over_tcp = bool(udp_over_tcp_str)
-            except (ValueError, TypeError):
-                raise ConfigParseError(f"Ошибка разбора ssconf: Неверный udp_over_tcp: {udp_over_tcp_str}")
-
-
-            return cls(
-                server=server_address,
-                server_port=server_port,
-                local_address=config_json.get('local_address', '127.0.0.1'),
-                local_port=local_port,
-                password=config_json.get('password'),
-                timeout=timeout,
-                method=config_json.get('method'),
-                protocol=config_json.get('protocol', 'origin'),
-                protocol_param=config_json.get('protocol_param'),
-                obfs=config_json.get('obfs', 'plain'),
-                obfs_param=config_json.get('obfs_param'),
-                remarks=config_json.get('remarks'),
-                group=config_json.get('group'),
-                udp_over_tcp=udp_over_tcp,
-                first_seen=datetime.now()
-            )
-        except (json.JSONDecodeError, KeyError, ValueError, ConfigParseError) as e:
-            return None
-        return None
-
-@dataclass(frozen=True)
-class TrojanConfig:
-    password: str
-    address: str
-    port: int
-    security: str
-    transport: str
-    sni: Optional[str] = None
-    alpn: Optional[Tuple[str, ...]] = None
-    early_data: Optional[bool] = None
-    utls: Optional[str] = None
-    obfs: Optional[str] = None
-    headers: Optional[Dict[str,str]] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now)
-
-    def __hash__(self):
-        return hash(astuple(self))
-
-    @classmethod
-    async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TrojanConfig"]:
-        address = await resolve_address(parsed_url.hostname, resolver)
-        if address is None:
-            return None
-        headers = _parse_headers(query.get("headers"))
-        alpn_list = query.get('alpn', [])
-        alpn = tuple(sorted(alpn_list)) if alpn_list else None
-
-        security = query.get('security', ['tls'])[0].lower()
-        if security not in VALID_SECURITY_TYPES:
-            return None
-
-        transport = query.get('type', ['tcp'])[0].lower()
-        if transport not in VALID_TROJAN_TRANSPORTS:
-            return None
 
         port_str = parsed_url.port
         if port_str is None:
@@ -348,63 +149,24 @@ class TrojanConfig:
             port = int(port_str)
         except (ValueError, TypeError):
             return None
-
         return cls(
-            password=parsed_url.password,
             address=address,
             port=port,
-            security=security,
-            transport=transport,
-            sni=query.get('sni', [None])[0],
-            alpn=alpn,
-            early_data=query.get('earlyData', ['0'])[0] == '1',
-            utls=query.get('utls') or query.get('fp', ['none'])[0],
-            obfs=query.get('obfs',[None])[0],
-            headers=headers,
-            first_seen=datetime.now()
         )
-        return None
 
 @dataclass(frozen=True)
 class TuicConfig:
-    uuid: str
     address: str
     port: int
-    security: str
-    transport: str
-    congestion_control: str
-    sni: Optional[str] = None
-    alpn: Optional[Tuple[str, ...]] = None
-    early_data: Optional[bool] = None
-    udp_relay_mode: Optional[str] = None
-    zero_rtt_handshake: Optional[bool] = None
-    utls: Optional[str] = None
-    password: Optional[str] = None
-    obfs: Optional[str] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
-        return hash(astuple(self))
+        return hash((self.address, self.port))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["TuicConfig"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
             return None
-        alpn_list = query.get('alpn', [])
-        alpn = tuple(sorted(alpn_list)) if alpn_list else None
-
-        security = query.get('security', ['tls'])[0].lower()
-        if security not in VALID_SECURITY_TYPES:
-            return None
-
-        transport = query.get('type', ['udp'])[0].lower()
-        if transport not in VALID_TUIC_TRANSPORTS:
-            return None
-
-        congestion_control = query.get('congestion', ['bbr'])[0].lower()
-        if congestion_control not in VALID_CONGESTION_CONTROL_TUIC:
-            return None
 
         port_str = parsed_url.port
         if port_str is None:
@@ -413,69 +175,24 @@ class TuicConfig:
             port = int(port_str)
         except (ValueError, TypeError):
             return None
-
-
         return cls(
-            uuid=parsed_url.username,
             address=address,
             port=port,
-            security=security,
-            transport=transport,
-            congestion_control=congestion_control,
-            sni=query.get('sni', [None])[0],
-            alpn=alpn,
-            early_data=query.get('earlyData', ['0'])[0] == '1',
-            udp_relay_mode=query.get('udp_relay_mode', ['quic'])[0].lower(),
-            zero_rtt_handshake=query.get('zero_rtt_handshake', ['0'])[0] == '1',
-            utls=query.get('utls') or query.get('fp', ['none'])[0],
-            password=parsed_url.password,
-            obfs=query.get('obfs',[None])[0],
-            first_seen=datetime.now()
         )
-        return None
 
 @dataclass(frozen=True)
 class Hy2Config:
     address: str
     port: int
-    security: str
-    transport: str
-    sni: Optional[str] = None
-    alpn: Optional[Tuple[str, ...]] = None
-    early_data: Optional[bool] = None
-    pmtud: Optional[bool] = None
-    hop_interval: Optional[int] = None
-    password: Optional[str] = None
-    utls: Optional[str] = None
-    obfs: Optional[str] = None
-    first_seen: Optional[datetime] = field(default_factory=datetime.now)
 
     def __hash__(self):
-        return hash(astuple(self))
+        return hash((self.address, self.port))
 
     @classmethod
     async def from_url(cls, parsed_url: urlparse, query: Dict, resolver: aiodns.DNSResolver) -> Optional["Hy2Config"]:
         address = await resolve_address(parsed_url.hostname, resolver)
         if address is None:
             return None
-        hop_interval_str = query.get('hopInterval', [None])[0]
-        hop_interval = None
-        if hop_interval_str is not None:
-            try:
-                hop_interval = int(hop_interval_str)
-            except ValueError:
-                hop_interval = None
-
-        alpn_list = query.get('alpn', [])
-        alpn = tuple(sorted(alpn_list)) if alpn_list else None
-
-        security = query.get('security', ['tls'])[0].lower()
-        if security not in VALID_SECURITY_TYPES:
-            return None
-
-        transport = query.get('type', ['udp'])[0].lower()
-        if transport not in VALID_HY2_TRANSPORTS:
-            return None
 
         port_str = parsed_url.port
         if port_str is None:
@@ -485,23 +202,10 @@ class Hy2Config:
         except (ValueError, TypeError):
             return None
 
-
         return cls(
             address=address,
             port=port,
-            security=security,
-            transport=transport,
-            sni=query.get('sni', [None])[0],
-            alpn=alpn,
-            early_data=query.get('earlyData', ['0'])[0] == '1',
-            pmtud=query.get('pmtud', ['0'])[0] == '1',
-            hop_interval=hop_interval,
-            password=parsed_url.password,
-            utls=query.get('utls') or query.get('fp', ['none'])[0],
-            obfs=query.get('obfs',[None])[0],
-            first_seen=datetime.now()
         )
-        return None
 
 # --- Data classes для метрик и конфигураций каналов ---
 @dataclass
@@ -525,7 +229,7 @@ class ChannelMetrics:
 
 class ChannelConfig:
     RESPONSE_TIME_DECAY = 0.7
-    VALID_PROTOCOLS = ["vless://", "ss://", "trojan://", "tuic://", "hy2://", "ssconf://"]
+    VALID_PROTOCOLS = ["vless://", "ss://", "tuic://", "hy2://"]
     REPEATED_CHARS_THRESHOLD = 100
 
     def __init__(self, url: str):
@@ -637,19 +341,6 @@ class ProxyConfig:
 
 
 # --- Вспомогательные функции ---
-def _parse_headers(headers_str: Optional[str]) -> Optional[Dict[str, str]]:
-    if not headers_str:
-        return None
-    try:
-        headers = json.loads(headers_str)
-        if not isinstance(headers, dict):
-            raise ValueError("Headers must be a JSON object")
-        return headers
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.warning(f"Неверный формат заголовков, ожидается JSON-объект: {headers_str} - {e}. Заголовки игнорируются.")
-        return None
-
-
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
     if is_valid_ipv4(hostname):
         return hostname
@@ -687,12 +378,10 @@ def is_valid_ipv4(hostname: str) -> bool:
 def is_valid_proxy_url(url: str) -> bool:
     if not any(url.startswith(protocol) for protocol in ALLOWED_PROTOCOLS):
         return False
-    if url.startswith("ssconf://"):
-        return url.startswith("ssconf://") and len(url) > len("ssconf://")
     try:
         parsed = urlparse(url)
         scheme = parsed.scheme
-        if scheme in ('vless', 'trojan', 'tuic'):
+        if scheme in ('vless', 'tuic'):
             profile_id = parsed.username or parse_qs(parsed.query).get('id', [None])[0]
             if profile_id and not is_valid_uuid(profile_id):
                 return False
@@ -702,9 +391,6 @@ def is_valid_proxy_url(url: str) -> bool:
         else:
             if not parsed.hostname and not parsed.netloc.startswith('@'):
                 return False
-            if parsed.username:
-                if parsed.username.lower() not in SS_VALID_METHODS:
-                    return False
         if not is_valid_ipv4(parsed.hostname):
             if not re.match(r"^[a-zA-Z0-9.-]+$", parsed.hostname):
                 return False
@@ -721,12 +407,7 @@ def is_valid_uuid(uuid_string: str) -> bool:
 
 async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Optional[object]:
     protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p)), None)
-    if protocol == "ssconf://":
-        try:
-            return await SSConfConfig.from_url(config_string, resolver)
-        except ConfigParseError as e:
-            return None
-    else:
+    if protocol:
         try:
             parsed = urlparse(config_string)
             query = parse_qs(parsed.query)
@@ -734,7 +415,6 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
             config_parsers = {
                 "vless": VlessConfig.from_url,
                 "ss": SSConfig.from_url,
-                "trojan": TrojanConfig.from_url,
                 "tuic": TuicConfig.from_url,
                 "hy2": Hy2Config.from_url,
             }
@@ -746,6 +426,8 @@ async def parse_config(config_string: str, resolver: aiodns.DNSResolver) -> Opti
         except Exception as e:
             logger.error(f"Непредвиденная ошибка при парсинге конфигурации {config_string}: {e}")
             return None
+    return None
+
 
 async def process_single_proxy(line: str, channel: ChannelConfig,
                               proxy_config: ProxyConfig,
@@ -861,23 +543,31 @@ async def process_all_channels(channels: List["ChannelConfig"], proxy_config: "P
 def save_final_configs(proxies: List[Dict], output_file: str):
     unique_proxies = defaultdict(set)
     unique_proxy_count = 0
+    protocol_order = ["vless", "tuic", "hy2", "ss"] # протоколы в нужном порядке
     try:
         with io.open(output_file, 'w', encoding='utf-8', buffering=io.DEFAULT_BUFFER_SIZE) as f:
-            for proxy in proxies:
-                config = proxy['config'].split('#')[0].strip()
-                parsed = urlparse(config)
-                ip_address = parsed.hostname
-                port = parsed.port
-                protocol = proxy['protocol']
-                ip_port_tuple = (ip_address, port)
-                if ip_port_tuple not in unique_proxies[protocol]:
-                    unique_proxies[protocol].add(ip_port_tuple)
-                    unique_proxy_count += 1
-                    profile_name = f"{ProfileName[proxy['protocol'].upper()].value}" # Используем ProfileName[] для доступа по строке и .value для значения
-                    final_line = f"{config}#{profile_name}\n"
-                    f.write(final_line)
-        colored_log(logging.INFO, f"✅ Финальные конфигурации сохранены в {output_file}. Уникальность прокси обеспечена.")
-        colored_log(logging.INFO, f"✨ Всего уникальных прокси сохранено: {unique_proxy_count}")
+            for protocol_name in protocol_order: # проходимся по протоколам в заданном порядке
+                colored_log(logging.INFO, f"\n🛡️  Протокол: {ProfileName[protocol_name.upper()].value}") # Выводим название протокола
+                protocol_proxies = [p for p in proxies if p['protocol'] == protocol_name]
+                if not protocol_proxies:
+                    colored_log(logging.INFO, f"   Нет прокси для протокола {ProfileName[protocol_name.upper()].value}.")
+                    continue
+
+                for proxy in protocol_proxies:
+                    config = proxy['config'].split('#')[0].strip()
+                    parsed = urlparse(config)
+                    ip_address = parsed.hostname
+                    port = parsed.port
+                    ip_port_tuple = (ip_address, port)
+                    if ip_port_tuple not in unique_proxies[protocol_name]:
+                        unique_proxies[protocol_name].add(ip_port_tuple)
+                        unique_proxy_count += 1
+                        profile_name = f"{ProfileName[proxy['protocol'].upper()].value}"
+                        final_line = f"{config}#{profile_name}\n"
+                        f.write(final_line)
+                        colored_log(logging.INFO, f"   ✨ Добавлен прокси: {config}#{profile_name}") # Логируем добавление прокси
+        colored_log(logging.INFO, f"\n✅ Финальные конфигурации сохранены в {output_file}. Уникальность прокси по IP:порт в пределах протокола обеспечена.")
+        colored_log(logging.INFO, f"📊 Всего уникальных прокси сохранено: {unique_proxy_count}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфигураций: {e}")
     return unique_proxies # Return unique_proxies for statistics
@@ -892,7 +582,7 @@ def main():
         nonlocal statistics_logged, start_time
         loop = asyncio.get_running_loop()
         proxy_config.set_event_loop(loop)
-        colored_log(logging.INFO, "🚀 Начало проверки прокси...")
+        colored_log(logging.INFO, "🚀 Начало скачивания и обработки прокси...")
         proxies = await process_all_channels(channels, proxy_config)
         unique_proxy_stats = save_final_configs(proxies, proxy_config.OUTPUT_FILE) # Get unique proxy stats
         proxy_config.remove_failed_channels_from_file() # remove_failed_channels_from_file call is kept, but it's empty now.
@@ -914,7 +604,7 @@ def main():
                     protocol_stats[protocol] += count
                 channel_status_counts[channel.metrics.fetch_status] += 1 # Count channel status
 
-            colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ПРОВЕРКИ ПРОКСИ ====================")
+            colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ЗАГРУЗКИ ПРОКСИ ====================")
             colored_log(logging.INFO, f"⏱️  Время выполнения скрипта: {elapsed_time:.2f} сек")
             colored_log(logging.INFO, f"🔗 Всего URL-источников: {total_channels}")
 
@@ -950,7 +640,7 @@ def main():
 
             colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
             statistics_logged = True
-            colored_log(logging.INFO, "✅ Проверка прокси завершена.")
+            colored_log(logging.INFO, "✅ Загрузка и обработка прокси завершена.")
 
     asyncio.run(runner())
 
