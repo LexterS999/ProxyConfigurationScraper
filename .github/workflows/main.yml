@@ -68,9 +68,9 @@ jobs:
       id: git_push
       run: |
         git pull --rebase origin main || true
-        git add configs/proxy_configs_unique.txt configs/proxy_configs_all.txt channel_urls.txt # channel_urls.txt is kept in add command for manual updates
+        git add configs/proxy_configs_all.txt channel_urls.txt # channel_urls.txt is kept in add command for manual updates
         if ! git diff --staged --quiet; then
-          git commit -m "Update proxy configs (unique and all), stats and reports"
+          git commit -m "Update proxy configs (all), stats and reports"
           git push origin HEAD:main
           echo "::set-output name=pushed::true"
           echo "Changes committed and pushed."
