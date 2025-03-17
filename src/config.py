@@ -66,7 +66,6 @@ def colored_log(level, message: str, *args, **kwargs):
 # --- Константы ---
 ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "ss://"]
 ALL_URLS_FILE = "channel_urls.txt" # Файл с URL каналов (переименован для ясности)
-OUTPUT_CONFIG_FILE = "proxy_configs_unique.txt" # Файл для уникальных прокси (переименован для ясности)
 OUTPUT_ALL_CONFIG_FILE = "proxy_configs_all.txt" # Новый файл для всех прокси
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2
@@ -178,31 +177,31 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
                  parsed_configs.append(parsed_config)
     return parsed_configs
 
-def deduplicate_proxies(parsed_proxies: List[ProxyParsedConfig]) -> Dict[str, Set[ProxyParsedConfig]]:
-    """Deduplicates proxies based on IP and port within each protocol."""
-    unique_proxies_by_protocol = defaultdict(set)
-    for proxy in parsed_proxies:
-        unique_proxies_by_protocol[proxy.protocol].add(proxy)
-    return unique_proxies_by_protocol
+# def deduplicate_proxies(parsed_proxies: List[ProxyParsedConfig]) -> Dict[str, Set[ProxyParsedConfig]]:
+#     """Deduplicates proxies based on IP and port within each protocol."""
+#     unique_proxies_by_protocol = defaultdict(set)
+#     for proxy in parsed_proxies:
+#         unique_proxies_by_protocol[proxy.protocol].add(proxy)
+#     return unique_proxies_by_protocol
 
-def save_proxies_to_file(unique_proxies_by_protocol: Dict[str, Set[ProxyParsedConfig]], output_file: str) -> int:
-    """Saves unique proxies to the output file with protocol names."""
-    total_proxies_count = 0
-    try:
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        with open(output_file, 'w', encoding='utf-8') as f:
-            for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке
-                if protocol in unique_proxies_by_protocol:
-                    colored_log(logging.INFO, f"\n🛡️  Протокол (уникальные): {ProfileName[protocol.upper()].value}")
-                    for proxy_conf in unique_proxies_by_protocol[protocol]:
-                        config_line = proxy_conf.config_string + f"#{ProfileName[protocol.upper()].value}"
-                        f.write(config_line + "\n")
-                        colored_log(logging.INFO, f"   ✨ Добавлен уникальный прокси: {config_line}")
-                        total_proxies_count += 1
-        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} уникальных прокси в {output_file}")
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении уникальных прокси в файл: {e}")
-    return total_proxies_count
+# def save_proxies_to_file(unique_proxies_by_protocol: Dict[str, Set[ProxyParsedConfig]], output_file: str) -> int:
+#     """Saves unique proxies to the output file with protocol names."""
+#     total_proxies_count = 0
+#     try:
+#         os.makedirs(os.path.dirname(output_file), exist_ok=True)
+#         with open(output_file, 'w', encoding='utf-8') as f:
+#             for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке
+#                 if protocol in unique_proxies_by_protocol:
+#                     colored_log(logging.INFO, f"\n🛡️  Протокол (уникальные): {ProfileName[protocol.upper()].value}")
+#                     for proxy_conf in unique_proxies_by_protocol[protocol]:
+#                         config_line = proxy_conf.config_string + f"#{ProfileName[protocol.upper()].value}"
+#                         f.write(config_line + "\n")
+#                         colored_log(logging.INFO, f"   ✨ Добавлен уникальный прокси: {config_line}")
+#                         total_proxies_count += 1
+#         colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} уникальных прокси в {output_file}")
+#     except Exception as e:
+#         logger.error(f"Ошибка при сохранении уникальных прокси в файл: {e}")
+#     return total_proxies_count
 
 def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
     """Saves all downloaded proxies to the output file with protocol names (including duplicates)."""
@@ -295,8 +294,8 @@ async def main():
     # Сохранение всех загруженных прокси (включая дубликаты) в отдельный файл
     all_proxies_saved_count = save_all_proxies_to_file(all_proxies, OUTPUT_ALL_CONFIG_FILE)
 
-    unique_proxies_by_protocol = deduplicate_proxies(all_proxies)
-    unique_proxies_saved_count = save_proxies_to_file(unique_proxies_by_protocol, OUTPUT_CONFIG_FILE)
+    # unique_proxies_by_protocol = deduplicate_proxies(all_proxies)
+    # unique_proxies_saved_count = save_proxies_to_file(unique_proxies_by_protocol, OUTPUT_CONFIG_FILE) # OUTPUT_CONFIG_FILE is removed
 
     end_time = time.time()
     elapsed_time = end_time - start_time
@@ -314,7 +313,7 @@ async def main():
             colored_log(logging.INFO, f"  - {color}{status_text}{LogColors.RESET}: {count} каналов")
 
     colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций: {total_proxies_downloaded}")
-    colored_log(logging.INFO, f"✅ Всего уникальных прокси сохранено: {unique_proxies_saved_count} (в {OUTPUT_CONFIG_FILE})")
+    # colored_log(logging.INFO, f"✅ Всего уникальных прокси сохранено: {unique_proxies_saved_count} (в {OUTPUT_CONFIG_FILE})") # OUTPUT_CONFIG_FILE is removed
     colored_log(logging.INFO, f"📝 Всего прокси (все) сохранено: {all_proxies_saved_count} (в {OUTPUT_ALL_CONFIG_FILE})")
 
 
