@@ -73,7 +73,7 @@ ALLOWED_PROTOCOLS = ["vless://", "ss://", "tuic://", "hy2://"]
 MAX_CONCURRENT_CHANNELS = 90
 MAX_CONCURRENT_PROXIES_PER_CHANNEL = 120
 MAX_CONCURRENT_PROXIES_GLOBAL = 240
-OUTPUT_CONFIG_FILE = "proxy_configs.txt"
+OUTPUT_CONFIG_FILE = "proxy_configs.txt" # Исправлено: путь к файлу теперь в текущей директории
 ALL_URLS_FILE = "all_urls.txt"
 MAX_RETRIES = 3 # Увеличено количество попыток
 RETRY_DELAY_BASE = 2 # Увеличена базовая задержка
@@ -257,7 +257,9 @@ class ChannelConfig:
 
 class ProxyConfig:
     def __init__(self):
-        os.makedirs(os.path.dirname(OUTPUT_CONFIG_FILE), exist_ok=True)
+        output_dir = os.path.dirname(OUTPUT_CONFIG_FILE)
+        if output_dir: # Проверяем, что имя директории не пустое
+            os.makedirs(output_dir, exist_ok=True) # Создаем директорию, если она не существует
         self.resolver = None
         self.failed_channels = [] # failed_channels list is kept but not used in logic anymore
         self.processed_configs = set()
