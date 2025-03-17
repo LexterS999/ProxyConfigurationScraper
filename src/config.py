@@ -10,6 +10,7 @@ import string
 import base64
 import aiohttp
 import time
+import concurrent.futures # Import for thread pool
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, urlsplit
@@ -76,6 +77,8 @@ MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
 MAX_CONCURRENT_PROXIES_GLOBAL = 50
 DOWNLOAD_TIMEOUT_SEC = 15
 
+# --- Thread Pool Executor for CPU-bound tasks ---
+CPU_BOUND_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) # Adjust max_workers as needed
 
 class ProfileName(Enum):
     VLESS = "VLESS"
@@ -342,11 +345,12 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
         retries_attempted += 1
     return [], "critical" # Should not reach here, but for type hinting
 
-async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
-    """Parses and filters valid proxy configurations from lines with batched DNS resolution and protocol-specific parsing."""
+def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
+    """Parses and filters valid proxy configurations from lines with batched DNS resolution and protocol-specific parsing (synchronous version for thread pool)."""
     parsed_configs = []
     configs_to_resolve = []
     unique_configs = set()
+    seen_ipv4_addresses = set() # Set to track seen IPv4 addresses for deduplication
 
     for line in lines: # Первый проход: парсим и собираем на разрешение
         line = line.strip()
@@ -372,17 +376,35 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
 
     async def resolve_config(config): # Функция для разрешения одного конфига
         resolved_ip = await resolve_address(config.address, resolver)
-        if resolved_ip:
+        if resolved_ip and is_valid_ipv4(resolved_ip): # Check if resolved IP is IPv4
             return config, resolved_ip
         return config, None
 
+    loop = asyncio.get_event_loop() # Get current event loop to run async tasks in thread
     resolution_tasks = [resolve_config(config) for config in configs_to_resolve] # Создаем задачи
-    resolution_results = await asyncio.gather(*resolution_tasks) # Запускаем все асинхронно
+    resolution_results = loop.run_until_complete(asyncio.gather(*resolution_tasks)) # Run async resolution in thread
 
     for config, resolved_ip in resolution_results: # Обрабатываем результаты
         if resolved_ip:
-            parsed_configs.append(config) # Добавляем только успешно разрешенные
+            if resolved_ip not in seen_ipv4_addresses: # Deduplicate by IPv4 address
+                parsed_configs.append(config) # Добавляем только успешно разрешенные и уникальные по IPv4
+                seen_ipv4_addresses.add(resolved_ip) # Add IPv4 to seen set
+            else:
+                colored_log(logging.DEBUG, f"ℹ️  Пропущен дубликат прокси по IPv4: {resolved_ip} (протокол: {config.protocol})") # Optional debug log for duplicates
+        else:
+            colored_log(logging.DEBUG, f"ℹ️  Пропущен прокси без IPv4: {config.address} (протокол: {config.protocol})") # Optional debug log for no IPv4
+
     return parsed_configs
+
+
+async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
+    """Asynchronously parses and filters proxies using thread pool for CPU-bound parsing."""
+    return await asyncio.get_running_loop().run_in_executor( # Run sync function in thread pool
+        CPU_BOUND_EXECUTOR,
+        parse_and_filter_proxies_sync, # Sync parsing function
+        lines,
+        resolver
+    )
 
 
 def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
@@ -397,7 +419,7 @@ def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: 
 
             for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке
                 if protocol in protocol_grouped_proxies:
-                    colored_log(logging.INFO, f"\n📝 Протокол (все): {ProfileName[protocol.upper()].value}")
+                    colored_log(logging.INFO, f"\n📝 Протокол (все, уникальные IPv4): {ProfileName[protocol.upper()].value}")
                     for proxy_conf in protocol_grouped_proxies[protocol]:
                         # Beautiful naming for logs and file output
                         proxy_name_parts = [ProfileName[protocol.upper()].value, proxy_conf.address, str(proxy_conf.port)]
@@ -406,12 +428,11 @@ def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: 
                         if isinstance(proxy_conf, SsParsedConfig) and proxy_conf.encryption_method:
                             proxy_name_parts.append(f"enc:{proxy_conf.encryption_method}")
                         proxy_name = " - ".join(proxy_name_parts)
-                        colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {proxy_name}")
 
                         config_line = proxy_conf.config_string + f"#{proxy_name}" # Beautiful name as comment
                         f.write(config_line + "\n")
                         total_proxies_count += 1
-        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file}")
+        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все, уникальные IPv4) в {output_file}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении всех прокси в файл: {e}")
     return total_proxies_count
@@ -421,18 +442,22 @@ async def load_channel_urls(all_urls_file: str) -> List[str]:
     """Loads channel URLs from the specified file."""
     channel_urls = []
     try:
-        with open(all_urls_file, 'r', encoding='utf-8') as f:
+        async with asyncio.to_thread(open, all_urls_file, 'r', encoding='utf-8') as f: # Async file reading
             for line in f:
                 url = line.strip()
                 if url:
                     channel_urls.append(url)
     except FileNotFoundError:
         colored_log(logging.WARNING, f"Файл {all_urls_file} не найден. Проверьте наличие файла с URL каналов.")
-        open(all_urls_file, 'w').close() # Create empty file if not exists
+        async with asyncio.to_thread(open, all_urls_file, 'w').result() as f: # Async create empty file
+            pass # Create empty file if not exists
     return channel_urls
 
 
 async def main():
+    # Set debug level for more detailed logging of skipped proxies (optional)
+    logger.setLevel(logging.DEBUG) # or logging.INFO for less verbose
+
     start_time = time.time()
     channel_urls = await load_channel_urls(ALL_URLS_FILE)
     if not channel_urls:
@@ -460,12 +485,11 @@ async def main():
                     lines, status = await download_proxies_from_channel(url, session)
                     channel_status_counts[status] += 1
                     if status == "success":
-                        parsed_proxies = await parse_and_filter_proxies(lines, resolver)
+                        parsed_proxies = await parse_and_filter_proxies(lines, resolver) # Now uses thread pool
                         channel_proxies_count_channel = len(parsed_proxies)
                         channel_success = 1 # Mark channel as success after processing
                         for proxy in parsed_proxies:
                             protocol_counts[proxy.protocol] += 1
-                        colored_log(logging.INFO, f"✅ Канал {url} обработан. Найдено {channel_proxies_count_channel} прокси.")
                         return channel_proxies_count_channel, channel_success, parsed_proxies # Return counts and proxies
                     else:
                         colored_log(logging.WARNING, f"⚠️ Канал {url} обработан со статусом: {status}.")
@@ -498,11 +522,10 @@ async def main():
             color = LogColors.GREEN if status == "success" else (LogColors.YELLOW if status == "warning" else (LogColors.RED if status in ["error", "critical"] else LogColors.RESET))
             colored_log(logging.INFO, f"  - {color}{status_text}{LogColors.RESET}: {count} каналов")
 
-    colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций: {total_proxies_downloaded}")
-    colored_log(logging.INFO, f"📝 Всего прокси (все) сохранено: {all_proxies_saved_count} (в {OUTPUT_ALL_CONFIG_FILE})")
+    colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций (уникальные IPv4): {total_proxies_downloaded}")
+    colored_log(logging.INFO, f"📝 Всего прокси (все, уникальные IPv4) сохранено: {all_proxies_saved_count} (в {OUTPUT_ALL_CONFIG_FILE})")
 
-
-    colored_log(logging.INFO, "\n🔬 Разбивка по протоколам (найдено):")
+    colored_log(logging.INFO, "\n🔬 Разбивка по протоколам (найдено, уникальные IPv4):")
     if protocol_counts:
         for protocol, count in protocol_counts.items():
             colored_log(logging.INFO, f"   - {protocol.upper()}: {count}")
