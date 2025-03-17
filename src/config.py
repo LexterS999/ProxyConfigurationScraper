@@ -347,7 +347,7 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
 
 def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver, event_loop: asyncio.AbstractEventLoop) -> List[ProxyParsedConfig]:
     """Parses and filters valid proxy configurations from lines with batched DNS resolution and protocol-specific parsing (synchronous version for thread pool).
-       Now accepts event_loop as argument.
+       Теперь принимает event_loop как аргумент.
     """
     parsed_configs = []
     configs_to_resolve = []
@@ -383,8 +383,8 @@ def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver
         return config, None
 
     resolution_tasks = [resolve_config(config) for config in configs_to_resolve] # Создаем задачи
-    # Use the passed event_loop to run asyncio.gather
-    resolution_results = event_loop.run_until_complete(asyncio.gather(*resolution_tasks)) # Run async resolution in thread
+    # Используем переданный event_loop для запуска asyncio.gather
+    resolution_results = event_loop.run_until_complete(asyncio.gather(*resolution_tasks)) # Запускаем асинхронное разрешение в потоке
 
     for config, resolved_ip in resolution_results: # Обрабатываем результаты
         if resolved_ip:
@@ -400,14 +400,14 @@ def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver
 
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
-    """Asynchronously parses and filters proxies using thread pool for CPU-bound parsing."""
-    event_loop = asyncio.get_running_loop() # Get the current event loop
-    return await asyncio.get_running_loop().run_in_executor( # Run sync function in thread pool
+    """Асинхронно парсит и фильтрует прокси, используя thread pool для CPU-bound парсинга."""
+    event_loop = asyncio.get_running_loop() # Получаем текущий event loop
+    return await asyncio.get_running_loop().run_in_executor( # Запускаем синхронную функцию в thread pool
         CPU_BOUND_EXECUTOR,
-        parse_and_filter_proxies_sync, # Sync parsing function
+        parse_and_filter_proxies_sync, # Синхронная функция парсинга
         lines,
         resolver,
-        event_loop # Pass the event loop to the sync function
+        event_loop # Передаем event loop в синхронную функцию
     )
 
 
