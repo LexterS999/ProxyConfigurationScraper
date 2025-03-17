@@ -59,3 +59,5 @@ https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main
 https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/vmess
 https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/trojan
 https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/shadowsocks
+https://raw.githubusercontent.com/sevcator/5ubscrpt10n/refs/heads/main/protocols/vl.txt
+https://raw.githubusercontent.com/sevcator/5ubscrpt10n/refs/heads/main/protocols/ss.txt
