@@ -442,14 +442,16 @@ async def load_channel_urls(all_urls_file: str) -> List[str]:
     """Loads channel URLs from the specified file."""
     channel_urls = []
     try:
-        async with asyncio.to_thread(open, all_urls_file, 'r', encoding='utf-8') as f: # Async file reading
+        f = await asyncio.to_thread(open, all_urls_file, 'r', encoding='utf-8') # Await here
+        async with f: # Then use async with on the file object
             for line in f:
                 url = line.strip()
                 if url:
                     channel_urls.append(url)
     except FileNotFoundError:
         colored_log(logging.WARNING, f"Файл {all_urls_file} не найден. Проверьте наличие файла с URL каналов.")
-        async with asyncio.to_thread(open, all_urls_file, 'w').result() as f: # Async create empty file
+        f_create = await asyncio.to_thread(open, all_urls_file, 'w') # Await here
+        async with f_create: # Then use async with for creation
             pass # Create empty file if not exists
     return channel_urls
 
