@@ -52,10 +52,10 @@ jobs:
 
     - name: Run config fetcher script
       run: python src/config.py
-      # continue-on-error: true # Раскомментируйте, если хотите останавливать workflow при ошибках в скрипте
+      continue-on-error: true
 
     - name: Script execution status
-      if: always() # Запустится всегда, даже если предыдущий шаг завершился с ошибкой (если continue-on-error: true)
+      if: always()
       run: |
         echo "Python script src/config.py executed."
 
@@ -68,7 +68,7 @@ jobs:
       id: git_push
       run: |
         git pull --rebase origin main || true
-        git add configs/proxy_configs_all.txt channel_urls.txt # channel_urls.txt is kept in add command for manual updates
+        git add configs/proxy_configs_all.txt channel_urls.txt
         if ! git diff --staged --quiet; then
           git commit -m "Update proxy configs (all), stats and reports"
           git push origin HEAD:main
