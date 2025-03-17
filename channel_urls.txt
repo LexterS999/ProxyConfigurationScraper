@@ -1,4 +1,5 @@
 https://github.com/Vauth/node/raw/main/Main
+https://raw.githubusercontent.com/dimzon/scaling-sniffle/refs/heads/main/all-domains-dedup-sort.txt
 https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt
 https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/V2RAY.txt
 https://raw.githubusercontent.com/lagzian/SS-Collector/main/shadowsockes.txt
