@@ -345,14 +345,11 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
         retries_attempted += 1
     return [], "critical" # Should not reach here, but for type hinting
 
-async def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
-    """Parses and filters valid proxy configurations from lines with batched DNS resolution and protocol-specific parsing (synchronous version for thread pool).
-       Теперь асинхронная функция, запускающая свой event loop.
-    """
+def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
+    """Parses and filters valid proxy configurations from lines with protocol-specific parsing (SYNCHRONOUS version). Returns list of configs to resolve."""
     parsed_configs = []
-    configs_to_resolve = []
+    configs_to_resolve = [] # NOW just holding config objects *before* async DNS resolution
     unique_configs = set()
-    seen_ipv4_addresses = set() # Set to track seen IPv4 addresses for deduplication
 
     for line in lines: # Первый проход: парсим и собираем на разрешение
         line = line.strip()
@@ -376,41 +373,44 @@ async def parse_and_filter_proxies_sync(lines: List[str], resolver: aiodns.DNSRe
                 unique_configs.add(parsed_config) # Дедупликация на раннем этапе
                 configs_to_resolve.append(parsed_config)
 
-    async def resolve_config(config): # Функция для разрешения одного конфига
-        resolved_ip = await resolve_address(config.address, resolver)
-        if resolved_ip and is_valid_ipv4(resolved_ip): # Check if resolved IP is IPv4
-            return config, resolved_ip
-        return config, None
-
-    resolution_tasks = [resolve_config(config) for config in configs_to_resolve] # Создаем задачи
-    # Запускаем event loop и выполняем asyncio.gather внутри thread pool
-    resolution_results = await asyncio.gather(*resolution_tasks) # await здесь, так как функция теперь async
-
-    for config, resolved_ip in resolution_results: # Обрабатываем результаты
-        if resolved_ip:
-            if resolved_ip not in seen_ipv4_addresses: # Deduplicate by IPv4 address
-                parsed_configs.append(config) # Добавляем только успешно разрешенные и уникальные по IPv4
-                seen_ipv4_addresses.add(resolved_ip) # Add IPv4 to seen set
-            else:
-                colored_log(logging.DEBUG, f"ℹ️  Пропущен дубликат прокси по IPv4: {resolved_ip} (протокол: {config.protocol})") # Optional debug log for duplicates
-        else:
-            colored_log(logging.DEBUG, f"ℹ️  Пропущен прокси без IPv4: {config.address} (протокол: {config.protocol})") # Optional debug log for no IPv4
-
-    return parsed_configs
+    # Instead of resolving here synchronously, just return list of configurations to be resolved.
+    return configs_to_resolve # Just return configs needing resolution now - NO DNS resolution happens here anymore.
 
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
-    """Асинхронно парсит и фильтрует прокси, используя thread pool для CPU-bound парсинга."""
-    # event_loop = asyncio.get_running_loop() # Больше не нужно получать event loop здесь
+    """Asynchronously parses and filters proxies using thread pool for CPU-bound parsing AND doing async DNS resolution in main loop."""
 
-    # Запускаем parse_and_filter_proxies_sync в thread pool, и теперь она сама управляет своим event loop
-    return await asyncio.get_running_loop().run_in_executor(
+    # First, parse SYNCHRONOUSLY in the thread pool and prepare list of configs to resolve (address strings).
+    parsed_configs_unresolved = await asyncio.get_running_loop().run_in_executor(
         CPU_BOUND_EXECUTOR,
-        functools.partial(asyncio.run, parse_and_filter_proxies_sync), # Запускаем asyncio.run для sync функции
+        parse_and_filter_proxies_sync, # Calling sync function DIRECTLY now
         lines,
-        resolver,
-        # event_loop # Больше не передаем event loop
+        resolver, # Passing resolver argument as well.
     )
+
+    async def resolve_single_config(config): # inner async function for single config resolution.
+        resolved_ip = await resolve_address(config.address, resolver) # async DNS resolution now in main loop
+        if resolved_ip and is_valid_ipv4(resolved_ip):
+            return config, resolved_ip
+        return config, None
+
+    # Now perform the ASYNCHRONOUS DNS resolution for all the extracted configs in the MAIN event loop.
+    resolution_tasks = [resolve_single_config(config) for config in parsed_configs_unresolved]
+    resolution_results_async = await asyncio.gather(*resolution_tasks) # Run async resolution in main loop
+
+    parsed_configs_resolved = []
+    seen_ipv4_addresses = set()
+    for config, resolved_ip in resolution_results_async: # process results as before.
+        if resolved_ip:
+            if resolved_ip not in seen_ipv4_addresses:
+                parsed_configs_resolved.append(config)
+                seen_ipv4_addresses.add(resolved_ip)
+            else:
+                colored_log(logging.DEBUG, f"ℹ️  Пропущен дубликат прокси по IPv4: {resolved_ip} (протокол: {config.protocol})")
+        else:
+            colored_log(logging.DEBUG, f"ℹ️  Пропущен прокси без IPv4: {config.address} (протокол: {config.protocol})")
+
+    return parsed_configs_resolved
 
 
 def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
