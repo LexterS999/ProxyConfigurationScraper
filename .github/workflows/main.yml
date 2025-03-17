@@ -41,13 +41,13 @@ jobs:
         mkdir -p assets
         mkdir -p configs
 
-    - name: Check all_urls.txt exists
+    - name: Check channel_urls.txt exists
       run: |
-        if [ ! -f all_urls.txt ]; then
-          echo "all_urls.txt не найден. Будет создан пустой файл."
-          touch all_urls.txt
+        if [ ! -f channel_urls.txt ]; then
+          echo "channel_urls.txt не найден. Будет создан пустой файл."
+          touch channel_urls.txt
         else
-          echo "all_urls.txt найден."
+          echo "channel_urls.txt найден."
         fi
 
     - name: Run config fetcher script
@@ -68,12 +68,12 @@ jobs:
       id: git_push
       run: |
         git pull --rebase origin main || true
-        git add configs/proxy_configs.txt all_urls.txt # all_urls.txt is kept in add command for manual updates
+        git add configs/proxy_configs_unique.txt configs/proxy_configs_all.txt channel_urls.txt # channel_urls.txt is kept in add command for manual updates
         if ! git diff --staged --quiet; then
-          git commit -m "Update proxy configs, stats and reports" # Removed mention of inactive channels
+          git commit -m "Update proxy configs (unique and all), stats and reports"
           git push origin HEAD:main
           echo "::set-output name=pushed::true"
-          echo "Changes committed and pushed." # Updated message - no mention of all_urls.txt removal
+          echo "Changes committed and pushed."
         else
           echo "No changes to commit."
           echo "::set-output name=pushed::false"
