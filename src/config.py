@@ -541,8 +541,7 @@ async def main():
         failed_channels_percent = (failed_channels_count / total_channels) * 100 if total_channels else 0
         colored_log(logging.ERROR, f"❌ Не удалось обработать URL-источников: {failed_channels_count} из {total_channels} ({failed_channels_percent:.2f}%)")
     colored_log(logging.INFO, "\n✨ Всего найдено уникальных IPv4 прокси-конфигураций: {}".format(total_proxies_downloaded))
-    colored_log(logging.INFO, f"📝 Всего (все, уникальные IPv4) прокси-конфигураций сохранено в файл: {} ({})".format(
-        all_proxies_saved_count, OUTPUT_ALL_CONFIG_FILE))
+    colored_log(logging.INFO, f"📝 Всего (все, уникальные IPv4) прокси-конфигураций сохранено в файл: {all_proxies_saved_count} ({OUTPUT_ALL_CONFIG_FILE})")
 
     colored_log(logging.INFO, "\n🔬 Разбивка найденных прокси-конфигураций по протоколам (уникальные IPv4):")
     if protocol_counts:
