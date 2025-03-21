@@ -27,7 +27,7 @@ jobs:
       uses: actions/cache@v3
       with:
         path: ~/.cache/pip
-        key: pip-cache-${{ runner.os }}-${{ hashFiles('requirements.txt') }} # Removed config.yaml from cache key
+        key: pip-cache-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
         restore-keys: |
           pip-cache-${{ runner.os }}-
 
@@ -40,7 +40,6 @@ jobs:
       run: |
         mkdir -p assets
         mkdir -p configs
-        mkdir -p src # Ensure src directory exists if your script is in src/
 
     - name: Check channel_urls.txt exists
       run: |
@@ -52,7 +51,7 @@ jobs:
         fi
 
     - name: Run config fetcher script
-      run: python src/config.py -v INFO
+      run: python src/config.py
       continue-on-error: true
 
     - name: Script execution status
@@ -69,7 +68,7 @@ jobs:
       id: git_push
       run: |
         git pull --rebase origin main || true
-        git add configs/proxy_configs_all.txt channel_urls.txt # Removed config.yaml from git add
+        git add configs/proxy_configs_all.txt channel_urls.txt
         if ! git diff --staged --quiet; then
           git commit -m "Update proxy configs (all), stats and reports"
           git push origin HEAD:main
