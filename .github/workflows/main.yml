@@ -27,7 +27,7 @@ jobs:
       uses: actions/cache@v3
       with:
         path: ~/.cache/pip
-        key: pip-cache-${{ runner.os }}-${{ hashFiles('requirements.txt', 'config.yaml') }} # Include config.yaml in cache key
+        key: pip-cache-${{ runner.os }}-${{ hashFiles('requirements.txt', 'src/config.yaml') }}
         restore-keys: |
           pip-cache-${{ runner.os }}-
 
@@ -43,7 +43,7 @@ jobs:
         mkdir -p src # Ensure src directory exists if your script is in src/
 
     - name: Copy config.yaml
-      run: cp config.yaml src/ # Copy config.yaml to the src directory (or root if your script expects it there)
+      run: cp config.yaml src/
 
     - name: Check channel_urls.txt exists
       run: |
@@ -55,7 +55,7 @@ jobs:
         fi
 
     - name: Run config fetcher script
-      run: python src/config.py -v INFO # Run script with verbosity level INFO, adjust if needed
+      run: python src/config.py -v INFO
       continue-on-error: true
 
     - name: Script execution status
