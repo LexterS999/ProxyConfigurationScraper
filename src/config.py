@@ -25,7 +25,7 @@ from collections import defaultdict
 import functools
 
 # --- Конфигурация из YAML файла ---
-CONFIG_FILE = 'config.yaml'
+CONFIG_FILE = 'src/config.yaml'
 DEFAULT_CONFIG = {
     'log_level_file': 'WARNING',
     'log_level_console': 'INFO',
