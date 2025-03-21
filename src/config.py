@@ -272,6 +272,12 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
             async with session.get(channel_url, timeout=session_timeout, headers=headers) as response:
                 response.raise_for_status()  # Генерируем исключение для плохих кодов состояния
                 text = await response.text(encoding='utf-8', errors='ignore')  # Обрабатываем потенциальные проблемы с кодировкой
+
+                #  Добавлено: Проверяем, есть ли содержимое в ответе
+                if not text.strip():
+                    colored_log(logging.WARNING, f"⚠️ Канал {channel_url} вернул пустой ответ.")
+                    return [], "warning"  # Пустой ответ - это предупреждение
+
                 return text.splitlines(), "success"
 
         except aiohttp.ClientResponseError as e:
@@ -292,6 +298,7 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
     """Разбирает и фильтрует конфигурации прокси, разрешая имена хостов в IP-адреса."""
     parsed_configs = []
+    processed_configs = set()  # Множество для отслеживания обработанных строк
 
     for line in lines:
         line = line.strip()
@@ -300,8 +307,15 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
 
         try:
             parsed_config = ProxyParsedConfig.from_url(line)
-            # Разрешаем имя хоста в IP-адрес
+             # Разрешаем имя хоста в IP-адрес
             resolved_ip = await resolve_address(parsed_config.address, resolver)
+
+            # Добавлено: Проверяем, был ли уже обработан такой config_string
+            if parsed_config.config_string in processed_configs:
+                #colored_log(logging.INFO, f"ℹ️ Пропускаем дубликат: {parsed_config.config_string}") # Убрали излишнее логирование
+                continue  # Пропускаем дубликат
+            processed_configs.add(parsed_config.config_string)
+
             if resolved_ip:
                 parsed_configs.append(parsed_config)  # Добавляем, только если разрешение успешно
 
@@ -328,19 +342,29 @@ def generate_proxy_profile_name(proxy_config: ProxyParsedConfig) -> str:
 
 
 def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
-    """Сохраняет все разобранные конфигурации прокси в файл, по одной на строку."""
+    """Сохраняет все разобранные конфигурации прокси в файл, по одной на строку.
+       Удаляет дубликаты на основе config_string ПЕРЕД сохранением.
+    """
     total_proxies_count = 0
+    unique_proxies = []
+    seen_config_strings = set() # Используем set() для быстрого O(1) поиска
+
     try:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)  # Убеждаемся, что каталог существует
+
+        # Дедупликация ПЕРЕД записью в файл
+        for proxy_conf in all_proxies:
+            if proxy_conf.config_string not in seen_config_strings:
+                unique_proxies.append(proxy_conf)
+                seen_config_strings.add(proxy_conf.config_string)
+
         with open(output_file, 'w', encoding='utf-8') as f:
-            for proxy_conf in all_proxies:
+            for proxy_conf in unique_proxies:
                 profile_name = generate_proxy_profile_name(proxy_conf)  # Генерируем новое имя профиля
                 # Записываем строку конфигурации с *новым* именем профиля
                 config_line = f"{proxy_conf.config_string}#{profile_name}"
                 f.write(config_line + "\n")
-                #colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {config_line}") # Убрали излишнее логирование
                 total_proxies_count += 1
-        #colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file}") # Перенесли в статистику
 
     except Exception as e:
         logger.error(f"Ошибка сохранения всех прокси в файл: {e}", exc_info=True)
@@ -448,7 +472,7 @@ async def main():
                 colored_log(logging.INFO, f"  - {status_text}: {count} каналов")
 
         colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций: {total_proxies_downloaded}")
-        colored_log(logging.INFO, f"📝 Всего прокси (все) сохранено: {all_proxies_saved_count} (в {CONFIG_FILES.OUTPUT_ALL_CONFIG})")
+        colored_log(logging.INFO, f"📝 Всего прокси (все, без дубликатов) сохранено: {all_proxies_saved_count} (в {CONFIG_FILES.OUTPUT_ALL_CONFIG})")
 
         colored_log(logging.INFO, "\n🔬 Разбивка по протоколам (найдено):")
         if protocol_counts:
