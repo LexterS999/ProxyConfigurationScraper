@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
     'max_concurrent_proxies_global': 50,
     'download_timeout_sec': 15,
     'allowed_protocols': ["vless://", "tuic://", "hy2://", "ss://"],
-    'enable_dns_cache': True,
+    'enable_dns_cache': True, # This setting is kept for potential future use or conditional logic
 }
 
 # --- Настройка улучшенного логирования ---
@@ -524,8 +524,8 @@ async def main(verbosity: str): # Add verbosity argument
     logger.setLevel(logging.DEBUG) # Keep debug level for internal logs, console is controlled by arg
 
     if ENABLE_DNS_CACHE:
-        aiodns_resolver = aiodns.DNSResolver(loop=asyncio.get_event_loop(), cache=True) # Enable cache
-        colored_log(logging.INFO, "DNS кэширование включено.")
+        aiodns_resolver = aiodns.DNSResolver(loop=asyncio.get_event_loop()) # DNS cache might be enabled by default or configured separately
+        colored_log(logging.INFO, "DNS кэширование (возможно) включено (зависит от конфигурации aiodns).")
     else:
         aiodns_resolver = aiodns.DNSResolver(loop=asyncio.get_event_loop())
         colored_log(logging.INFO, "DNS кэширование выключено.")
