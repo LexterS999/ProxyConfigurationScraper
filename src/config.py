@@ -96,19 +96,21 @@ def colored_log(level, message: str, *args, **kwargs):
     lineno = frame.f_lineno
     func = frame.f_code.co_name  # Исправлено на co_name
 
+    #  !!!  ИЗМЕНЕНИЕ ТУТ: Применяем форматирование *ДО* создания LogRecord
+    formatted_message = f"{color}{message}{RESET}"
+
     record = logging.LogRecord(
         name=logger.name,
         level=level,
         pathname=pathname,  # Полный путь
         lineno=lineno,  # Правильный номер строки
-        msg=f"{color}{message}{RESET}",
+        msg=formatted_message,  #  !!!  Передаем уже отформатированное сообщение
         args=args,
         exc_info=kwargs.get('exc_info'),
         func=func,  # Правильное имя функции
         sinfo=None
     )
     logger.handle(record)
-
 
 
 
@@ -441,7 +443,9 @@ async def main():
                     status_text, color = "ОШИБКА", '\033[91m'
                 else:
                     status_text, color = status_key.upper(), '\033[0m'
-                colored_log(logging.INFO, f"  - {color}{status_text}{RESET}: {count} каналов")
+
+                # !!! ИЗМЕНЕНИЕ ТУТ: используем f-строку для передачи параметров, а не внутри colored_log
+                colored_log(logging.INFO, f"  - {status_text}: {count} каналов")
 
         colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций: {total_proxies_downloaded}")
         colored_log(logging.INFO, f"📝 Всего прокси (все) сохранено: {all_proxies_saved_count} (в {CONFIG_FILES.OUTPUT_ALL_CONFIG})")
