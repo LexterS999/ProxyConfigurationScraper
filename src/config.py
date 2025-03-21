@@ -94,7 +94,7 @@ def colored_log(level, message: str, *args, **kwargs):
     frame = inspect.currentframe().f_back  # Используем f_back, чтобы получить вызывающий фрейм
     pathname = frame.f_code.co_filename
     lineno = frame.f_lineno
-    func = frame.f_code.co_name
+    func = frame.f_code.co_name  # Исправлено на co_name
 
     record = logging.LogRecord(
         name=logger.name,
