@@ -12,7 +12,7 @@ import aiohttp
 import time
 import json
 import functools
-import inspect  # Импортируем модуль inspect
+import inspect
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, urlsplit
@@ -28,9 +28,9 @@ LOG_FORMAT = {
     "level": "%(levelname)s",
     "message": "%(message)s",
     "process": "%(process)s",
-    "module": "%(module)s",  # Добавлено имя модуля
-    "funcName": "%(funcName)s",  # Добавлено имя функции
-    "lineno": "%(lineno)d",  # Добавлен номер строки
+    "module": "%(module)s",
+    "funcName": "%(funcName)s",
+    "lineno": "%(lineno)d",
 }
 CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"  # Формат для консольного вывода
 LOG_FILE = 'proxy_downloader.log'  # Имя файла лога
@@ -204,6 +204,7 @@ class ProxyParsedConfig:
     address: str        # IP-адрес или имя хоста
     port: int           # Номер порта
     remark: str = ""    # Поле примечания (исходное)
+    query_params: Dict[str, str] = field(default_factory=dict) # Добавили query параметры
 
     def __hash__(self):
         """Хеширует конфигурацию для эффективных операций с множествами (дедупликация)."""
@@ -234,12 +235,18 @@ class ProxyParsedConfig:
             if parsed_url.fragment:
                 remark = parsed_url.fragment
 
+            # Извлекаем параметры запроса
+            query_params = {}
+            if parsed_url.query:
+                query_params = {k: v[0] for k, v in parse_qs(parsed_url.query).items()}
+
             return cls(
                 config_string=config_string.split("#")[0], # Убираем исходное примечание
                 protocol=protocol,
                 address=address,
                 port=port,
                 remark=remark, # Сохраняем исходное примечание
+                query_params=query_params, # Сохраняем query
             )
 
 
@@ -305,10 +312,16 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
 
 
 def generate_proxy_profile_name(proxy_config: ProxyParsedConfig) -> str:
-    """Генерирует имя профиля прокси, подходящее для использования."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # Используем секунды для большей уникальности
-    # Формируем имя профиля, например: "VLESS_192.168.1.1_8080_202310271430"
-    return f"{proxy_config.protocol.upper()}_{proxy_config.address}_{proxy_config.port}_{timestamp}"
+    """Генерирует имя профиля прокси, извлекая type и security."""
+    protocol = proxy_config.protocol.upper()
+    type_ = proxy_config.query_params.get('type', 'unknown').lower()
+    security = proxy_config.query_params.get('security', 'none').lower()
+
+    # Добавляем обработку для ss, если нет type, то подставляем tcp
+    if protocol == 'SS' and type_ == 'unknown':
+        type_ = 'tcp'
+
+    return f"{protocol}_{type_}_{security}"
 
 
 
@@ -323,9 +336,9 @@ def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: 
                 # Записываем строку конфигурации с *новым* именем профиля
                 config_line = f"{proxy_conf.config_string}#{profile_name}"
                 f.write(config_line + "\n")
-                colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {config_line}")
+                #colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {config_line}") # Убрали излишнее логирование
                 total_proxies_count += 1
-        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file}")
+        #colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file}") # Перенесли в статистику
 
     except Exception as e:
         logger.error(f"Ошибка сохранения всех прокси в файл: {e}", exc_info=True)
