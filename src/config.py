@@ -26,7 +26,7 @@ import functools
 # --- Значения конфигурации по умолчанию (теперь заданы прямо в коде) ---
 DEFAULT_CONFIG = {
     'log_level_file': 'WARNING',
-    'log_level_console': 'INFO',
+    'log_level_console': 'DEBUG', # Increased to DEBUG for detailed logging by default
     'log_file': 'proxy_downloader.log',
     'all_urls_file': 'channel_urls.txt',
     'output_all_config_file': 'configs/proxy_configs_all.txt',
@@ -54,7 +54,7 @@ file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(getattr(logging, DEFAULT_CONFIG['log_level_console'].upper(), logging.INFO))
+console_handler.setLevel(getattr(logging, DEFAULT_CONFIG['log_level_console'].upper(), logging.DEBUG)) # Set console to DEBUG by default
 formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
@@ -371,13 +371,16 @@ async def download_channel_content(channel_url: str, session: aiohttp.ClientSess
         async with session.get(channel_url, timeout=timeout) as response:
             if response.status == 200:
                 content = await response.text(encoding='utf-8', errors='ignore')
-                colored_log(logging.DEBUG, f"✅ Успешно загружен контент с канала: {channel_url}. Первые 200 символов:\n{content[:200]}...") # Логируем начало контента
+                colored_log(logging.DEBUG, f"✅ Успешно загружен контент с {channel_url} (длина: {len(content)} символов)") # Log success download
                 return content, "success"
             else:
+                colored_log(logging.WARNING, f"⚠️  HTTP ошибка при загрузке {channel_url}: статус {response.status}") # Log HTTP error
                 return None, f"http_error_{response.status}" # Detailed HTTP error status
     except aiohttp.ClientError as e:
+        colored_log(logging.WARNING, f"⚠️  ClientError при загрузке {channel_url}: {e}") # Log ClientError
         return None, f"client_error_{type(e).__name__}" # Client error type
     except asyncio.TimeoutError:
+        colored_log(logging.WARNING, f"⚠️  TimeoutError при загрузке {channel_url}") # Log TimeoutError
         return None, "timeout_error" # Timeout error
 
 async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession) -> Tuple[List[str], str]:
@@ -391,7 +394,12 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
         last_status = status # Update last status
 
         if status == "success":
-            return content.splitlines(), "success"
+            if content:
+                colored_log(logging.DEBUG, f"📦 Контент канала {channel_url}:\n{content[:500]}...") # Log first 500 chars of content in DEBUG
+                return content.splitlines(), "success"
+            else:
+                colored_log(logging.WARNING, f"⚠️  Канал {channel_url} вернул пустой контент, но статус 'success'.")
+                return [], "empty_content_success" # Indicate empty content but success status
         else:
             retry_delay = RETRY_DELAY_BASE * (2 ** retries_attempted)
             colored_log(logging.WARNING, f"⚠️ Канал {channel_url} вернул статус: {status} (попытка {retries_attempted+1}/{MAX_RETRIES+1}). Пауза {retry_delay} сек")
@@ -405,14 +413,12 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
 def parse_proxy_config(line: str) -> Tuple[Optional[ParsedConfig], Optional[str]]:
     """Parses a single line into a ProxyParsedConfig object using the registry."""
     line = line.strip()
-    colored_log(logging.DEBUG, f"   Парсинг строки: '{line[:100]}...'") # Логируем входящую строку
-    if not line:
-        colored_log(logging.DEBUG, "   Пропущена пустая строка.")
-        return None, "Skipped: invalid line or protocol (empty line)"
+    if not line: # Skip empty lines immediately
+        return None, "Skipped: empty line"
     if not any(line.startswith(proto) for proto in ALLOWED_PROTOCOLS):
-        colored_log(logging.DEBUG, f"   Пропущена строка: не начинается с разрешенного протокола. Разрешенные протоколы: {ALLOWED_PROTOCOLS}")
-        return None, "Skipped: invalid line or protocol (no allowed protocol)"
+        return None, "Skipped: invalid protocol"
 
+    colored_log(logging.DEBUG, f"⚙️  Парсинг строки: '{line[:100]}...'") # Log line being parsed
 
     for protocol_prefix in ALLOWED_PROTOCOLS:
         if line.startswith(protocol_prefix):
@@ -421,74 +427,76 @@ def parse_proxy_config(line: str) -> Tuple[Optional[ParsedConfig], Optional[str]
             if parser_class:
                 parsed_config, error_msg = parser_class.from_url(line) # Use parser from registry
                 if parsed_config:
-                    colored_log(logging.DEBUG, f"   ✅ Успешно распарсена строка как {protocol_name}: {parsed_config}")
+                    colored_log(logging.DEBUG, f"✅ Успешно распарсено как {protocol_name}: {parsed_config}") # Log successful parsing
                     return parsed_config, None
                 else:
-                    colored_log(logging.DEBUG, f"   ❌ Ошибка парсинга {protocol_name}: {error_msg}")
+                    colored_log(logging.DEBUG, f"⚠️  Ошибка парсинга {protocol_name}: {error_msg} для строки: '{line[:100]}...'") # Log parsing error
                     return None, f"Parsing failed: {error_msg} for line: '{line[:100]}...'" # Limit line length in log
             else:
-                colored_log(logging.DEBUG, f"   ❌ Нет парсера для протокола: {protocol_name}")
                 return None, f"No parser found for protocol: {protocol_name}" # Should not happen if registry is correctly populated
 
-    colored_log(logging.DEBUG, "   ⚠️ Пропущена строка: не соответствует ни одному условию.") # Дополнительное логирование, если ни одно условие не сработало
-    return None, "Skipped: no matching protocol parser (internal logic error?)" # Should not reach here, loop covers all prefixes
+    return None, "Skipped: no matching protocol parser" # Should not reach here, loop covers all prefixes
 
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ParsedConfig]:
     """Asynchronously parses and filters proxies using thread pool for CPU-bound parsing and async DNS resolution."""
-    colored_log(logging.DEBUG, f"Начало парсинга и фильтрации {len(lines)} строк.") # Логируем количество строк на входе
+    initial_proxy_count = len(lines)
+    colored_log(logging.DEBUG, f"🔍 Начало парсинга и фильтрации {initial_proxy_count} строк.") # Log initial count
+
     parsed_configs_with_errors: List[Tuple[Optional[ParsedConfig], Optional[str]]] = await asyncio.get_running_loop().run_in_executor(
         CPU_BOUND_EXECUTOR,
         lambda: [parse_proxy_config(line) for line in lines] # Run parsing in thread pool
     )
-    colored_log(logging.DEBUG, f"Завершено парсинг {len(parsed_configs_with_errors)} строк (с ошибками и без).") # Логируем количество результатов парсинга
 
+    parsed_configs = []
+    skipped_count_invalid_protocol = 0
+    skipped_count_parsing_error = 0
     configs_to_resolve = []
-    skipped_count_parsing_errors = 0 # Счетчик ошибок парсинга
+
     for config, error in parsed_configs_with_errors:
         if config:
+            parsed_configs.append(config)
             configs_to_resolve.append(config)
         elif error:
-            skipped_count_parsing_errors += 1 # Увеличиваем счетчик ошибок парсинга
+            if "invalid protocol" in error:
+                skipped_count_invalid_protocol += 1
+            elif "Parsing failed" in error:
+                skipped_count_parsing_error += 1
             if logger.level <= logging.DEBUG: # Log skipped lines only in DEBUG mode
                 colored_log(logging.DEBUG, f"ℹ️ {error}")
 
-    colored_log(logging.DEBUG, f"Пропущено строк из-за ошибок парсинга: {skipped_count_parsing_errors}") # Логируем количество пропущенных из-за ошибок парсинга
-    colored_log(logging.DEBUG, f"Конфигураций для DNS-резолвинга: {len(configs_to_resolve)}") # Логируем количество конфигураций для DNS-резолвинга
+    colored_log(logging.DEBUG, f"📊 Статистика парсинга: успешно={len(parsed_configs)}, пропущено (неверный протокол)={skipped_count_invalid_protocol}, пропущено (ошибка парсинга)={skipped_count_parsing_error}") # Log parsing stats
+    colored_log(logging.DEBUG, f"DNS разрешение для {len(configs_to_resolve)} прокси...") # Log DNS resolution start
 
     async def resolve_single_config(config):
         resolved_ip = await resolve_address(config.address, resolver)
         if resolved_ip and is_valid_ipv4(resolved_ip):
-            colored_log(logging.DEBUG, f"   ✅ DNS резолвинг успешен для {config.address} -> {resolved_ip}")
             return config, resolved_ip
-        else:
-            colored_log(logging.DEBUG, f"   ❌ DNS резолвинг не удался или не IPv4 для {config.address}")
-            return config, None
+        return config, None
 
     resolution_tasks = [resolve_single_config(config) for config in configs_to_resolve]
     resolution_results_async = await asyncio.gather(*resolution_tasks)
 
     parsed_configs_resolved = []
     seen_ipv4_addresses = set()
-    skipped_count_no_ipv4 = 0 # Счетчик пропущенных без IPv4
-    skipped_count_duplicates = 0 # Счетчик пропущенных дубликатов
+    skipped_count_no_ipv4 = 0
+    skipped_count_duplicate_ipv4 = 0
+
     for config, resolved_ip in resolution_results_async:
         if resolved_ip:
             if resolved_ip not in seen_ipv4_addresses:
                 parsed_configs_resolved.append(config)
                 seen_ipv4_addresses.add(resolved_ip)
             else:
-                skipped_count_duplicates += 1 # Увеличиваем счетчик дубликатов
+                skipped_count_duplicate_ipv4 += 1
                 if logger.level <= logging.DEBUG: # Log duplicate IPs only in DEBUG mode
                     colored_log(logging.DEBUG, f"ℹ️  Пропущен дубликат прокси по IPv4: {resolved_ip} (протокол: {config.protocol})")
         else:
-            skipped_count_no_ipv4 += 1 # Увеличиваем счетчик пропущенных без IPv4
+            skipped_count_no_ipv4 += 1
             if logger.level <= logging.DEBUG: # Log no IPv4 only in DEBUG mode
                 colored_log(logging.DEBUG, f"ℹ️  Пропущен прокси без IPv4: {config.address} (протокол: {config.protocol})")
 
-    colored_log(logging.DEBUG, f"Пропущено прокси без IPv4: {skipped_count_no_ipv4}") # Логируем количество пропущенных без IPv4
-    colored_log(logging.DEBUG, f"Пропущено прокси-дубликатов: {skipped_count_duplicates}") # Логируем количество пропущенных дубликатов
-    colored_log(logging.DEBUG, f"Итого распарсенных и отфильтрованных прокси: {len(parsed_configs_resolved)}") # Логируем итоговое количество прокси
+    colored_log(logging.DEBUG, f"📊 Статистика фильтрации: итоговых прокси={len(parsed_configs_resolved)}, пропущено (нет IPv4)={skipped_count_no_ipv4}, пропущено (дубликат IPv4)={skipped_count_duplicate_ipv4}") # Log filtering stats
     return parsed_configs_resolved
 
 
@@ -505,12 +513,13 @@ def save_all_proxies_to_file(all_proxies: List[ParsedConfig], output_file: str) 
             for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке
                 if protocol in protocol_grouped_proxies:
                     protocol_name = ProfileName[protocol.upper()].value
-                    colored_log(logging.INFO, f"\n📝 Протокол ({LogColors.CYAN}{protocol_name}{LogColors.RESET}, всего, уникальные IPv4): {len(protocol_grouped_proxies[protocol])}")
-                    for proxy_conf in protocol_grouped_proxies[protocol]:
+                    protocol_proxies = protocol_grouped_proxies[protocol]
+                    colored_log(logging.INFO, f"\n📝 Протокол ({LogColors.CYAN}{protocol_name}{LogColors.RESET}, всего, уникальные IPv4): {len(protocol_proxies)}")
+                    for proxy_conf in protocol_proxies:
                         proxy_name = generate_proxy_name(proxy_conf, protocol_name)
                         config_line = proxy_conf.config_string + f"#{proxy_name}"
                         f.write(config_line + "\n")
-                        colored_log(logging.INFO, f"   - {config_line}")
+                        colored_log(logging.DEBUG, f"💾 Сохраняю прокси: {config_line}") # Log proxy saving in DEBUG
                         total_proxies_count += 1
 
         colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (всего, уникальные IPv4) в {output_file}")
@@ -541,6 +550,7 @@ async def load_channel_urls(all_urls_file: str) -> List[str]:
                 url = line.strip()
                 if url:
                     channel_urls.append(url)
+        colored_log(logging.DEBUG, f"🗂️  Загружено URL каналов из {all_urls_file}: {channel_urls}") # Log loaded channel URLs
     except FileNotFoundError:
         colored_log(logging.WARNING, f"Файл {all_urls_file} не найден. Проверьте наличие файла с URL каналов.")
         open(all_urls_file, 'w').close() # Create empty file if not exists (sync ok here)
@@ -550,7 +560,7 @@ async def load_channel_urls(all_urls_file: str) -> List[str]:
 async def main(verbosity: str): # Add verbosity argument
     """Main function to download and process proxy configurations from channel URLs."""
     # Set verbosity level from command line argument
-    log_level = getattr(logging, verbosity.upper(), logging.INFO)
+    log_level = getattr(logging, verbosity.upper(), logging.DEBUG) # Set to DEBUG to capture all logs
     console_handler.setLevel(log_level)
     logger.setLevel(logging.DEBUG) # Keep debug level for internal logs, console is controlled by arg
 
@@ -625,6 +635,7 @@ async def main(verbosity: str): # Add verbosity argument
             all_proxies.extend(proxies_list)
 
     progress_bar.close() # Close progress bar
+    colored_log(logging.DEBUG, f"💾 Попытка сохранения {len(all_proxies)} прокси в файл.") # Log proxy saving attempt
 
     all_proxies_saved_count = save_all_proxies_to_file(all_proxies, OUTPUT_ALL_CONFIG_FILE)
     end_time = time.time()
@@ -673,9 +684,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Загрузчик и обработчик прокси-конфигураций.")
     parser.add_argument(
         "-v", "--verbosity",
-        default="INFO",
+        default="DEBUG", # Default verbosity set to DEBUG
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Уровень verbosity вывода в консоль: DEBUG, INFO, WARNING, ERROR, CRITICAL. По умолчанию INFO."
+        help="Уровень verbosity вывода в консоль: DEBUG, INFO, WARNING, ERROR, CRITICAL. По умолчанию DEBUG."
     )
     args = parser.parse_args()
 
