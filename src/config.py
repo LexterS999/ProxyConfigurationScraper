@@ -281,13 +281,16 @@ async def main():
             for channel_url in channel_urls:
                 tg.create_task(download_and_parse(channel_url, session, resolver, channel_semaphore, protocol_counts, channel_status_counts))
 
-        for task in tg:
-            if task.exception() is not None:
-                logger.error("Task exception", exception=task.exception())  # Log exception
-            else:
-                result = task.result()
-                if result: # Check for empty lists.
+        # Correct way to handle results and exceptions with TaskGroup
+        for task in tg._tasks:  # Iterate over _tasks, not the TaskGroup itself
+            try:
+                result = task.result() # this will raise exception if one occurred
+                if result:
                     all_proxies.extend(result)
+            except Exception as e:
+                logger.error("Task failed", exception=str(e))
+
+
 
     all_proxies_saved_count = await save_all_proxies_to_file(all_proxies, OUTPUT_ALL_CONFIG_FILE)
     end_time = time.monotonic()
