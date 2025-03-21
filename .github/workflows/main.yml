@@ -2,11 +2,11 @@ name: Update Proxy Configs
 
 on:
   schedule:
-    - cron: '0 */9 * * *'
-  workflow_dispatch:
+    - cron: '0 */9 * * *' # Запускать каждый 9-й час (00:00, 09:00, 18:00 UTC)
+  workflow_dispatch: # Разрешить ручной запуск workflow
 
 permissions:
-  contents: write
+  contents: write # Разрешение на запись для коммита изменений
 
 jobs:
   update-configs:
@@ -15,8 +15,9 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      # Используем GITHUB_TOKEN, не нужен SECRET_TOKEN для записи в тот же репозиторий
       with:
-        token: ${{ secrets.SECRET_TOKEN }}
+        token: ${{ github.token }}
 
     - name: Set up Python 3.11
       uses: actions/setup-python@v4
@@ -36,10 +37,8 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Create directories
-      run: |
-        mkdir -p assets
-        mkdir -p configs
+    - name: Create configs directory
+      run: mkdir -p configs # Убрали assets, оставили только configs
 
     - name: Check channel_urls.txt exists
       run: |
@@ -51,13 +50,12 @@ jobs:
         fi
 
     - name: Run config fetcher script
-      run: python src/config.py
-      continue-on-error: true
+      run: python src/config.py # Запускаем скрипт
+      # continue-on-error: true # Раскомментируйте, если хотите, чтобы workflow продолжался даже при ошибке скрипта, но обычно лучше убрать для выявления проблем
 
     - name: Script execution status
       if: always()
-      run: |
-        echo "Python script src/config.py executed."
+      run: echo "Python script src/config.py executed."
 
     - name: Setup Git user
       run: |
@@ -67,10 +65,12 @@ jobs:
     - name: Commit and push changes
       id: git_push
       run: |
-        git pull --rebase origin main || true
-        git add configs/proxy_configs_all.txt channel_urls.txt
+        git pull --rebase origin main || true # Добавили pull --rebase перед изменениями
+        git add configs/proxy_configs_all.txt configs/proxy_configs_live.txt channel_urls.txt # Добавили proxy_configs_live.txt
         if ! git diff --staged --quiet; then
-          git commit -m "Update proxy configs (all), stats and reports"
+          commit_message="Update proxy configs (all and live), stats and reports" # Более информативное сообщение
+          echo "Committing with message: ${commit_message}"
+          git commit -m "${commit_message}"
           git push origin HEAD:main
           echo "::set-output name=pushed::true"
           echo "Changes committed and pushed."
