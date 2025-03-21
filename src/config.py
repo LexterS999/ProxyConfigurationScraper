@@ -242,30 +242,28 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
                  parsed_configs.append(parsed_config)
     return parsed_configs
 
+def generate_v2rayng_config_name(proxy_config: ProxyParsedConfig) -> str:
+    """Генерирует имя конфигурации для v2rayNG."""
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M")
+    return f"{proxy_config.protocol}-{proxy_config.address}-{timestamp}"
+
 def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
-    """Saves all downloaded proxies to the output file, grouped by protocol."""
+    """Saves all downloaded proxies to the output file with custom v2rayNG names."""
     total_proxies_count = 0
     try:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
-            protocol_grouped_proxies = defaultdict(list)
             for proxy_conf in all_proxies:
-                protocol_grouped_proxies[proxy_conf.protocol].append(proxy_conf)
-
-            for protocol_name in ProfileName: # Итерируемся по Enum ProfileName
-                protocol = protocol_name.name.lower() # Получаем имя протокола в нижнем регистре
-                if protocol in protocol_grouped_proxies:
-                    colored_log(logging.INFO, f"\n📝 Протокол (все): {protocol_name.value}") # Используем value из Enum
-                    for proxy_conf in protocol_grouped_proxies[protocol]:
-                        config_line = proxy_conf.config_string + f"#{protocol_name.value}" # Используем value из Enum
-                        f.write(config_line + "\n")
-                        colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {config_line}")
-                        total_proxies_count += 1
+                # Генерируем кастомное имя
+                config_name = generate_v2rayng_config_name(proxy_conf)
+                config_line = proxy_conf.config_string + f"#{config_name}"
+                f.write(config_line + "\n")
+                colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {config_line}")
+                total_proxies_count += 1
         colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении всех прокси в файл: {e}", exc_info=True)
     return total_proxies_count
-
 
 async def load_channel_urls(all_urls_file: str) -> List[str]:
     """Loads channel URLs from the specified file."""
