@@ -121,6 +121,9 @@ class Protocols(Enum):
     TUIC = "tuic"
     HY2 = "hy2"
     SS = "ss"
+    # Добавили shadowsocksr, т.к. некоторые ссылки используют его
+    SSR = "ssr"
+    TROJAN = "trojan"
 
 @dataclass(frozen=True)
 class ConfigFiles:
@@ -188,6 +191,8 @@ class ProfileName(Enum):
     TUIC = "TUIC"
     HY2 = "HY2"
     SS = "SS"
+    SSR = "SSR" # Добавлено
+    TROJAN = "TROJAN" # Добавлено
     UNKNOWN = "Unknown Protocol"  # Добавлено для обработки неизвестных протоколов
 
 class InvalidURLError(ValueError):
@@ -223,7 +228,16 @@ class ProxyParsedConfig:
         """Разбирает строку конфигурации прокси (URL) в объект ProxyParsedConfig."""
         protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p + "://")), None)
         if not protocol:
-            raise UnsupportedProtocolError(f"Неподдерживаемый протокол в URL: {config_string}")
+            # Попытка декодировать base64, если это не стандартный URL
+            try:
+                decoded_config = base64.b64decode(config_string).decode('utf-8')
+                protocol = next((p for p in ALLOWED_PROTOCOLS if decoded_config.startswith(p + "://")), None)
+                if protocol:
+                    config_string = decoded_config # Используем декодированную строку
+                else:
+                    raise UnsupportedProtocolError(f"Неподдерживаемый протокол в URL: {config_string}")
+            except:
+                raise UnsupportedProtocolError(f"Неподдерживаемый протокол в URL: {config_string}")
 
         try:
             parsed_url = urlparse(config_string)
@@ -278,7 +292,15 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
                     colored_log(logging.WARNING, f"⚠️ Канал {channel_url} вернул пустой ответ.")
                     return [], "warning"  # Пустой ответ - это предупреждение
 
-                return text.splitlines(), "success"
+                # Попытка декодировать base64, если это необходимо
+                try:
+                    # Если контент похож на base64, декодируем его
+                    decoded_text = base64.b64decode(text.strip()).decode('utf-8')
+                    return decoded_text.splitlines(), "success"
+                except:
+                    # Если не base64, возвращаем как есть
+                    return text.splitlines(), "success"
+
 
         except aiohttp.ClientResponseError as e:
             colored_log(logging.WARNING, f"⚠️ Канал {channel_url} вернул HTTP ошибку {e.status}: {e.message}")
@@ -302,7 +324,7 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
 
     for line in lines:
         line = line.strip()
-        if not line or not any(line.startswith(proto + "://") for proto in ALLOWED_PROTOCOLS):
+        if not line:  # Пропускаем пустые строки
             continue
 
         try:
@@ -468,7 +490,6 @@ async def main():
                 else:
                     status_text, color = status_key.upper(), '\033[0m'
 
-                # !!! ИЗМЕНЕНИЕ ТУТ: используем f-строку для передачи параметров, а не внутри colored_log
                 colored_log(logging.INFO, f"  - {status_text}: {count} каналов")
 
         colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций: {total_proxies_downloaded}")
