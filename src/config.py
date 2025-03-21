@@ -354,7 +354,7 @@ async def main():
         channel_semaphore = asyncio.Semaphore(CONCURRENCY.MAX_CHANNELS) # Используем константу
         proxy_check_semaphore = asyncio.Semaphore(CONCURRENCY.MAX_PROXY_CHECKS) # Семафор для ограничения проверок прокси
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession() as session: # Session created here, and will be closed when exiting this block
             channel_tasks = []
             for channel_url in channel_urls:
                 async def process_channel_task(url):
@@ -386,20 +386,19 @@ async def main():
                 channels_processed_successfully += success_flag # Aggregate success flags
                 all_proxies.extend(proxies_list) # Collect proxies
 
-        colored_log(logging.INFO, f"🚀 Начало проверки {len(all_proxies)} прокси на живость...")
-        live_proxies = []
-        check_tasks = [check_proxy(proxy, session, proxy_check_semaphore) for proxy in all_proxies] # Передаем семафор
-        check_results = await asyncio.gather(*check_tasks)
+            colored_log(logging.INFO, f"🚀 Начало проверки {len(all_proxies)} прокси на живость...")
+            live_proxies = []
+            check_tasks = [check_proxy(proxy, session, proxy_check_semaphore) for proxy in all_proxies] # Передаем семафор
+            check_results = await asyncio.gather(*check_tasks) # Check proxies within the session context
 
-        live_proxies = [proxy for proxy, is_live in zip(all_proxies, check_results) if is_live] # Фильтруем живые прокси
-        dead_proxies_count = len(all_proxies) - len(live_proxies)
-        colored_log(logging.INFO, f"✅ Проверка прокси завершена. Живых прокси: {len(live_proxies)}, мертвых: {dead_proxies_count}")
+            live_proxies = [proxy for proxy, is_live in zip(all_proxies, check_results) if is_live] # Фильтруем живые прокси
+            dead_proxies_count = len(all_proxies) - len(live_proxies)
+            colored_log(logging.INFO, f"✅ Проверка прокси завершена. Живых прокси: {len(live_proxies)}, мертвых: {dead_proxies_count}")
 
-
-        # Сохранение всех загруженных прокси (включая дубликаты) в отдельный файл
-        all_proxies_saved_count = save_all_proxies_to_file(all_proxies, OUTPUT_ALL_CONFIG_FILE)
-        # Сохранение только живых прокси в отдельный файл
-        live_proxies_saved_count = save_live_proxies_to_file(live_proxies, OUTPUT_LIVE_CONFIG_FILE)
+            # Сохранение всех загруженных прокси (включая дубликаты) в отдельный файл
+            all_proxies_saved_count = save_all_proxies_to_file(all_proxies, OUTPUT_ALL_CONFIG_FILE)
+            # Сохранение только живых прокси в отдельный файл
+            live_proxies_saved_count = save_live_proxies_to_file(live_proxies, OUTPUT_LIVE_CONFIG_FILE)
 
 
         end_time = time.time()
