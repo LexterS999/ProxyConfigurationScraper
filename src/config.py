@@ -283,7 +283,7 @@ def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: 
                 if protocol in protocol_grouped_proxies:
                     colored_log(logging.INFO, f"\n📝 Протокол (все): {protocol_name.value}") # Используем value из Enum
                     for proxy_conf in protocol_grouped_proxies[protocol]:
-                        config_line = proxy_conf.config_string + f"#{protocol_name.value}" # Используем value из Enum
+                        config_line = proxy_conf.config_string # Новое оформление - только config_string
                         f.write(config_line + "\n")
                         colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {config_line}")
                         total_proxies_count += 1
@@ -307,7 +307,7 @@ def save_live_proxies_to_file(live_proxies: List[ProxyParsedConfig], output_file
                 if protocol in protocol_grouped_proxies:
                     colored_log(logging.INFO, f"\n📝 Протокол (живые): {protocol_name.value}")
                     for proxy_conf in protocol_grouped_proxies[protocol]:
-                        config_line = proxy_conf.config_string + f"#{ProfileName[proxy_conf.protocol.upper()].value}-live" # Пометка "-live"
+                        config_line = f"{proxy_conf.config_string} (live)" # Новое оформление - config_string (live)
                         f.write(config_line + "\n")
                         colored_log(logging.INFO, f"   ➕ Добавлен прокси (живой): {config_line}")
                         live_proxies_count += 1
@@ -355,51 +355,53 @@ async def main():
         proxy_check_semaphore = asyncio.Semaphore(CONCURRENCY.MAX_PROXY_CHECKS) # Семафор для ограничения проверок прокси
 
         async with aiohttp.ClientSession() as session: # Session created here, and will be closed when exiting this block
-            channel_tasks = []
-            for channel_url in channel_urls:
-                async def process_channel_task(url):
-                    channel_proxies_count_channel = 0 # Initialize count here
-                    channel_success = 0 # Initialize success count
-                    async with channel_semaphore:
-                        colored_log(logging.INFO, f"🚀 Начало обработки канала: {url}")
-                        lines, status = await download_proxies_from_channel(url, session)
-                        channel_status_counts[status] += 1
-                        if status == "success":
-                            parsed_proxies = await parse_and_filter_proxies(lines, resolver)
-                            channel_proxies_count_channel = len(parsed_proxies)
-                            channel_success = 1 # Mark channel as success after processing
-                            for proxy in parsed_proxies:
-                                protocol_counts[proxy.protocol] += 1
-                            colored_log(logging.INFO, f"✅ Канал {url} обработан. Найдено {channel_proxies_count_channel} прокси.")
-                            return channel_proxies_count_channel, channel_success, parsed_proxies # Return counts and proxies
-                        else:
-                            colored_log(logging.WARNING, f"⚠️ Канал {url} обработан со статусом: {status}.")
-                            return 0, 0, [] # Return zero counts and empty list for failed channels
+            try: # Added try block to encompass session usage
+                channel_tasks = []
+                for channel_url in channel_urls:
+                    async def process_channel_task(url):
+                        channel_proxies_count_channel = 0 # Initialize count here
+                        channel_success = 0 # Initialize success count
+                        async with channel_semaphore:
+                            colored_log(logging.INFO, f"🚀 Начало обработки канала: {url}")
+                            lines, status = await download_proxies_from_channel(url, session)
+                            channel_status_counts[status] += 1
+                            if status == "success":
+                                parsed_proxies = await parse_and_filter_proxies(lines, resolver)
+                                channel_proxies_count_channel = len(parsed_proxies)
+                                channel_success = 1 # Mark channel as success after processing
+                                for proxy in parsed_proxies:
+                                    protocol_counts[proxy.protocol] += 1
+                                colored_log(logging.INFO, f"✅ Канал {url} обработан. Найдено {channel_proxies_count_channel} прокси.")
+                                return channel_proxies_count_channel, channel_success, parsed_proxies # Return counts and proxies
+                            else:
+                                colored_log(logging.WARNING, f"⚠️ Канал {url} обработан со статусом: {status}.")
+                                return 0, 0, [] # Return zero counts and empty list for failed channels
 
-                task = asyncio.create_task(process_channel_task(channel_url))
-                channel_tasks.append(task)
+                    task = asyncio.create_task(process_channel_task(channel_url))
+                    channel_tasks.append(task)
 
-            channel_results = await asyncio.gather(*channel_tasks)
-            all_proxies = []
-            for proxies_count, success_flag, proxies_list in channel_results: # Unpack returned values
-                total_proxies_downloaded += proxies_count # Aggregate proxy counts
-                channels_processed_successfully += success_flag # Aggregate success flags
-                all_proxies.extend(proxies_list) # Collect proxies
+                channel_results = await asyncio.gather(*channel_tasks)
+                all_proxies = []
+                for proxies_count, success_flag, proxies_list in channel_results: # Unpack returned values
+                    total_proxies_downloaded += proxies_count # Aggregate proxy counts
+                    channels_processed_successfully += success_flag # Aggregate success flags
+                    all_proxies.extend(proxies_list) # Collect proxies
 
-            colored_log(logging.INFO, f"🚀 Начало проверки {len(all_proxies)} прокси на живость...")
-            live_proxies = []
-            check_tasks = [check_proxy(proxy, session, proxy_check_semaphore) for proxy in all_proxies] # Передаем семафор
-            check_results = await asyncio.gather(*check_tasks) # Check proxies within the session context
+                colored_log(logging.INFO, f"🚀 Начало проверки {len(all_proxies)} прокси на живость...")
+                live_proxies = []
+                check_tasks = [check_proxy(proxy, session, proxy_check_semaphore) for proxy in all_proxies] # Передаем семафор
+                check_results = await asyncio.gather(*check_tasks) # Check proxies within the session context
 
-            live_proxies = [proxy for proxy, is_live in zip(all_proxies, check_results) if is_live] # Фильтруем живые прокси
-            dead_proxies_count = len(all_proxies) - len(live_proxies)
-            colored_log(logging.INFO, f"✅ Проверка прокси завершена. Живых прокси: {len(live_proxies)}, мертвых: {dead_proxies_count}")
+                live_proxies = [proxy for proxy, is_live in zip(all_proxies, check_results) if is_live] # Фильтруем живые прокси
+                dead_proxies_count = len(all_proxies) - len(live_proxies)
+                colored_log(logging.INFO, f"✅ Проверка прокси завершена. Живых прокси: {len(live_proxies)}, мертвых: {dead_proxies_count}")
 
-            # Сохранение всех загруженных прокси (включая дубликаты) в отдельный файл
-            all_proxies_saved_count = save_all_proxies_to_file(all_proxies, OUTPUT_ALL_CONFIG_FILE)
-            # Сохранение только живых прокси в отдельный файл
-            live_proxies_saved_count = save_live_proxies_to_file(live_proxies, OUTPUT_LIVE_CONFIG_FILE)
-
+                # Сохранение всех загруженных прокси (включая дубликаты) в отдельный файл
+                all_proxies_saved_count = save_all_proxies_to_file(all_proxies, OUTPUT_ALL_CONFIG_FILE)
+                # Сохранение только живых прокси в отдельный файл
+                live_proxies_saved_count = save_live_proxies_to_file(live_proxies, OUTPUT_LIVE_CONFIG_FILE)
+            except Exception as session_exception: # Catch exceptions within session usage
+                logger.error(f"Ошибка при работе с сессией: {session_exception}", exc_info=True) # Log session related errors
 
         end_time = time.time()
         elapsed_time = end_time - start_time
