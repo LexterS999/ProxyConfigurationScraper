@@ -12,9 +12,8 @@ import aiohttp
 import time
 import concurrent.futures  # Import for thread pool
 import validators # For URL validation
-import yaml # For config file
-from tqdm import tqdm # For progress bar
 import argparse # For command line arguments
+from tqdm import tqdm # For progress bar
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, urlsplit
@@ -24,8 +23,7 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import functools
 
-# --- Конфигурация из YAML файла ---
-CONFIG_FILE = 'src/config.yaml'
+# --- Значения конфигурации по умолчанию (теперь заданы прямо в коде) ---
 DEFAULT_CONFIG = {
     'log_level_file': 'WARNING',
     'log_level_console': 'INFO',
@@ -42,20 +40,6 @@ DEFAULT_CONFIG = {
     'enable_dns_cache': True,
 }
 
-def load_config(config_file_path):
-    try:
-        with open(config_file_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-            return {**DEFAULT_CONFIG, **config} # Merge with defaults, config file overrides defaults
-    except FileNotFoundError:
-        colored_log(logging.WARNING, f"Файл конфигурации {config_file_path} не найден. Используются значения по умолчанию.")
-        return DEFAULT_CONFIG
-    except yaml.YAMLError as e:
-        colored_log(logging.ERROR, f"Ошибка чтения файла конфигурации {config_file_path}: {e}. Используются значения по умолчанию.")
-        return DEFAULT_CONFIG
-
-config = load_config(CONFIG_FILE)
-
 # --- Настройка улучшенного логирования ---
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)"
 CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
@@ -63,14 +47,14 @@ CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG) # Set root logger level to DEBUG, handlers will filter
 
-file_handler = logging.FileHandler(config['log_file'], encoding='utf-8')
-file_handler.setLevel(getattr(logging, config['log_level_file'].upper(), logging.WARNING))
+file_handler = logging.FileHandler(DEFAULT_CONFIG['log_file'], encoding='utf-8')
+file_handler.setLevel(getattr(logging, DEFAULT_CONFIG['log_level_file'].upper(), logging.WARNING))
 formatter_file = logging.Formatter(LOG_FORMAT)
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(getattr(logging, config['log_level_console'].upper(), logging.INFO))
+console_handler.setLevel(getattr(logging, DEFAULT_CONFIG['log_level_console'].upper(), logging.INFO))
 formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
@@ -102,16 +86,16 @@ def colored_log(level, message: str, *args, **kwargs):
     logger.log(level, f"{color}{message}{LogColors.RESET}", *args, **kwargs)
 
 # --- Константы из конфигурации ---
-ALLOWED_PROTOCOLS = config['allowed_protocols']
-ALL_URLS_FILE = config['all_urls_file']
-OUTPUT_ALL_CONFIG_FILE = config['output_all_config_file']
-MAX_RETRIES = config['max_retries']
-RETRY_DELAY_BASE = config['retry_delay_base']
-MAX_CONCURRENT_CHANNELS = config['max_concurrent_channels']
-MAX_CONCURRENT_PROXIES_PER_CHANNEL = config['max_concurrent_proxies_per_channel']
-MAX_CONCURRENT_PROXIES_GLOBAL = config['max_concurrent_proxies_global']
-DOWNLOAD_TIMEOUT_SEC = config['download_timeout_sec']
-ENABLE_DNS_CACHE = config['enable_dns_cache']
+ALLOWED_PROTOCOLS = DEFAULT_CONFIG['allowed_protocols']
+ALL_URLS_FILE = DEFAULT_CONFIG['all_urls_file']
+OUTPUT_ALL_CONFIG_FILE = DEFAULT_CONFIG['output_all_config_file']
+MAX_RETRIES = DEFAULT_CONFIG['max_retries']
+RETRY_DELAY_BASE = DEFAULT_CONFIG['retry_delay_base']
+MAX_CONCURRENT_CHANNELS = DEFAULT_CONFIG['max_concurrent_channels']
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = DEFAULT_CONFIG['max_concurrent_proxies_per_channel']
+MAX_CONCURRENT_PROXIES_GLOBAL = DEFAULT_CONFIG['max_concurrent_proxies_global']
+DOWNLOAD_TIMEOUT_SEC = DEFAULT_CONFIG['download_timeout_sec']
+ENABLE_DNS_CACHE = DEFAULT_CONFIG['enable_dns_cache']
 
 # --- Thread Pool Executor for CPU-bound tasks ---
 CPU_BOUND_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
