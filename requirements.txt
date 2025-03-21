@@ -1,8 +1,6 @@
-requests
-urllib3
-asyncio
-aiohttp
-aiodns
-validators
-tqdm
-structlog
+aiohttp>=3.9.0
+aiodns>=3.0.0
+async-lru>=2.0.0
+aiofiles>=23.0.0
+structlog>=23.0.0
+typing-extensions
