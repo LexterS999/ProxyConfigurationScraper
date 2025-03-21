@@ -1,67 +1,77 @@
 import asyncio
 import aiodns
+import re
 import os
 import logging
 import ipaddress
+import io
+import uuid
+import string
+import base64
 import aiohttp
 import time
-import structlog
 
 from enum import Enum
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlsplit
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Literal, Final
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Set
+from dataclasses import dataclass, field
 from collections import defaultdict
-from async_lru import alru_cache
+import functools
 
-# --- Настройка структурированного логирования ---
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
+# --- Настройка улучшенного логирования ---
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s (Process: %(process)s)"
+CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
+LOG_FILE = 'proxy_downloader.log'
 
-formatter = structlog.stdlib.ProcessorFormatter(
-    processor=structlog.dev.ConsoleRenderer(colors=True),
-)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-LOG_FILE: Final[str] = 'proxy_downloader.log'
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 file_handler.setLevel(logging.WARNING)
-file_handler.setFormatter(formatter)
+formatter_file = logging.Formatter(LOG_FORMAT)
+file_handler.setFormatter(formatter_file)
+logger.addHandler(file_handler)
 
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(formatter)
-
-logger = structlog.get_logger(__name__)
-logger.addHandler(file_handler)
+formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
+console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
-logger.setLevel(logging.INFO)
 
+class LogColors:
+    RESET = '\033[0m'
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+def colored_log(level, message: str, *args, **kwargs):
+    color = LogColors.RESET
+    if level == logging.INFO:
+        color = LogColors.GREEN
+    elif level == logging.WARNING:
+        color = LogColors.YELLOW
+    elif level == logging.ERROR:
+        color = LogColors.RED
+    elif level == logging.CRITICAL:
+        color = LogColors.BOLD + LogColors.RED
+    logger.log(level, f"{color}{message}{LogColors.RESET}", *args, **kwargs)
 
 # --- Константы ---
-ALLOWED_PROTOCOLS: Final[List[Literal["vless://", "tuic://", "hy2://", "ss://"]]] = ["vless://", "tuic://", "hy2://", "ss://"]
-ALL_URLS_FILE: Final[str] = "channel_urls.txt"
-OUTPUT_ALL_CONFIG_FILE: Final[str] = "configs/proxy_configs_all.txt"
-MAX_RETRIES: Final[int] = 4
-RETRY_DELAY_BASE: Final[int] = 2
-MAX_CONCURRENT_CHANNELS: Final[int] = 60
-MAX_CONCURRENT_PROXIES_PER_CHANNEL: Final[int] = 50  # Не используется, но оставлено для информации
-MAX_CONCURRENT_PROXIES_GLOBAL: Final[int] = 50
-RESOLVER_TIMEOUT: Final[float] = 5.0  # Таймаут для DNS резолвера
-
+ALLOWED_PROTOCOLS = ["vless://", "tuic://", "hy2://", "ss://"]
+ALL_URLS_FILE = "channel_urls.txt"
+OUTPUT_ALL_CONFIG_FILE = "configs/proxy_configs_all.txt"
+MAX_RETRIES = 4
+RETRY_DELAY_BASE = 2
+MAX_CONCURRENT_CHANNELS = 60
+MAX_CONCURRENT_PROXIES_PER_CHANNEL = 50
+MAX_CONCURRENT_PROXIES_GLOBAL = 50
 
 class ProfileName(Enum):
     VLESS = "VLESS"
@@ -88,45 +98,42 @@ class ProxyParsedConfig:
 
     @classmethod
     def from_url(cls, config_string: str) -> Optional["ProxyParsedConfig"]:
-        parsed_url = urlparse(config_string)
-        protocol = parsed_url.scheme
-        if protocol not in ALLOWED_PROTOCOLS:
+        protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p)), None)
+        if not protocol:
             return None
 
-        address = parsed_url.hostname
-        port = parsed_url.port
-        if not address or not port or not (0 < port <= 65535):
+        try:
+            parsed_url = urlparse(config_string)
+            address = parsed_url.hostname
+            port = parsed_url.port
+            if not address or not port:
+                return None
+            return cls(
+                config_string=config_string,
+                protocol=protocol.replace("://", ""),
+                address=address,
+                port=port
+            )
+        except ValueError:
             return None
 
-        return cls(
-            config_string=config_string,
-            protocol=protocol.replace("://", ""),
-            address=address,
-            port=port,
-        )
-
-@alru_cache(maxsize=1024)
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
-    if is_ipv4(hostname):
+    if is_valid_ipv4(hostname):
         return hostname
     try:
-        result = await asyncio.wait_for(resolver.query(hostname, 'A'), timeout=RESOLVER_TIMEOUT)
+        result = await resolver.query(hostname, 'A')
         resolved_address = result[0].host
-        if is_ipv4(resolved_address):
+        if is_valid_ipv4(resolved_address):
             return resolved_address
         else:
             return None
     except aiodns.error.DNSError as e:
         return None
-    except asyncio.CancelledError:
-        raise
-    except asyncio.TimeoutError:
-        logger.warning("Timeout resolving DNS", hostname=hostname)
-        return None
     except Exception:
         return None
 
-def is_ipv4(hostname: str) -> bool:
+@functools.lru_cache(maxsize=1024)
+def is_valid_ipv4(hostname: str) -> bool:
     try:
         ipaddress.IPv4Address(hostname)
         return True
@@ -134,168 +141,161 @@ def is_ipv4(hostname: str) -> bool:
         return False
 
 async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession) -> Tuple[List[str], str]:
+    """Downloads proxy configurations from a single channel URL with retry logic."""
     retries_attempted = 0
+    session_timeout = aiohttp.ClientTimeout(total=15)
     while retries_attempted <= MAX_RETRIES:
         try:
-            async with session.get(channel_url) as response:
+            async with session.get(channel_url, timeout=session_timeout) as response:
                 if response.status == 200:
                     text = await response.text(encoding='utf-8', errors='ignore')
                     return text.splitlines(), "success"
                 else:
-                    logger.warning("Channel returned status", channel=channel_url, status=response.status)
-                    return [], "warning"
+                    colored_log(logging.WARNING, f"⚠️ Канал {channel_url} вернул статус {response.status}")
+                    return [], "warning" # Treat as warning, don't retry immediately for HTTP errors
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             retry_delay = RETRY_DELAY_BASE * (2 ** retries_attempted)
-            logger.warning("Error getting channel", channel=channel_url, attempt=retries_attempted + 1, max_attempts=MAX_RETRIES + 1, error=e, delay=retry_delay)
+            colored_log(logging.WARNING, f"⚠️ Ошибка при получении {channel_url} (попытка {retries_attempted+1}/{MAX_RETRIES+1}): {e}. Пауза {retry_delay} сек")
             if retries_attempted == MAX_RETRIES:
-                logger.error("Max attempts reached", channel=channel_url)
-                raise
+                colored_log(logging.ERROR, f"❌ Макс. попыток ({MAX_RETRIES+1}) исчерпано для {channel_url}")
+                return [], "error"
             await asyncio.sleep(retry_delay)
         retries_attempted += 1
-    return [], "critical"
+    return [], "critical" # Should not reach here, but for type hinting
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
+    """Parses and filters valid proxy configurations from lines."""
     parsed_configs = []
-    tasks = []
     for line in lines:
         line = line.strip()
         if not line or not any(line.startswith(proto) for proto in ALLOWED_PROTOCOLS):
             continue
         parsed_config = ProxyParsedConfig.from_url(line)
         if parsed_config:
-            tasks.append(resolve_address(parsed_config.address, resolver))
-            parsed_configs.append(parsed_config)
-    resolved_ips = await asyncio.gather(*tasks, return_exceptions=True)
+            resolved_ip = await resolve_address(parsed_config.address, resolver)
+            if resolved_ip:
+                 parsed_configs.append(parsed_config)
+    return parsed_configs
 
-    filtered_configs = []
-    for parsed_config, resolved_ip in zip(parsed_configs, resolved_ips):
-        if isinstance(resolved_ip, str):
-            filtered_configs.append(parsed_config)
-
-    return filtered_configs
-
-async def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
-    import aiofiles
-
+def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
+    """Saves all downloaded proxies to the output file with protocol names (including duplicates)."""
     total_proxies_count = 0
     try:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        async with aiofiles.open(output_file, 'w', encoding='utf-8') as f:
+        with open(output_file, 'w', encoding='utf-8') as f:
             protocol_grouped_proxies = defaultdict(list)
             for proxy_conf in all_proxies:
                 protocol_grouped_proxies[proxy_conf.protocol].append(proxy_conf)
 
-            for protocol in ["vless", "tuic", "hy2", "ss"]:
+            for protocol in ["vless", "tuic", "hy2", "ss"]: # сохраняем в нужном порядке
                 if protocol in protocol_grouped_proxies:
-                    await f.write(f"\n📝 Протокол (все): {ProfileName[protocol.upper()].value}\n")
-                    logger.info("Writing protocol to file", protocol=ProfileName[protocol.upper()].value)
+                    colored_log(logging.INFO, f"\n📝 Протокол (все): {ProfileName[protocol.upper()].value}")
                     for proxy_conf in protocol_grouped_proxies[protocol]:
                         config_line = proxy_conf.config_string + f"#{ProfileName[protocol.upper()].value}"
-                        await f.write(config_line + "\n")
-                        logger.info("Added proxy to file", proxy=config_line)
+                        f.write(config_line + "\n")
+                        colored_log(logging.INFO, f"   ➕ Добавлен прокси (все): {config_line}")
                         total_proxies_count += 1
-        logger.info("Saved proxies to file", count=total_proxies_count, file=output_file)
+        colored_log(logging.INFO, f"\n✅ Сохранено {total_proxies_count} прокси (все) в {output_file}")
     except Exception as e:
-        logger.error("Error saving proxies to file", error=e)
+        logger.error(f"Ошибка при сохранении всех прокси в файл: {e}")
     return total_proxies_count
 
-async def load_channel_urls(all_urls_file: str) -> List[str]:
-    import aiofiles
 
+async def load_channel_urls(all_urls_file: str) -> List[str]:
+    """Loads channel URLs from the specified file."""
     channel_urls = []
     try:
-        async with aiofiles.open(all_urls_file, 'r', encoding='utf-8') as f:
-            async for line in f:
+        with open(all_urls_file, 'r', encoding='utf-8') as f:
+            for line in f:
                 url = line.strip()
                 if url:
                     channel_urls.append(url)
     except FileNotFoundError:
-        logger.warning("File not found", file=all_urls_file)
-        open(all_urls_file, 'w').close()
+        colored_log(logging.WARNING, f"Файл {all_urls_file} не найден. Проверьте наличие файла с URL каналов.")
+        open(all_urls_file, 'w').close() # Create empty file if not exists
     return channel_urls
 
-async def download_and_parse(url: str, session: aiohttp.ClientSession, resolver: aiodns.DNSResolver, channel_semaphore: asyncio.Semaphore, protocol_counts: Dict[str, int], channel_status_counts: Dict[str, int]) -> List[ProxyParsedConfig]:
-    async with channel_semaphore:
-        logger.info("Starting channel processing", channel=url)
-        try:
-            lines, status = await download_proxies_from_channel(url, session)
-            channel_status_counts[status] += 1
-            if status == "success":
-                parsed_proxies = await parse_and_filter_proxies(lines, resolver)
-                channel_proxies_count_channel = len(parsed_proxies)
 
-                for proxy in parsed_proxies:
-                    protocol_counts[proxy.protocol] += 1
-                logger.info("Channel processed successfully", channel=url, count=channel_proxies_count_channel)
-                return parsed_proxies
-            else:
-                logger.warning("Channel processed with status", channel=url, status=status)
-                return []
-        except Exception as e:
-            logger.error("Error processing channel", channel=url, error=e)
-            channel_status_counts["error"] += 1
-            return []
+async def main():
+    start_time = time.time()
+    channel_urls = await load_channel_urls(ALL_URLS_FILE)
+    if not channel_urls:
+        colored_log(logging.WARNING, "Нет URL каналов для обработки.")
+        return
 
-def print_statistics(elapsed_time: float, total_channels: int, channel_status_counts: Dict[str, int], total_proxies_downloaded: int, all_proxies_saved_count: int, protocol_counts: Dict[str, int]):
-    logger.info("==================== 📊 PROXY DOWNLOAD STATISTICS ====================")
-    logger.info("⏱️  Script execution time", time=f"{elapsed_time:.2f}s")
-    logger.info("🔗 Total URL sources", count=total_channels)
+    total_channels = len(channel_urls)
+    channels_processed_successfully = 0
+    total_proxies_downloaded = 0
+    protocol_counts = defaultdict(int)
+    channel_status_counts = defaultdict(int)
 
-    logger.info("\n📊 URL source processing status:")
+    resolver = aiodns.DNSResolver(loop=asyncio.get_event_loop())
+    global_proxy_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROXIES_GLOBAL)
+    channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
+
+    async with aiohttp.ClientSession() as session:
+        channel_tasks = []
+        for channel_url in channel_urls:
+            async def process_channel_task(url):
+                channel_proxies_count_channel = 0 # Initialize count here
+                channel_success = 0 # Initialize success count
+                async with channel_semaphore:
+                    colored_log(logging.INFO, f"🚀 Начало обработки канала: {url}")
+                    lines, status = await download_proxies_from_channel(url, session)
+                    channel_status_counts[status] += 1
+                    if status == "success":
+                        parsed_proxies = await parse_and_filter_proxies(lines, resolver)
+                        channel_proxies_count_channel = len(parsed_proxies)
+                        channel_success = 1 # Mark channel as success after processing
+                        for proxy in parsed_proxies:
+                            protocol_counts[proxy.protocol] += 1
+                        colored_log(logging.INFO, f"✅ Канал {url} обработан. Найдено {channel_proxies_count_channel} прокси.")
+                        return channel_proxies_count_channel, channel_success, parsed_proxies # Return counts and proxies
+                    else:
+                        colored_log(logging.WARNING, f"⚠️ Канал {url} обработан со статусом: {status}.")
+                        return 0, 0, [] # Return zero counts and empty list for failed channels
+
+            task = asyncio.create_task(process_channel_task(channel_url))
+            channel_tasks.append(task)
+
+        channel_results = await asyncio.gather(*channel_tasks)
+        all_proxies = []
+        for proxies_count, success_flag, proxies_list in channel_results: # Unpack returned values
+            total_proxies_downloaded += proxies_count # Aggregate proxy counts
+            channels_processed_successfully += success_flag # Aggregate success flags
+            all_proxies.extend(proxies_list) # Collect proxies
+
+    # Сохранение всех загруженных прокси (включая дубликаты) в отдельный файл
+    all_proxies_saved_count = save_all_proxies_to_file(all_proxies, OUTPUT_ALL_CONFIG_FILE)
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+
+    colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ЗАГРУЗКИ ПРОКСИ ====================")
+    colored_log(logging.INFO, f"⏱️  Время выполнения скрипта: {elapsed_time:.2f} сек")
+    colored_log(logging.INFO, f"🔗 Всего URL-источников: {total_channels}")
+
+    colored_log(logging.INFO, "\n📊 Статус обработки URL-источников:")
     for status in ["success", "warning", "error", "critical"]:
         count = channel_status_counts.get(status, 0)
         if count > 0:
             status_text = status.upper()
-            logger.info(f"  - {status_text}: {count} channels")
+            color = LogColors.GREEN if status == "success" else (LogColors.YELLOW if status == "warning" else (LogColors.RED if status in ["error", "critical"] else LogColors.RESET))
+            colored_log(logging.INFO, f"  - {color}{status_text}{LogColors.RESET}: {count} каналов")
 
-    logger.info("\n✨ Total configurations found", count=total_proxies_downloaded)
-    logger.info("📝 Total proxies (all) saved", count=all_proxies_saved_count, file=OUTPUT_ALL_CONFIG_FILE)
+    colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций: {total_proxies_downloaded}")
+    colored_log(logging.INFO, f"📝 Всего прокси (все) сохранено: {all_proxies_saved_count} (в {OUTPUT_ALL_CONFIG_FILE})")
 
-    logger.info("\n🔬 Protocol breakdown (found):")
+
+    colored_log(logging.INFO, "\n🔬 Разбивка по протоколам (найдено):")
     if protocol_counts:
         for protocol, count in protocol_counts.items():
-            logger.info("   - %s: %s", protocol.upper(), count)
+            colored_log(logging.INFO, f"   - {protocol.upper()}: {count}")
     else:
-        logger.info("   No protocol statistics.")
+        colored_log(logging.INFO, "   Нет статистики по протоколам.")
 
-    logger.info("======================== 🏁 END OF STATISTICS =========================")
-    logger.info("✅ Proxy download and processing completed.")
+    colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
+    colored_log(logging.INFO, "✅ Загрузка и обработка прокси завершена.")
 
-async def main():
-    start_time = time.monotonic()
-    channel_urls = await load_channel_urls(ALL_URLS_FILE)
-    if not channel_urls:
-        logger.warning("No channel URLs to process.")
-        return
-
-    total_channels = len(channel_urls)
-    protocol_counts = defaultdict(int)
-    channel_status_counts = defaultdict(int)
-
-    resolver = aiodns.DNSResolver()
-    channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
-
-    all_proxies = []
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
-        async with asyncio.TaskGroup() as tg:
-            for channel_url in channel_urls:
-                tg.create_task(download_and_parse(channel_url, session, resolver, channel_semaphore, protocol_counts, channel_status_counts))
-
-        # Correct way to handle results and exceptions with TaskGroup
-        for task in tg._tasks:  # Iterate over _tasks, not the TaskGroup itself
-            try:
-                result = task.result() # this will raise exception if one occurred
-                if result:
-                    all_proxies.extend(result)
-            except Exception as e:
-                logger.error("Task failed", exception=str(e))
-
-
-
-    all_proxies_saved_count = await save_all_proxies_to_file(all_proxies, OUTPUT_ALL_CONFIG_FILE)
-    end_time = time.monotonic()
-    elapsed_time = end_time - start_time
-    print_statistics(elapsed_time, total_channels, channel_status_counts, len(all_proxies), all_proxies_saved_count, protocol_counts)
 
 if __name__ == "__main__":
-    asyncio.run(main(), debug=True)
+    asyncio.run(main())
