@@ -5,5 +5,4 @@ aiohttp
 aiodns
 validators
 tqdm
-pyyaml
-argparse
+structlog
