@@ -3,3 +3,7 @@ urllib3
 asyncio
 aiohttp
 aiodns
+validators
+tqdm
+pyyaml
+argparse
