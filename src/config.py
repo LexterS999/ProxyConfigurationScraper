@@ -370,7 +370,9 @@ async def download_channel_content(channel_url: str, session: aiohttp.ClientSess
     try:
         async with session.get(channel_url, timeout=timeout) as response:
             if response.status == 200:
-                return await response.text(encoding='utf-8', errors='ignore'), "success"
+                content = await response.text(encoding='utf-8', errors='ignore')
+                colored_log(logging.DEBUG, f"✅ Успешно загружен контент с канала: {channel_url}. Первые 200 символов:\n{content[:200]}...") # Логируем начало контента
+                return content, "success"
             else:
                 return None, f"http_error_{response.status}" # Detailed HTTP error status
     except aiohttp.ClientError as e:
@@ -403,8 +405,14 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
 def parse_proxy_config(line: str) -> Tuple[Optional[ParsedConfig], Optional[str]]:
     """Parses a single line into a ProxyParsedConfig object using the registry."""
     line = line.strip()
-    if not line or not any(line.startswith(proto) for proto in ALLOWED_PROTOCOLS):
-        return None, "Skipped: invalid line or protocol"
+    colored_log(logging.DEBUG, f"   Парсинг строки: '{line[:100]}...'") # Логируем входящую строку
+    if not line:
+        colored_log(logging.DEBUG, "   Пропущена пустая строка.")
+        return None, "Skipped: invalid line or protocol (empty line)"
+    if not any(line.startswith(proto) for proto in ALLOWED_PROTOCOLS):
+        colored_log(logging.DEBUG, f"   Пропущена строка: не начинается с разрешенного протокола. Разрешенные протоколы: {ALLOWED_PROTOCOLS}")
+        return None, "Skipped: invalid line or protocol (no allowed protocol)"
+
 
     for protocol_prefix in ALLOWED_PROTOCOLS:
         if line.startswith(protocol_prefix):
@@ -413,51 +421,74 @@ def parse_proxy_config(line: str) -> Tuple[Optional[ParsedConfig], Optional[str]
             if parser_class:
                 parsed_config, error_msg = parser_class.from_url(line) # Use parser from registry
                 if parsed_config:
+                    colored_log(logging.DEBUG, f"   ✅ Успешно распарсена строка как {protocol_name}: {parsed_config}")
                     return parsed_config, None
                 else:
+                    colored_log(logging.DEBUG, f"   ❌ Ошибка парсинга {protocol_name}: {error_msg}")
                     return None, f"Parsing failed: {error_msg} for line: '{line[:100]}...'" # Limit line length in log
             else:
+                colored_log(logging.DEBUG, f"   ❌ Нет парсера для протокола: {protocol_name}")
                 return None, f"No parser found for protocol: {protocol_name}" # Should not happen if registry is correctly populated
 
-    return None, "Skipped: no matching protocol parser" # Should not reach here, loop covers all prefixes
+    colored_log(logging.DEBUG, "   ⚠️ Пропущена строка: не соответствует ни одному условию.") # Дополнительное логирование, если ни одно условие не сработало
+    return None, "Skipped: no matching protocol parser (internal logic error?)" # Should not reach here, loop covers all prefixes
 
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ParsedConfig]:
     """Asynchronously parses and filters proxies using thread pool for CPU-bound parsing and async DNS resolution."""
-
+    colored_log(logging.DEBUG, f"Начало парсинга и фильтрации {len(lines)} строк.") # Логируем количество строк на входе
     parsed_configs_with_errors: List[Tuple[Optional[ParsedConfig], Optional[str]]] = await asyncio.get_running_loop().run_in_executor(
         CPU_BOUND_EXECUTOR,
         lambda: [parse_proxy_config(line) for line in lines] # Run parsing in thread pool
     )
+    colored_log(logging.DEBUG, f"Завершено парсинг {len(parsed_configs_with_errors)} строк (с ошибками и без).") # Логируем количество результатов парсинга
 
     configs_to_resolve = []
+    skipped_count_parsing_errors = 0 # Счетчик ошибок парсинга
     for config, error in parsed_configs_with_errors:
         if config:
             configs_to_resolve.append(config)
-        elif error and logger.level <= logging.DEBUG: # Log skipped lines only in DEBUG mode
-            colored_log(logging.DEBUG, f"ℹ️ {error}")
+        elif error:
+            skipped_count_parsing_errors += 1 # Увеличиваем счетчик ошибок парсинга
+            if logger.level <= logging.DEBUG: # Log skipped lines only in DEBUG mode
+                colored_log(logging.DEBUG, f"ℹ️ {error}")
+
+    colored_log(logging.DEBUG, f"Пропущено строк из-за ошибок парсинга: {skipped_count_parsing_errors}") # Логируем количество пропущенных из-за ошибок парсинга
+    colored_log(logging.DEBUG, f"Конфигураций для DNS-резолвинга: {len(configs_to_resolve)}") # Логируем количество конфигураций для DNS-резолвинга
 
     async def resolve_single_config(config):
         resolved_ip = await resolve_address(config.address, resolver)
         if resolved_ip and is_valid_ipv4(resolved_ip):
+            colored_log(logging.DEBUG, f"   ✅ DNS резолвинг успешен для {config.address} -> {resolved_ip}")
             return config, resolved_ip
-        return config, None
+        else:
+            colored_log(logging.DEBUG, f"   ❌ DNS резолвинг не удался или не IPv4 для {config.address}")
+            return config, None
 
     resolution_tasks = [resolve_single_config(config) for config in configs_to_resolve]
     resolution_results_async = await asyncio.gather(*resolution_tasks)
 
     parsed_configs_resolved = []
     seen_ipv4_addresses = set()
+    skipped_count_no_ipv4 = 0 # Счетчик пропущенных без IPv4
+    skipped_count_duplicates = 0 # Счетчик пропущенных дубликатов
     for config, resolved_ip in resolution_results_async:
         if resolved_ip:
             if resolved_ip not in seen_ipv4_addresses:
                 parsed_configs_resolved.append(config)
                 seen_ipv4_addresses.add(resolved_ip)
-            elif logger.level <= logging.DEBUG: # Log duplicate IPs only in DEBUG mode
-                colored_log(logging.DEBUG, f"ℹ️  Пропущен дубликат прокси по IPv4: {resolved_ip} (протокол: {config.protocol})")
-        elif logger.level <= logging.DEBUG: # Log no IPv4 only in DEBUG mode
-            colored_log(logging.DEBUG, f"ℹ️  Пропущен прокси без IPv4: {config.address} (протокол: {config.protocol})")
+            else:
+                skipped_count_duplicates += 1 # Увеличиваем счетчик дубликатов
+                if logger.level <= logging.DEBUG: # Log duplicate IPs only in DEBUG mode
+                    colored_log(logging.DEBUG, f"ℹ️  Пропущен дубликат прокси по IPv4: {resolved_ip} (протокол: {config.protocol})")
+        else:
+            skipped_count_no_ipv4 += 1 # Увеличиваем счетчик пропущенных без IPv4
+            if logger.level <= logging.DEBUG: # Log no IPv4 only in DEBUG mode
+                colored_log(logging.DEBUG, f"ℹ️  Пропущен прокси без IPv4: {config.address} (протокол: {config.protocol})")
 
+    colored_log(logging.DEBUG, f"Пропущено прокси без IPv4: {skipped_count_no_ipv4}") # Логируем количество пропущенных без IPv4
+    colored_log(logging.DEBUG, f"Пропущено прокси-дубликатов: {skipped_count_duplicates}") # Логируем количество пропущенных дубликатов
+    colored_log(logging.DEBUG, f"Итого распарсенных и отфильтрованных прокси: {len(parsed_configs_resolved)}") # Логируем итоговое количество прокси
     return parsed_configs_resolved
 
 
