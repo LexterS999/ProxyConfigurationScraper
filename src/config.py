@@ -124,6 +124,7 @@ class Protocols(Enum):
     # Добавили shadowsocksr, т.к. некоторые ссылки используют его
     SSR = "ssr"
     TROJAN = "trojan"
+    # VMESS = "vmess" # Убрано
 
 @dataclass(frozen=True)
 class ConfigFiles:
@@ -193,6 +194,7 @@ class ProfileName(Enum):
     SS = "SS"
     SSR = "SSR" # Добавлено
     TROJAN = "TROJAN" # Добавлено
+    # VMESS = "VMESS" # Убрано
     UNKNOWN = "Unknown Protocol"  # Добавлено для обработки неизвестных протоколов
 
 class InvalidURLError(ValueError):
@@ -235,16 +237,21 @@ class ProxyParsedConfig:
                 if protocol:
                     config_string = decoded_config # Используем декодированную строку
                 else:
-                    raise UnsupportedProtocolError(f"Неподдерживаемый протокол в URL: {config_string}")
+                    # raise UnsupportedProtocolError(f"Неподдерживаемый протокол в URL: {config_string}") # Изменено!
+                    #  Вместо ошибки, если протокол не поддерживается - просто пропускаем
+                    return None
             except:
-                raise UnsupportedProtocolError(f"Неподдерживаемый протокол в URL: {config_string}")
+                # raise UnsupportedProtocolError(f"Неподдерживаемый протокол в URL: {config_string}") # Изменено!
+                #  Вместо ошибки, если не удалось декодировать - просто пропускаем
+                return None
 
         try:
             parsed_url = urlparse(config_string)
             address = parsed_url.hostname
             port = parsed_url.port
             if not address or not port:
-                raise InvalidURLError(f"Не удалось извлечь адрес или порт из URL: {config_string}")
+                # raise InvalidURLError(f"Не удалось извлечь адрес или порт из URL: {config_string}") # Изменено!
+                return None # Вместо ошибки возвращаем None
 
              # Извлекаем примечание, если есть
             remark = ""
@@ -267,7 +274,8 @@ class ProxyParsedConfig:
 
 
         except ValueError as e:
-            raise InvalidURLError(f"Ошибка разбора URL: {config_string}. Ошибка: {e}") from e
+            # raise InvalidURLError(f"Ошибка разбора URL: {config_string}. Ошибка: {e}") from e # Изменено!
+            return None  # Вместо ошибки возвращаем None
 
 
 # --- Основная логика ---
@@ -329,6 +337,9 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
 
         try:
             parsed_config = ProxyParsedConfig.from_url(line)
+            if parsed_config is None:  #  Если from_url вернул None, пропускаем
+                continue
+
              # Разрешаем имя хоста в IP-адрес
             resolved_ip = await resolve_address(parsed_config.address, resolver)
 
@@ -342,7 +353,7 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
                 parsed_configs.append(parsed_config)  # Добавляем, только если разрешение успешно
 
         except (InvalidURLError, UnsupportedProtocolError) as e:
-            colored_log(logging.WARNING, f"⚠️ Пропускаем неверный или неподдерживаемый прокси URL '{line}': {e}")
+            # colored_log(logging.WARNING, f"⚠️ Пропускаем неверный или неподдерживаемый прокси URL '{line}': {e}") #  Убрали!
             continue
 
 
