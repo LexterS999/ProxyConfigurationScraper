@@ -10,6 +10,7 @@ from enum import Enum
 from urllib.parse import urlparse, parse_qs
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
+from collections import defaultdict
 import aiohttp
 
 # --- Настройка логирования (с использованием coloredlogs) ---
