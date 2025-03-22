@@ -264,7 +264,7 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Option
         return None
 
 # --- Функции загрузки и обработки ---
-async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession, channel_proxy_semaphore: asyncio.Semaphore) -> Tuple[List[str], str]:
+async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession, channel_proxy_semaphore: asyncio.Semaphore) -> Tuple[List[str], str, List[ProxyParsedConfig]]: # Возвращаем parsed_proxies
     """Загружает конфигурации прокси из одного URL-адреса канала.
 
     Выполняет HTTP GET запрос к URL канала, обрабатывает ошибки,
@@ -276,11 +276,12 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
         channel_proxy_semaphore: Семафор для ограничения параллельных запросов к каналу.
 
     Returns:
-        Кортеж из списка строк (конфигурации прокси) и статуса ("success", "warning", "error", "critical").
+        Кортеж из списка строк (конфигурации прокси), статуса ("success", "warning", "error", "critical") и списка ProxyParsedConfig.
     """
     headers = {'User-Agent': USER_AGENT} # Используем константу USER_AGENT
     retries_attempted = 0
     session_timeout = aiohttp.ClientTimeout(total=SESSION_TIMEOUT_SEC) # Используем константу SESSION_TIMEOUT_SEC
+    parsed_proxies_for_channel: List[ProxyParsedConfig] = [] # Initialize here
 
     while retries_attempted <= RETRY.MAX_RETRIES:
         try:
@@ -291,19 +292,22 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
 
                     if not text.strip():
                         logger.warning("Канал %s вернул пустой ответ.", channel_url, stacklevel=2)
-                        return [], "warning"
+                        return [], "warning", [] # Return empty list of proxies
 
                     try:
                         # Encode text to bytes before base64 decoding
                         decoded_text_bytes = base64.b64decode(text.strip().encode('utf-8'), validate=True)
                         decoded_text = decoded_text_bytes.decode('utf-8', errors='ignore')
-                        return decoded_text.splitlines(), "success"
+                        lines = decoded_text.splitlines()
                     except binascii.Error as e: # Ловим конкретную ошибку base64
                         logger.debug("Канал %s вернул base64, но декодирование не удалось: %s. Попытка обработки как есть.", channel_url, e, stacklevel=2) # DEBUG уровень
-                        return text.splitlines(), "success" # Пытаемся обработать как обычный текст
+                        lines = text.splitlines() # Пытаемся обработать как обычный текст
                     except Exception as e:
                         logger.error("Ошибка при Base64 декодировании ответа от %s: %s", channel_url, e, exc_info=True, stacklevel=2)
-                        return text.splitlines(), "success" # Пытаемся обработать как обычный текст
+                        lines = text.splitlines() # Пытаемся обработать как обычный текст
+
+                    parsed_proxies_for_channel = await parse_and_filter_proxies(lines, resolver) # Parse proxies here
+                    return lines, "success", parsed_proxies_for_channel # Return parsed proxies
 
         except aiohttp.ClientResponseError as e: # HTTP ошибки (4xx, 5xx)
             logger.warning("Канал %s вернул HTTP ошибку %s: %s, URL: %s", channel_url, e.status, e.message, e.request_info.url, stacklevel=2) # Логируем URL
@@ -314,18 +318,18 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
                 retry_delay = RETRY.RETRY_DELAY_BASE * (2 ** retries_attempted)
             if retries_attempted == RETRY.MAX_RETRIES:
                 logger.error("Достигнуто макс. кол-во попыток (%s) для %s после HTTP ошибки %s", RETRY.MAX_RETRIES+1, channel_url, e.status, stacklevel=2)
-                return [], "error"
+                return [], "error", [] # Return empty list of proxies
             await asyncio.sleep(retry_delay + random.uniform(0, 1)) # Добавляем jitter к задержке
         except (aiohttp.ClientError, asyncio.TimeoutError) as e: # Ошибки соединения, таймауты
             retry_delay = RETRY.RETRY_DELAY_BASE * (2 ** retries_attempted)
             logger.warning("Ошибка при получении %s (попытка %s/%s): %s (%s). Повтор через %s сек...", channel_url, retries_attempted+1, RETRY.MAX_RETRIES+1, e, e.__class__.__name__, retry_delay, stacklevel=2) # Логируем тип ошибки
             if retries_attempted == RETRY.MAX_RETRIES:
                 logger.error("Достигнуто макс. кол-во попыток (%s) для %s: %s (%s)", RETRY.MAX_RETRIES+1, channel_url, e, e.__class__.__name__, stacklevel=2)
-                return [], "critical"
+                return [], "critical", [] # Return empty list of proxies
             await asyncio.sleep(retry_delay + random.uniform(0, 1)) # Добавляем jitter к задержке
         retries_attempted += 1
 
-    return [], "critical" # Если все попытки исчерпаны
+    return [], "critical", [] # Если все попытки исчерпаны, return empty list of proxies
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
     """Разбирает и фильтрует конфигурации прокси из списка строк.
@@ -470,7 +474,7 @@ def _is_valid_url(url: str) -> bool:
     except ValueError:
         return False
 
-async def process_channel(url: str, session: aiohttp.ClientSession, resolver: aiodns.DNSResolver, proxy_queue: asyncio.Queue, channel_proxy_semaphore: asyncio.Semaphore) -> Tuple[int, bool]:
+async def process_channel(url: str, session: aiohttp.ClientSession, resolver: aiodns.DNSResolver, proxy_queue: asyncio.Queue, channel_proxy_semaphore: asyncio.Semaphore) -> Tuple[int, bool, List[ProxyParsedConfig]]: # Return parsed proxies
     """Обрабатывает один URL-адрес канала.
 
     Загружает прокси из канала, разбирает, фильтрует и добавляет в очередь.
@@ -483,21 +487,20 @@ async def process_channel(url: str, session: aiohttp.ClientSession, resolver: ai
         channel_proxy_semaphore: Семафор для ограничения параллельных запросов к каналу.
 
     Returns:
-        Кортеж: (количество найденных прокси, флаг успеха обработки).
+        Кортеж: (количество найденных прокси, флаг успеха обработки, список ProxyParsedConfig). # Возвращаем список прокси
     """
     channel_id = url # Используем URL как ID канала (можно заменить на что-то более короткое, если нужно)
     logger.info("🚀 Обработка канала: %s", channel_id, stacklevel=2) # Используем channel_id в логах
-    lines, status = await download_proxies_from_channel(url, session, channel_proxy_semaphore)
+    lines, status, parsed_proxies = await download_proxies_from_channel(url, session, channel_proxy_semaphore) # Get parsed proxies from download function
     if status == "success":
-        parsed_proxies = await parse_and_filter_proxies(lines, resolver)
         channel_proxies_count = len(parsed_proxies)
         for proxy in parsed_proxies:
             await proxy_queue.put(proxy)
         logger.info("✅ Канал %s обработан. Найдено %s прокси.", channel_id, channel_proxies_count, stacklevel=2) # Используем channel_id в логах
-        return channel_proxies_count, True
+        return channel_proxies_count, True, parsed_proxies # Return parsed proxies
     else:
         logger.warning("⚠️ Канал %s обработан со статусом: %s.", channel_id, status, stacklevel=2) # Используем channel_id в логах
-        return 0, False
+        return 0, False, [] # Return empty list of proxies
 
 def print_statistics(start_time: float, total_channels: int, channels_processed_successfully: int, total_proxies_downloaded: int, all_proxies_saved_count: int, protocol_counts: Dict[str, int], channel_status_counts: Dict[str, int], output_file: str):
     """Выводит статистику загрузки и обработки прокси.
@@ -569,18 +572,18 @@ async def main():
 
             channel_results = [task.result() for task in channel_tasks]  # Получаем результаты задач в порядке запуска
 
-            for proxies_count, success_flag in channel_results:
+            for proxies_count, success_flag, parsed_proxies_list in channel_results: # Get parsed_proxies_list from result
                 total_proxies_downloaded += proxies_count
                 channels_processed_successfully += int(success_flag) # Явное преобразование bool в int
+                for proxy in parsed_proxies_list: # Iterate over parsed proxies from channel result
+                    protocol_counts[proxy.protocol] += 1 # Count protocols here, directly from parsed proxies
 
             await proxy_queue.join()  # Ждем, пока все задачи из очереди не будут выполнены
             await proxy_queue.put(None)  # Сигнал остановки для save_proxies_from_queue
             save_task = asyncio.create_task(save_proxies_from_queue(proxy_queue, CONFIG_FILES.OUTPUT_ALL_CONFIG)) # Запускаем задачу сохранения
             all_proxies_saved_count = await save_task # Ждем завершения сохранения
 
-            # Подсчитываем протоколы после обработки всех каналов и сохранения в файл
-            for proxy in [item for q in channel_results for item in (await parse_and_filter_proxies(await download_proxies_from_channel(q[2], session, channel_proxy_semaphore)[0], resolver)) if item]:
-               protocol_counts[proxy.protocol] += 1
+
             channel_status_counts = defaultdict(int, {k: sum(1 for r in channel_results if r[1] == (k == "success")) for k in ["success", "warning", "error", "critical"]})
 
 
