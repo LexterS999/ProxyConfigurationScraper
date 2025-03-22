@@ -168,7 +168,7 @@ class ProxyParsedConfig:
         Returns:
             Объект ProxyParsedConfig или None, если разбор не удался.
         """
-        max_config_len = 1024 # Максимальная длина config_string
+        max_config_len = 4096 # Увеличено до 4096 для поддержки более длинных URL
         if len(config_string) > max_config_len:
             logger.warning("Пропускаем слишком длинный URL ( > %s символов): %s...", max_config_len, config_string[:70], stacklevel=2) # Лог с укороченной строкой
             return None
@@ -531,8 +531,8 @@ def print_statistics(start_time: float, total_channels: int, channels_processed_
             status_text = status_key.upper() # Упрощаем код, status_text определяется напрямую
             logger.info("  - %s: %s каналов", status_text, count, stacklevel=2)
 
-    logger.info("\n✨ Всего найдено конфигураций: %s", total_proxies_downloaded, stacklevel=2)
-    logger.info("📝 Всего прокси (все, без дубликатов) сохранено: %s (в %s)", all_proxies_saved_count, output_file, stacklevel=2) # Используем переданный output_file
+    logger.info("\n✨ Всего найдено конфигураций: %s", total_proxies_downloaded, stacklevel=2) # Removed "- ошибка"
+    logger.info("📝 Всего прокси (все, без дубликатов) сохранено: %s (в %s)", all_proxies_saved_count, output_file, stacklevel=2)
 
     logger.info("\n🔬 Разбивка по протоколам (найдено):", stacklevel=2)
     if protocol_counts:
