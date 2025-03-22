@@ -264,7 +264,7 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Option
         return None
 
 # --- Функции загрузки и обработки ---
-async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession, channel_proxy_semaphore: asyncio.Semaphore) -> Tuple[List[str], str, List[ProxyParsedConfig]]: # Возвращаем parsed_proxies
+async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession, channel_proxy_semaphore: asyncio.Semaphore, resolver: aiodns.DNSResolver) -> Tuple[List[str], str, List[ProxyParsedConfig]]: # Add resolver as argument
     """Загружает конфигурации прокси из одного URL-адреса канала.
 
     Выполняет HTTP GET запрос к URL канала, обрабатывает ошибки,
@@ -274,6 +274,7 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
         channel_url: URL-адрес канала.
         session: aiohttp.ClientSession для выполнения запросов.
         channel_proxy_semaphore: Семафор для ограничения параллельных запросов к каналу.
+        resolver: aiodns.DNSResolver for DNS resolution. # Add resolver docstring
 
     Returns:
         Кортеж из списка строк (конфигурации прокси), статуса ("success", "warning", "error", "critical") и списка ProxyParsedConfig.
@@ -306,7 +307,7 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
                         logger.error("Ошибка при Base64 декодировании ответа от %s: %s", channel_url, e, exc_info=True, stacklevel=2)
                         lines = text.splitlines() # Пытаемся обработать как обычный текст
 
-                    parsed_proxies_for_channel = await parse_and_filter_proxies(lines, resolver) # Parse proxies here
+                    parsed_proxies_for_channel = await parse_and_filter_proxies(lines, resolver) # Parse proxies here, now resolver is passed
                     return lines, "success", parsed_proxies_for_channel # Return parsed proxies
 
         except aiohttp.ClientResponseError as e: # HTTP ошибки (4xx, 5xx)
@@ -491,7 +492,7 @@ async def process_channel(url: str, session: aiohttp.ClientSession, resolver: ai
     """
     channel_id = url # Используем URL как ID канала (можно заменить на что-то более короткое, если нужно)
     logger.info("🚀 Обработка канала: %s", channel_id, stacklevel=2) # Используем channel_id в логах
-    lines, status, parsed_proxies = await download_proxies_from_channel(url, session, channel_proxy_semaphore) # Get parsed proxies from download function
+    lines, status, parsed_proxies = await download_proxies_from_channel(url, session, channel_proxy_semaphore, resolver) # Pass resolver here
     if status == "success":
         channel_proxies_count = len(parsed_proxies)
         for proxy in parsed_proxies:
@@ -560,6 +561,7 @@ async def main():
     total_proxies_downloaded = 0
     protocol_counts = defaultdict(int)
     channel_status_counts = defaultdict(int)
+    all_proxies_saved_count = 0 # Initialize here to avoid UnboundLocalError
 
     resolver = aiodns.DNSResolver() # Создаем DNS Resolver
     proxy_queue = asyncio.Queue() # Очередь для прокси
