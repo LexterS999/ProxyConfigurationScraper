@@ -1,599 +1,526 @@
 import asyncio
 import aiodns
+import re
 import os
 import logging
 import ipaddress
+import io
+import uuid
+import string
+import base64
+import aiohttp
 import time
 import json
 import functools
-import random # Для jitter
-import binascii # Для обработки ошибок base64.decode
-import traceback # Для более полного логирования ошибок в JSON
+import inspect
+
 from enum import Enum
-from urllib.parse import urlparse, parse_qs
-from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse, parse_qs, urlsplit
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass, field
-import aiohttp
 from collections import defaultdict
-import base64
 
-# --- Настройка логирования (БЕЗ coloredlogs, ручной цветной вывод) ---
 
-LOG_FILE = 'proxy_downloader.log'
+# --- Настройка улучшенного логирования ---
+LOG_FORMAT = {
+    "time": "%(asctime)s",
+    "level": "%(levelname)s",
+    "message": "%(message)s",
+    "process": "%(process)s",
+    "module": "%(module)s",
+    "funcName": "%(funcName)s",
+    "lineno": "%(lineno)d",
+}
+CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"  # Формат для консольного вывода
+LOG_FILE = 'proxy_downloader.log'  # Имя файла лога
+
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 # Обработчик файла (уровень WARNING и выше, формат JSON)
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 file_handler.setLevel(logging.WARNING)
 
+
 class JsonFormatter(logging.Formatter):
-    """Форматтер для записи логов в JSON."""
+    """Пользовательский форматтер для записи логов в JSON."""
+
     def format(self, record):
-        log_record = {
-            "time": self.formatTime(record, self.default_time_format),
-            "level": record.levelname,
-            "message": record.getMessage(),
-            "process": record.process,
-            "module": record.module,
-            "funcName": record.funcName,
-            "lineno": record.lineno,
-        }
+        log_record = LOG_FORMAT.copy()
+        log_record["message"] = record.getMessage()
+        log_record["level"] = record.levelname
+        log_record["process"] = record.process
+        log_record["time"] = self.formatTime(record, self.default_time_format)
+        log_record["module"] = record.module
+        log_record["funcName"] = record.funcName
+        log_record["lineno"] = record.lineno
+        # Обработка исключений, если есть
         if record.exc_info:
             log_record['exc_info'] = self.formatException(record.exc_info)
-            log_record['exc_text'] = '\n'.join(traceback.format_exception(*record.exc_info)) # Добавляем exc_text
         return json.dumps(log_record, ensure_ascii=False)
 
 formatter_file = JsonFormatter()
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
-# Обработчик консоли (уровень INFO, РУЧНОЙ цветной вывод)
+# Обработчик консоли (уровень INFO и выше, цветной вывод)
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
-
-class ColoredFormatter(logging.Formatter):
-    """Форматтер для цветного вывода в консоль (ручная реализация)."""
-
-    RESET = '\033[0m'
-    RED   = '\033[31m'
-    GREEN = '\033[32m'
-    YELLOW = '\033[33m'
-    CYAN  = '\033[36m'
-    BOLD    = '\033[1m'
-
-    FORMATS = {
-        logging.DEBUG:    CYAN + "%(levelname)s" + RESET + ": %(message)s",
-        logging.INFO:     GREEN + "%(levelname)s" + RESET + ": %(message)s",
-        logging.WARNING:  YELLOW + "%(levelname)s" + RESET + ": %(message)s",
-        logging.ERROR:    RED + "%(levelname)s" + RESET + ": %(message)s",
-        logging.CRITICAL: BOLD + RED + "%(levelname)s" + RESET + ": %(message)s",
-    }
-
-    def format(self, record):
-        log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt)
-        return formatter.format(record)
-
-formatter_console = ColoredFormatter()
+formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
 console_handler.setFormatter(formatter_console)
 logger.addHandler(console_handler)
 
+
+def colored_log(level, message: str, *args, **kwargs):
+    """Выводит сообщение с цветом в зависимости от уровня логирования."""
+    RESET = '\033[0m'
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BOLD_RED = '\033[1m\033[91m'
+
+    color = RESET
+    if level == logging.INFO:
+        color = GREEN
+    elif level == logging.WARNING:
+        color = YELLOW
+    elif level == logging.ERROR:
+        color = RED
+    elif level == logging.CRITICAL:
+        color = BOLD_RED
+
+    # Получаем информацию о вызывающей стороне.  Фрейм стека 1 - это вызывающая сторона colored_log.
+    frame = inspect.currentframe().f_back  # Используем f_back, чтобы получить вызывающий фрейм
+    pathname = frame.f_code.co_filename
+    lineno = frame.f_lineno
+    func = frame.f_code.co_name  # Исправлено на co_name
+
+    #  !!!  ИЗМЕНЕНИЕ ТУТ: Применяем форматирование *ДО* создания LogRecord
+    formatted_message = f"{color}{message}{RESET}"
+
+    record = logging.LogRecord(
+        name=logger.name,
+        level=level,
+        pathname=pathname,  # Полный путь
+        lineno=lineno,  # Правильный номер строки
+        msg=formatted_message,  #  !!!  Передаем уже отформатированное сообщение
+        args=args,
+        exc_info=kwargs.get('exc_info'),
+        func=func,  # Правильное имя функции
+        sinfo=None
+    )
+    logger.handle(record)
+
+
+
 # --- Константы и перечисления ---
-class Protocols(str, Enum):
-    """Перечисление поддерживаемых протоколов прокси."""
-    VLESS = "vless"  # Протокол VLESS
-    TUIC = "tuic"    # Протокол TUIC
-    HY2 = "hy2"     # Протокол HY2
-    SS = "ss"       # Протокол Shadowsocks
-    SSR = "ssr"     # Протокол ShadowsocksR
-    TROJAN = "trojan" # Протокол Trojan
+class Protocols(Enum):
+    """Перечисление поддерживаемых протоколов."""
+    VLESS = "vless"
+    TUIC = "tuic"
+    HY2 = "hy2"
+    SS = "ss"
+    # Добавили shadowsocksr, т.к. некоторые ссылки используют его
+    SSR = "ssr"
+    TROJAN = "trojan"
+    # VMESS = "vmess" # Убрано
 
 @dataclass(frozen=True)
 class ConfigFiles:
-    """Конфигурация файлов."""
-    ALL_URLS: str = "channel_urls.txt"  # Файл со списком URL каналов
-    OUTPUT_ALL_CONFIG: str = "configs/proxy_configs_all.txt" # Файл для сохранения всех конфигураций прокси
+    """Конфигурационные файлы."""
+    ALL_URLS: str = "channel_urls.txt"
+    OUTPUT_ALL_CONFIG: str = "configs/proxy_configs_all.txt"
 
 @dataclass(frozen=True)
 class RetrySettings:
     """Настройки повторных попыток."""
-    MAX_RETRIES: int = 4  # Максимальное количество повторных попыток
-    RETRY_DELAY_BASE: int = 2 # Базовая задержка между попытками (в секундах)
+    MAX_RETRIES: int = 4
+    RETRY_DELAY_BASE: int = 2
 
 @dataclass(frozen=True)
 class ConcurrencyLimits:
-    """Лимиты конкурентности."""
-    MAX_CHANNELS: int = 60 # Максимальное количество каналов для одновременной обработки (не используется в текущей версии, но можно использовать в будущем)
-    MAX_PROXIES_PER_CHANNEL: int = 50 # Максимальное количество одновременных запросов к одному каналу
-    MAX_PROXIES_GLOBAL: int = 50 # Глобальный лимит на количество прокси (не используется в текущей версии)
+    """Ограничения параллелизма."""
+    MAX_CHANNELS: int = 60  # Максимальное количество каналов для одновременной обработки
+    MAX_PROXIES_PER_CHANNEL: int = 50 # Макс. прокси
+    MAX_PROXIES_GLOBAL: int = 50  # Глобальный лимит на одновременные проверки прокси
 
-ALLOWED_PROTOCOLS = [proto.value for proto in Protocols]
-CONFIG_FILES = ConfigFiles()
-RETRY = RetrySettings()
-CONCURRENCY = ConcurrencyLimits()
-USER_AGENT = 'ProxyDownloader/1.1' # User-Agent для HTTP-запросов
-SESSION_TIMEOUT_SEC = 15 # Общий таймаут для HTTP-сессии (в секундах)
-
-# --- Пользовательские исключения ---
-class InvalidURLError(ValueError):
-    """Недопустимый URL-адрес."""
-    def __init__(self, url: str, message="Invalid URL format"):
-        self.url = url
-        super().__init__(f"{message}: {url}")
-
-class UnsupportedProtocolError(ValueError):
-    """Неподдерживаемый протокол.""" # Не используется явно в коде, но можно использовать в будущем
-    pass
-
-class DownloadError(Exception):
-    """Ошибка загрузки."""
-    pass
-
-# --- Структуры данных ---
-@dataclass(frozen=True)
-class ProxyParsedConfig:
-    """Структура для хранения разобранной конфигурации прокси."""
-    config_string: str # Исходная строка конфигурации
-    protocol: str      # Протокол прокси
-    address: str       # Адрес прокси (hostname или IP)
-    port: int          # Порт прокси
-    remark: str = ""     # Remark (комментарий) из URL, если есть
-    query_params: Dict[str, str] = field(default_factory=dict) # Query параметры из URL
-
-    def __hash__(self):
-        """Хэширование на основе config_string для дедупликации."""
-        return hash(self.config_string) # Хэшируем config_string целиком для полной дедупликации
-
-    def __str__(self):
-        """Информативное строковое представление объекта."""
-        return (f"ProxyConfig({self.address}:{self.port}, protocol={self.protocol}, " # address:port в начале
-                f"config_string='{self.config_string[:50]}...')") # config_string обрезается для краткости
-
-    @classmethod
-    def from_url(cls, config_string: str) -> Optional["ProxyParsedConfig"]:
-        """Разбирает строку конфигурации прокси в объект ProxyParsedConfig.
-
-        Выполняет следующие шаги:
-        1. Проверяет длину строки конфигурации.
-        2. Определяет протокол.
-        3. Декодирует base64, если необходимо.
-        4. Парсит URL.
-        5. Извлекает адрес, порт, remark и query параметры.
-        6. Валидирует порт.
-
-        Args:
-            config_string: Строка конфигурации прокси.
-
-        Returns:
-            Объект ProxyParsedConfig или None, если разбор не удался.
-        """
-        max_config_len = 4096 # Увеличено до 4096 для поддержки более длинных URL
-        if len(config_string) > max_config_len:
-            logger.warning("Пропускаем слишком длинный URL ( > %s символов): %s...", max_config_len, config_string[:70], stacklevel=2) # Лог с укороченной строкой
-            return None
-
-        protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p + "://")), None)
-        decoded_by_base64 = False # Флаг, был ли URL декодирован из base64
-
-        if not protocol:
-            try:
-                # Encode config_string to bytes before base64 decoding
-                decoded_config_bytes = base64.b64decode(config_string.strip().encode('utf-8'), validate=True)
-                decoded_config = decoded_config_bytes.decode('utf-8', errors='ignore')
-                protocol = next((p for p in ALLOWED_PROTOCOLS if decoded_config.startswith(p + "://")), None)
-                if protocol:
-                    config_string = decoded_config
-                    decoded_by_base64 = True
-                else:
-                    return None # После base64 декодирования протокол все равно не найден
-            except binascii.Error as e: # Ловим конкретную ошибку base64 декодирования
-                logger.debug("Не удалось декодировать Base64: %s для config: %s...", e, config_string[:50], stacklevel=2) # DEBUG уровень для ошибок декодирования
-                return None
-            except Exception as e:
-                logger.error("Неожиданная ошибка при Base64 декодировании: %s, config: %s...", e, config_info=config_string[:50], exc_info=True, stacklevel=2) # config_info for context
-                return None
-
-        try:
-            parsed_url = urlparse(config_string)
-            if not parsed_url.scheme or parsed_url.scheme.lower() not in ('http', 'https') and not decoded_by_base64: # Проверка схемы URL, если не base64 декодировано
-                logger.debug("Пропускаем URL с недопустимой схемой: %s, схема: %s", config_string, parsed_url.scheme, stacklevel=2)
-                return None
-            address = parsed_url.hostname
-            port = parsed_url.port
-
-            if not address:
-                logger.debug("Пропущен URL без адреса хоста: %s", config_string, stacklevel=2)
-                return None
-            if port is None:
-                logger.debug("Пропущен URL без порта: %s", config_string, stacklevel=2)
-                return None
-
-            if not isinstance(port, int) or not (1 <= port <= 65535): # Явная проверка порта на число и диапазон
-                logger.debug("Пропущен URL с неверным портом: %s, порт: %s", config_string, port, stacklevel=2)
-                return None
-
-            remark = parsed_url.fragment if parsed_url.fragment else ""
-            query_params = {k: v[0] for k, v in parse_qs(parsed_url.query).items()} if parsed_url.query else {}
-
-            return cls(
-                config_string=parsed_url.geturl().split("#")[0], # Используем geturl для сохранения структуры URL, удаляем fragment
-                protocol=protocol,
-                address=address,
-                port=port,
-                remark=remark,
-                query_params=query_params,
-            )
-        except ValueError as e: # Ловим ValueError от urlparse, если URL совсем невалидный
-            logger.debug("Ошибка разбора URL: %s, ошибка: %s", config_string, e, stacklevel=2)
-            return None
-        except Exception as e:
-            logger.error("Неожиданная ошибка при разборе URL: %s, ошибка: %s", config_string, e, exc_info=True, stacklevel=2)
-            return None
+ALLOWED_PROTOCOLS = [proto.value for proto in Protocols]  # Список разрешенных протоколов
+CONFIG_FILES = ConfigFiles()  # Конфигурационные файлы
+RETRY = RetrySettings()  # Настройки повторных попыток
+CONCURRENCY = ConcurrencyLimits()  # Ограничения параллелизма
 
 # --- Вспомогательные функции ---
 
 @functools.lru_cache(maxsize=1024)
-def is_valid_ip_address(hostname: str) -> bool:
-    """Проверяет, является ли строка допустимым IPv4 или IPv6-адресом."""
+def is_valid_ipv4(hostname: str) -> bool:
+    """Проверяет, является ли данная строка допустимым IPv4-адресом."""
     try:
-        ipaddress.ip_address(hostname) # Поддержка IPv4 и IPv6
+        ipaddress.IPv4Address(hostname)
         return True
-    except ValueError:
+    except ipaddress.AddressValueError:
         return False
 
-@functools.lru_cache(maxsize=128) # Кэшируем результаты DNS резолва
 async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
-    """Разрешает имя хоста в IPv4-адрес, используя DNS-кэширование."""
-    if is_valid_ip_address(hostname): # Проверяем IP-адрес в начале
-        return hostname
+    """Разрешает имя хоста в IPv4-адрес. Возвращает None в случае неудачи."""
+    if is_valid_ipv4(hostname):
+        return hostname  # Уже IP-адрес
 
     try:
-        async with asyncio.timeout(10): # Таймаут 10 секунд на DNS-запрос (можно вынести в константу)
+        async with asyncio.timeout(10):  # Таймаут разрешения DNS
             result = await resolver.query(hostname, 'A')
             resolved_ip = result[0].host
-            return resolved_ip if is_valid_ip_address(resolved_ip) else None # Проверяем, что резолвится в IP
-    except asyncio.TimeoutError as e:
-        logger.debug("Timeout при DNS запросе для %s: %s", hostname, e, stacklevel=2) # Debug уровень для таймаутов DNS
+            if is_valid_ipv4(resolved_ip):  # Проверяем разрешенный IP
+               return resolved_ip
+            else:
+                #  colored_log(logging.WARNING, f"⚠️ DNS разрешил {hostname} в не-IPv4: {resolved_ip}") # Убрали показ
+                return None
+    except asyncio.TimeoutError:
+        # colored_log(logging.WARNING, f"⚠️ Время ожидания разрешения DNS истекло для {hostname}") # Убрали показ
         return None
     except aiodns.error.DNSError as e:
-        logger.debug("DNS ошибка для %s: %s, код ошибки: %s, имя ошибки: %s", hostname, e, e.args[0], e.args[1], stacklevel=2) # Детальный лог DNS ошибок
+        # colored_log(logging.WARNING, f"⚠️ Ошибка разрешения DNS для {hostname}: {e}") # Убрали показ
         return None
     except Exception as e:
-        logger.error("Неожиданная ошибка при DNS разрешении для %s: %s", hostname, e, exc_info=True, stacklevel=2)
+        logger.error(f"Неожиданная ошибка при разрешении DNS для {hostname}: {e}", exc_info=True)  # Логируем неожиданные ошибки
         return None
+# --- Структуры данных ---
 
-# --- Функции загрузки и обработки ---
-async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession, channel_proxy_semaphore: asyncio.Semaphore, resolver: aiodns.DNSResolver) -> Tuple[List[str], str, List[ProxyParsedConfig]]: # Add resolver as argument
+class ProfileName(Enum):
+    """Перечисление для названий профилей (для единообразия)."""
+    VLESS = "VLESS"
+    TUIC = "TUIC"
+    HY2 = "HY2"
+    SS = "SS"
+    SSR = "SSR" # Добавлено
+    TROJAN = "TROJAN" # Добавлено
+    # VMESS = "VMESS" # Убрано
+    UNKNOWN = "Unknown Protocol"  # Добавлено для обработки неизвестных протоколов
+
+class InvalidURLError(ValueError):
+    """Пользовательское исключение для недопустимых URL-адресов."""
+    pass
+
+class UnsupportedProtocolError(ValueError):
+    """Пользовательское исключение для неподдерживаемых протоколов."""
+    pass
+
+@dataclass(frozen=True)
+class ProxyParsedConfig:
+    """Представляет разобранную конфигурацию прокси."""
+    config_string: str  # Исходная строка конфигурации (без примечания, если есть)
+    protocol: str       # Протокол (например, "vless", "tuic")
+    address: str        # IP-адрес или имя хоста
+    port: int           # Номер порта
+    remark: str = ""    # Поле примечания (исходное)
+    query_params: Dict[str, str] = field(default_factory=dict) # Добавили query параметры
+
+    def __hash__(self):
+        """Хеширует конфигурацию для эффективных операций с множествами (дедупликация)."""
+        return hash((self.protocol, self.address, self.port))
+
+    def __str__(self):
+        """Предоставляет удобное строковое представление."""
+        return (f"ProxyConfig(protocol={self.protocol}, address={self.address}, "
+                f"port={self.port}, config_string='{self.config_string[:50]}...')") # Отображаем часть config
+
+
+    @classmethod
+    def from_url(cls, config_string: str) -> "ProxyParsedConfig":
+        """Разбирает строку конфигурации прокси (URL) в объект ProxyParsedConfig."""
+        protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p + "://")), None)
+        if not protocol:
+            # Попытка декодировать base64, если это не стандартный URL
+            try:
+                decoded_config = base64.b64decode(config_string).decode('utf-8')
+                protocol = next((p for p in ALLOWED_PROTOCOLS if decoded_config.startswith(p + "://")), None)
+                if protocol:
+                    config_string = decoded_config # Используем декодированную строку
+                else:
+                    # raise UnsupportedProtocolError(f"Неподдерживаемый протокол в URL: {config_string}") # Изменено!
+                    #  Вместо ошибки, если протокол не поддерживается - просто пропускаем
+                    return None
+            except:
+                # raise UnsupportedProtocolError(f"Неподдерживаемый протокол в URL: {config_string}") # Изменено!
+                #  Вместо ошибки, если не удалось декодировать - просто пропускаем
+                return None
+
+        try:
+            parsed_url = urlparse(config_string)
+            address = parsed_url.hostname
+            port = parsed_url.port
+            if not address or not port:
+                # raise InvalidURLError(f"Не удалось извлечь адрес или порт из URL: {config_string}") # Изменено!
+                return None # Вместо ошибки возвращаем None
+
+             # Извлекаем примечание, если есть
+            remark = ""
+            if parsed_url.fragment:
+                remark = parsed_url.fragment
+
+            # Извлекаем параметры запроса
+            query_params = {}
+            if parsed_url.query:
+                query_params = {k: v[0] for k, v in parse_qs(parsed_url.query).items()}
+
+            return cls(
+                config_string=config_string.split("#")[0], # Убираем исходное примечание
+                protocol=protocol,
+                address=address,
+                port=port,
+                remark=remark, # Сохраняем исходное примечание
+                query_params=query_params, # Сохраняем query
+            )
+
+
+        except ValueError as e:
+            # raise InvalidURLError(f"Ошибка разбора URL: {config_string}. Ошибка: {e}") from e # Изменено!
+            return None  # Вместо ошибки возвращаем None
+
+
+# --- Основная логика ---
+
+async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession) -> Tuple[List[str], str]:
     """Загружает конфигурации прокси из одного URL-адреса канала.
-
-    Выполняет HTTP GET запрос к URL канала, обрабатывает ошибки,
-    повторные попытки и декодирование base64 (если необходимо).
-
-    Args:
-        channel_url: URL-адрес канала.
-        session: aiohttp.ClientSession для выполнения запросов.
-        channel_proxy_semaphore: Семафор для ограничения параллельных запросов к каналу.
-        resolver: aiodns.DNSResolver for DNS resolution. # Add resolver docstring
-
-    Returns:
-        Кортеж из списка строк (конфигурации прокси), статуса ("success", "warning", "error", "critical") и списка ProxyParsedConfig.
+       Возвращает кортеж: (список строк конфигурации прокси, строка состояния).
+       Статус может быть: "success", "warning", "error", "critical".
     """
-    headers = {'User-Agent': USER_AGENT} # Используем константу USER_AGENT
+    headers = {'User-Agent': 'ProxyDownloader/1.0'}  # Устанавливаем User-Agent
     retries_attempted = 0
-    session_timeout = aiohttp.ClientTimeout(total=SESSION_TIMEOUT_SEC) # Используем константу SESSION_TIMEOUT_SEC
-    parsed_proxies_for_channel: List[ProxyParsedConfig] = [] # Initialize here
+    session_timeout = aiohttp.ClientTimeout(total=15) # Устанавливаем таймаут
 
     while retries_attempted <= RETRY.MAX_RETRIES:
         try:
-            async with channel_proxy_semaphore: # Ограничиваем кол-во одновременных запросов к каналу
-                async with session.get(channel_url, timeout=session_timeout, headers=headers) as response:
-                    response.raise_for_status() # Вызываем исключение для HTTP ошибок
-                    text = await response.text(encoding='utf-8', errors='ignore')
+            async with session.get(channel_url, timeout=session_timeout, headers=headers) as response:
+                response.raise_for_status()  # Генерируем исключение для плохих кодов состояния
+                text = await response.text(encoding='utf-8', errors='ignore')  # Обрабатываем потенциальные проблемы с кодировкой
 
-                    if not text.strip():
-                        logger.warning("Канал %s вернул пустой ответ.", channel_url, stacklevel=2)
-                        return [], "warning", [] # Return empty list of proxies
+                #  Добавлено: Проверяем, есть ли содержимое в ответе
+                if not text.strip():
+                    colored_log(logging.WARNING, f"⚠️ Канал {channel_url} вернул пустой ответ.")
+                    return [], "warning"  # Пустой ответ - это предупреждение
 
-                    try:
-                        # Encode text to bytes before base64 decoding
-                        decoded_text_bytes = base64.b64decode(text.strip().encode('utf-8'), validate=True)
-                        decoded_text = decoded_text_bytes.decode('utf-8', errors='ignore')
-                        lines = decoded_text.splitlines()
-                    except binascii.Error as e: # Ловим конкретную ошибку base64
-                        logger.debug("Канал %s вернул base64, но декодирование не удалось: %s. Попытка обработки как есть.", channel_url, e, stacklevel=2) # DEBUG уровень
-                        lines = text.splitlines() # Пытаемся обработать как обычный текст
-                    except Exception as e:
-                        logger.error("Ошибка при Base64 декодировании ответа от %s: %s", channel_url, e, exc_info=True, stacklevel=2)
-                        lines = text.splitlines() # Пытаемся обработать как обычный текст
+                # Попытка декодировать base64, если это необходимо
+                try:
+                    # Если контент похож на base64, декодируем его
+                    decoded_text = base64.b64decode(text.strip()).decode('utf-8')
+                    return decoded_text.splitlines(), "success"
+                except:
+                    # Если не base64, возвращаем как есть
+                    return text.splitlines(), "success"
 
-                    parsed_proxies_for_channel = await parse_and_filter_proxies(lines, resolver) # Parse proxies here, now resolver is passed
-                    return lines, "success", parsed_proxies_for_channel # Return parsed proxies
 
-        except aiohttp.ClientResponseError as e: # HTTP ошибки (4xx, 5xx)
-            logger.warning("Канал %s вернул HTTP ошибку %s: %s, URL: %s", channel_url, e.status, e.message, e.request_info.url, stacklevel=2) # Логируем URL
-            if e.status == 429: # Обработка 429 Too Many Requests (можно добавить доп. логику, если нужно)
-                retry_delay = RETRY.RETRY_DELAY_BASE * (2 ** (retries_attempted + 2)) # Увеличиваем задержку для 429
-                logger.warning("Сервер вернул 429 для %s. Увеличена задержка до %s сек.", channel_url, retry_delay, stacklevel=2)
-            else:
-                retry_delay = RETRY.RETRY_DELAY_BASE * (2 ** retries_attempted)
-            if retries_attempted == RETRY.MAX_RETRIES:
-                logger.error("Достигнуто макс. кол-во попыток (%s) для %s после HTTP ошибки %s", RETRY.MAX_RETRIES+1, channel_url, e.status, stacklevel=2)
-                return [], "error", [] # Return empty list of proxies
-            await asyncio.sleep(retry_delay + random.uniform(0, 1)) # Добавляем jitter к задержке
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e: # Ошибки соединения, таймауты
+        except aiohttp.ClientResponseError as e:
+            colored_log(logging.WARNING, f"⚠️ Канал {channel_url} вернул HTTP ошибку {e.status}: {e.message}")
+            return [], "warning"  # Считаем не-200 ответы предупреждениями
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             retry_delay = RETRY.RETRY_DELAY_BASE * (2 ** retries_attempted)
-            logger.warning("Ошибка при получении %s (попытка %s/%s): %s (%s). Повтор через %s сек...", channel_url, retries_attempted+1, RETRY.MAX_RETRIES+1, e, e.__class__.__name__, retry_delay, stacklevel=2) # Логируем тип ошибки
+            colored_log(logging.WARNING, f"⚠️ Ошибка при получении {channel_url} (попытка {retries_attempted+1}/{RETRY.MAX_RETRIES+1}): {e}. Повтор через {retry_delay} сек...")
             if retries_attempted == RETRY.MAX_RETRIES:
-                logger.error("Достигнуто макс. кол-во попыток (%s) для %s: %s (%s)", RETRY.MAX_RETRIES+1, channel_url, e, e.__class__.__name__, stacklevel=2)
-                return [], "critical", [] # Return empty list of proxies
-            await asyncio.sleep(retry_delay + random.uniform(0, 1)) # Добавляем jitter к задержке
+                colored_log(logging.ERROR, f"❌ Достигнуто максимальное количество попыток ({RETRY.MAX_RETRIES+1}) для {channel_url}")
+                return [], "error"  # Помечаем как ошибку после максимального количества попыток
+            await asyncio.sleep(retry_delay)
         retries_attempted += 1
 
-    return [], "critical", [] # Если все попытки исчерпаны, return empty list of proxies
+    return [], "critical"  # Не должны сюда доходить, но добавлено для полноты
+
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
-    """Разбирает и фильтрует конфигурации прокси из списка строк.
-
-    Выполняет разбор каждой строки в ProxyParsedConfig, фильтрацию
-    невалидных конфигураций и разрешение DNS для адреса прокси.
-
-    Args:
-        lines: Список строк с конфигурациями прокси.
-        resolver: aiodns.DNSResolver для разрешения имен хостов.
-
-    Returns:
-        Список объектов ProxyParsedConfig после разбора и фильтрации.
-    """
+    """Разбирает и фильтрует конфигурации прокси, разрешая имена хостов в IP-адреса."""
     parsed_configs = []
-    processed_configs = set() # Для дедупликации в пределах одного канала
+    processed_configs = set()  # Множество для отслеживания обработанных строк
+
     for line in lines:
         line = line.strip()
-        if not line:
+        if not line:  # Пропускаем пустые строки
             continue
 
-        parsed_config = ProxyParsedConfig.from_url(line)
-        if parsed_config is None:
-            logger.debug("Пропускаем неверный прокси URL: %s", line, stacklevel=2) # Логируем строку целиком
+        try:
+            parsed_config = ProxyParsedConfig.from_url(line)
+            if parsed_config is None:  #  Если from_url вернул None, пропускаем
+                continue
+
+             # Разрешаем имя хоста в IP-адрес
+            resolved_ip = await resolve_address(parsed_config.address, resolver)
+
+            # Добавлено: Проверяем, был ли уже обработан такой config_string
+            if parsed_config.config_string in processed_configs:
+                #colored_log(logging.INFO, f"ℹ️ Пропускаем дубликат: {parsed_config.config_string}") # Убрали излишнее логирование
+                continue  # Пропускаем дубликат
+            processed_configs.add(parsed_config.config_string)
+
+            if resolved_ip:
+                parsed_configs.append(parsed_config)  # Добавляем, только если разрешение успешно
+
+        except (InvalidURLError, UnsupportedProtocolError) as e:
+            # colored_log(logging.WARNING, f"⚠️ Пропускаем неверный или неподдерживаемый прокси URL '{line}': {e}") #  Убрали!
             continue
 
-        if parsed_config.config_string in processed_configs:
-            continue # Дедупликация в пределах канала
-        processed_configs.add(parsed_config.config_string)
-
-        resolved_ip = await resolve_address(parsed_config.address, resolver) # Разрешаем DNS для каждого прокси
-        if resolved_ip:
-            parsed_configs.append(parsed_config) # Добавляем только если DNS резолвится
 
     return parsed_configs
 
-PROFILE_NAME_MAPPING = {
-    'type': {'tcp': 'TCP', 'udp': 'UDP', 'unknown': 'GEN'},
-    'security': {'none': 'None', 'tls': 'TLS', 'reality': 'REALITY', 'unknown': 'GEN'},
-}
 
-def generate_proxy_profile_name(proxy_config: ProxyParsedConfig, mapping: Dict = PROFILE_NAME_MAPPING) -> str:
-    """Генерирует имя профиля прокси на основе параметров конфигурации.
-
-    Использует PROFILE_NAME_MAPPING для преобразования параметров в части имени.
-
-    Args:
-        proxy_config: Объект ProxyParsedConfig.
-        mapping: Словарь соответствий для параметров профиля (опционально).
-
-    Returns:
-        Строка - имя профиля прокси.
-    """
+def generate_proxy_profile_name(proxy_config: ProxyParsedConfig) -> str:
+    """Генерирует имя профиля прокси, извлекая type и security."""
     protocol = proxy_config.protocol.upper()
     type_ = proxy_config.query_params.get('type', 'unknown').lower()
     security = proxy_config.query_params.get('security', 'none').lower()
 
-    type_part = mapping['type'].get(type_, type_.upper()) # Используем mapping или значение в верхнем регистре
-    security_part = mapping['security'].get(security, security.upper())
+    # Добавляем обработку для ss, если нет type, то подставляем tcp
+    if protocol == 'SS' and type_ == 'unknown':
+        type_ = 'tcp'
 
-    if protocol == 'SS' and type_ == 'unknown': # Default type for SS
-        type_part = 'TCP'
+    return f"{protocol}_{type_}_{security}"
 
-    return f"{protocol}_{type_part}_{security_part}"
 
-async def save_proxies_from_queue(queue: asyncio.Queue, output_file: str) -> int:
-    """Сохраняет прокси из очереди в файл (с дедупликацией).
 
-    Читает объекты ProxyParsedConfig из очереди, дедуплицирует их
-    и сохраняет в указанный файл в формате: config_string#profile_name.
-
-    Args:
-        queue: asyncio.Queue с объектами ProxyParsedConfig.
-        output_file: Путь к выходному файлу.
-
-    Returns:
-        Количество сохраненных прокси.
+def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
+    """Сохраняет все разобранные конфигурации прокси в файл, по одной на строку.
+       Удаляет дубликаты на основе config_string ПЕРЕД сохранением.
     """
     total_proxies_count = 0
-    seen_config_strings = set() # Global дедупликация между каналами
+    unique_proxies = []
+    seen_config_strings = set() # Используем set() для быстрого O(1) поиска
+
     try:
-        os.makedirs(os.path.dirname(output_file), exist_ok=True) # Создаем директорию, если нет
-        temp_output_file = output_file + ".tmp" # Временный файл для атомарного сохранения
-        with open(temp_output_file, 'w', encoding='utf-8') as f: # Пишем во временный файл
-            while True:
-                proxy_conf = await queue.get()
-                if proxy_conf is None:  # Сигнал остановки
-                    break
-                if proxy_conf.config_string not in seen_config_strings: # Глобальная дедупликация
-                    seen_config_strings.add(proxy_conf.config_string)
-                    profile_name = generate_proxy_profile_name(proxy_conf)
-                    config_line = f"{proxy_conf.config_string}#{profile_name}"
-                    f.write(config_line + "\n")
-                    total_proxies_count += 1
-                queue.task_done()
-        os.replace(temp_output_file, output_file) # Атомарное перемещение временного файла в основной
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)  # Убеждаемся, что каталог существует
+
+        # Дедупликация ПЕРЕД записью в файл
+        for proxy_conf in all_proxies:
+            if proxy_conf.config_string not in seen_config_strings:
+                unique_proxies.append(proxy_conf)
+                seen_config_strings.add(proxy_conf.config_string)
+
+        with open(output_file, 'w', encoding='utf-8') as f:
+            for proxy_conf in unique_proxies:
+                profile_name = generate_proxy_profile_name(proxy_conf)  # Генерируем новое имя профиля
+                # Записываем строку конфигурации с *новым* именем профиля
+                config_line = f"{proxy_conf.config_string}#{profile_name}"
+                f.write(config_line + "\n")
+                total_proxies_count += 1
+
     except Exception as e:
-        logger.error("Ошибка сохранения прокси в файл %s: %s", output_file, e, exc_info=True, stacklevel=2) # Логируем имя файла
+        logger.error(f"Ошибка сохранения всех прокси в файл: {e}", exc_info=True)
     return total_proxies_count
 
+
 async def load_channel_urls(all_urls_file: str) -> List[str]:
-    """Загружает URL-адреса каналов из файла.
-
-    Читает файл построчно, проверяет валидность URL и возвращает список URL-адресов.
-
-    Args:
-        all_urls_file: Путь к файлу со списком URL-адресов каналов.
-
-    Returns:
-        Список URL-адресов каналов.
-    """
+    """Загружает URL-адреса каналов из файла, обрабатывая отсутствие файла и другие ошибки."""
     channel_urls = []
     try:
         with open(all_urls_file, 'r', encoding='utf-8') as f:
             for line in f:
                 url = line.strip()
-                if url and _is_valid_url(url):  # Проверяем URL на валидность
+                if url:  # Игнорируем пустые строки
                     channel_urls.append(url)
-                elif url:
-                    logger.warning("Пропускаем невалидный URL канала: %s", url, stacklevel=2)
     except FileNotFoundError:
-        logger.warning("Файл %s не найден. Создаю пустой файл.", all_urls_file, stacklevel=2) # Уточнение в логе
-        open(all_urls_file, 'w').close() # Создаем пустой файл, если не найден
+        colored_log(logging.WARNING, f"⚠️ Файл {all_urls_file} не найден. Создаю пустой файл.")
+        open(all_urls_file, 'w').close()  # Создаем файл, если он не существует.
     except Exception as e:
-        logger.error("Ошибка открытия/чтения файла %s: %s", all_urls_file, e, exc_info=True, stacklevel=2) # Логируем имя файла
+        logger.error(f"Ошибка открытия/чтения файла {all_urls_file}: {e}", exc_info=True)
     return channel_urls
-
-def _is_valid_url(url: str) -> bool:
-    """Внутренняя функция для проверки URL на валидность.
-
-    Проверяет наличие схемы и домена, а также что схема 'http' или 'https'.
-
-    Args:
-        url: URL-адрес для проверки.
-
-    Returns:
-        True, если URL валидный, False в противном случае.
-    """
-    try:
-        result = urlparse(url)
-        return all([result.scheme, result.netloc, result.scheme.lower() in ('http', 'https')]) # Проверка схемы на http/https
-    except ValueError:
-        return False
-
-async def process_channel(url: str, session: aiohttp.ClientSession, resolver: aiodns.DNSResolver, proxy_queue: asyncio.Queue, channel_proxy_semaphore: asyncio.Semaphore) -> Tuple[int, bool, List[ProxyParsedConfig]]: # Return parsed proxies
-    """Обрабатывает один URL-адрес канала.
-
-    Загружает прокси из канала, разбирает, фильтрует и добавляет в очередь.
-
-    Args:
-        url: URL-адрес канала.
-        session: aiohttp.ClientSession для запросов.
-        resolver: aiodns.DNSResolver для разрешения имен хостов.
-        proxy_queue: asyncio.Queue для добавления объектов ProxyParsedConfig.
-        channel_proxy_semaphore: Семафор для ограничения параллельных запросов к каналу.
-
-    Returns:
-        Кортеж: (количество найденных прокси, флаг успеха обработки, список ProxyParsedConfig). # Возвращаем список прокси
-    """
-    channel_id = url # Используем URL как ID канала (можно заменить на что-то более короткое, если нужно)
-    logger.info("🚀 Обработка канала: %s", channel_id, stacklevel=2) # Используем channel_id в логах
-    lines, status, parsed_proxies = await download_proxies_from_channel(url, session, channel_proxy_semaphore, resolver) # Pass resolver here
-    if status == "success":
-        channel_proxies_count = len(parsed_proxies)
-        for proxy in parsed_proxies:
-            await proxy_queue.put(proxy)
-        logger.info("✅ Канал %s обработан. Найдено %s прокси.", channel_id, channel_proxies_count, stacklevel=2) # Используем channel_id в логах
-        return channel_proxies_count, True, parsed_proxies # Return parsed proxies
-    else:
-        logger.warning("⚠️ Канал %s обработан со статусом: %s.", channel_id, status, stacklevel=2) # Используем channel_id в логах
-        return 0, False, [] # Return empty list of proxies
-
-def print_statistics(start_time: float, total_channels: int, channels_processed_successfully: int, total_proxies_downloaded: int, all_proxies_saved_count: int, protocol_counts: Dict[str, int], channel_status_counts: Dict[str, int], output_file: str):
-    """Выводит статистику загрузки и обработки прокси.
-
-    Args:
-        start_time: Время начала выполнения скрипта.
-        total_channels: Общее количество URL-источников.
-        channels_processed_successfully: Количество успешно обработанных каналов.
-        total_proxies_downloaded: Общее количество найденных конфигураций прокси.
-        all_proxies_saved_count: Количество прокси, сохраненных в файл (без дубликатов).
-        protocol_counts: Словарь со статистикой по протоколам.
-        channel_status_counts: Словарь со статистикой статусов обработки каналов.
-        output_file: Путь к файлу, в который сохранены прокси.
-    """
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-
-    logger.info("==================== 📊 СТАТИСТИКА ЗАГРУЗКИ ПРОКСИ ====================", stacklevel=2)
-    logger.info("⏱️  Время выполнения скрипта: %.2f сек", elapsed_time, stacklevel=2)
-    logger.info("🔗 Всего URL-источников: %s", total_channels, stacklevel=2)
-    logger.info("✅ Успешно обработано каналов: %s/%s", channels_processed_successfully, total_channels, stacklevel=2)
-
-    logger.info("\n📊 Статус обработки URL-источников:", stacklevel=2)
-    for status_key in ["success", "warning", "error", "critical"]:
-        count = channel_status_counts.get(status_key, 0)
-        if count > 0:
-            status_text = status_key.upper() # Упрощаем код, status_text определяется напрямую
-            logger.info("  - %s: %s каналов", status_text, count, stacklevel=2)
-
-    logger.info("\n✨ Всего найдено конфигураций: %s", total_proxies_downloaded, stacklevel=2) # Removed "- ошибка"
-    logger.info("📝 Всего прокси (все, без дубликатов) сохранено: %s (в %s)", all_proxies_saved_count, output_file, stacklevel=2)
-
-    logger.info("\n🔬 Разбивка по протоколам (найдено):", stacklevel=2)
-    if protocol_counts:
-        for protocol, count in protocol_counts.items():
-            logger.info("   - %s: %s", protocol.upper(), count, stacklevel=2)
-    else:
-        logger.info("   Нет статистики по протоколам.", stacklevel=2)
-
-    logger.info("======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================", stacklevel=2)
 
 
 async def main():
-    """Основная функция скрипта.
-
-    Загружает URL-адреса каналов, обрабатывает каждый канал параллельно,
-    сохраняет полученные прокси в файл и выводит статистику.
-    """
-    start_time = time.time()
-    channel_urls = await load_channel_urls(CONFIG_FILES.ALL_URLS)
-    if not channel_urls:
-        logger.warning("Нет URL-адресов каналов для обработки.", stacklevel=2)
-        return
-
-    total_channels = len(channel_urls)
-    channels_processed_successfully = 0
-    total_proxies_downloaded = 0
-    protocol_counts = defaultdict(int)
-    channel_status_counts = defaultdict(int)
-    all_proxies_saved_count = 0 # Initialize here to avoid UnboundLocalError
-
-    resolver = aiodns.DNSResolver() # Создаем DNS Resolver
-    proxy_queue = asyncio.Queue() # Очередь для прокси
-    channel_proxy_semaphore = asyncio.Semaphore(CONCURRENCY.MAX_PROXIES_PER_CHANNEL) # Семафор для ограничения запросов
+    """Основная функция для организации загрузки и обработки прокси."""
 
     try:
-        async with aiohttp.ClientSession() as session: # Создаем aiohttp Session
-            async with asyncio.TaskGroup() as tg: # TaskGroup для параллельной обработки каналов
-                channel_tasks = [tg.create_task(process_channel(url, session, resolver, proxy_queue, channel_proxy_semaphore)) for url in channel_urls]
+        start_time = time.time()
+        channel_urls = await load_channel_urls(CONFIG_FILES.ALL_URLS)
+        if not channel_urls:
+            colored_log(logging.WARNING, "Нет URL-адресов каналов для обработки.")
+            return  # Выход, если нет URL
 
-            channel_results = [task.result() for task in channel_tasks]  # Получаем результаты задач в порядке запуска
+        total_channels = len(channel_urls)
+        channels_processed_successfully = 0
+        total_proxies_downloaded = 0
+        protocol_counts = defaultdict(int)  # Отслеживаем количество каждого протокола
+        channel_status_counts = defaultdict(int) # Отслеживаем успешность/неудачу канала
 
-            for proxies_count, success_flag, parsed_proxies_list in channel_results: # Get parsed_proxies_list from result
+        resolver = aiodns.DNSResolver(loop=asyncio.get_event_loop())
+        global_proxy_semaphore = asyncio.Semaphore(CONCURRENCY.MAX_PROXIES_GLOBAL)  # Глобальный лимит
+        channel_semaphore = asyncio.Semaphore(CONCURRENCY.MAX_CHANNELS)
+
+        async with aiohttp.ClientSession() as session:
+            channel_tasks = []
+
+            for channel_url in channel_urls:
+                async def process_channel_task(url):
+                    nonlocal channels_processed_successfully, total_proxies_downloaded  # Доступ к переменным внешней области видимости
+                    channel_proxies_count_channel = 0
+                    channel_success = 0
+                    async with channel_semaphore: # Ограничиваем одновременную обработку каналов
+                        colored_log(logging.INFO, f"🚀 Обработка канала: {url}")
+                        lines, status = await download_proxies_from_channel(url, session)
+                        channel_status_counts[status] += 1
+                        if status == "success":
+                            parsed_proxies = await parse_and_filter_proxies(lines, resolver)
+                            channel_proxies_count_channel = len(parsed_proxies)
+                            channel_success = 1  # Увеличиваем при успешной обработке канала
+                            for proxy in parsed_proxies:
+                                protocol_counts[proxy.protocol] += 1  # Считаем по протоколу
+                            colored_log(logging.INFO, f"✅ Канал {url} обработан. Найдено {channel_proxies_count_channel} прокси.")
+                            return channel_proxies_count_channel, channel_success, parsed_proxies  # Возвращаем разобранные прокси
+                        else:
+                            colored_log(logging.WARNING, f"⚠️ Канал {url} обработан со статусом: {status}.")
+                            return 0, 0, []
+
+
+                task = asyncio.create_task(process_channel_task(channel_url))
+                channel_tasks.append(task)
+
+            channel_results = await asyncio.gather(*channel_tasks)
+            all_proxies: List[ProxyParsedConfig] = []  # Явное указание типа
+            for proxies_count, success_flag, proxies_list in channel_results:
                 total_proxies_downloaded += proxies_count
-                channels_processed_successfully += int(success_flag) # Явное преобразование bool в int
-                for proxy in parsed_proxies_list: # Iterate over parsed proxies from channel result
-                    protocol_counts[proxy.protocol] += 1 # Count protocols here, directly from parsed proxies
-
-            await proxy_queue.join()  # Ждем, пока все задачи из очереди не будут выполнены
-            await proxy_queue.put(None)  # Сигнал остановки для save_proxies_from_queue
-            save_task = asyncio.create_task(save_proxies_from_queue(proxy_queue, CONFIG_FILES.OUTPUT_ALL_CONFIG)) # Запускаем задачу сохранения
-            all_proxies_saved_count = await save_task # Ждем завершения сохранения
+                channels_processed_successfully += success_flag
+                all_proxies.extend(proxies_list)
 
 
-            channel_status_counts = defaultdict(int, {k: sum(1 for r in channel_results if r[1] == (k == "success")) for k in ["success", "warning", "error", "critical"]})
+        all_proxies_saved_count = save_all_proxies_to_file(all_proxies, CONFIG_FILES.OUTPUT_ALL_CONFIG)
+
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+
+        # --- Статистика и отчетность ---
+        colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ЗАГРУЗКИ ПРОКСИ ====================")
+        colored_log(logging.INFO, f"⏱️  Время выполнения скрипта: {elapsed_time:.2f} сек")
+        colored_log(logging.INFO, f"🔗 Всего URL-источников: {total_channels}")
+        colored_log(logging.INFO, f"✅ Успешно обработано каналов: {channels_processed_successfully}/{total_channels}")
+
+        colored_log(logging.INFO, "\n📊 Статус обработки URL-источников:")
+        for status_key in ["success", "warning", "error", "critical"]:
+            count = channel_status_counts.get(status_key, 0)
+            if count > 0:
+                if status_key == "success":
+                    status_text, color = "УСПЕШНО", '\033[92m'
+                elif status_key == "warning":
+                    status_text, color = "ПРЕДУПРЕЖДЕНИЕ", '\033[93m'
+                elif status_key in ["error", "critical"]:
+                    status_text, color = "ОШИБКА", '\033[91m'
+                else:
+                    status_text, color = status_key.upper(), '\033[0m'
+
+                colored_log(logging.INFO, f"  - {status_text}: {count} каналов")
+
+        colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций: {total_proxies_downloaded}")
+        colored_log(logging.INFO, f"📝 Всего прокси (все, без дубликатов) сохранено: {all_proxies_saved_count} (в {CONFIG_FILES.OUTPUT_ALL_CONFIG})")
+
+        colored_log(logging.INFO, "\n🔬 Разбивка по протоколам (найдено):")
+        if protocol_counts:
+            for protocol, count in protocol_counts.items():
+                colored_log(logging.INFO, f"   - {protocol.upper()}: {count}")
+        else:
+            colored_log(logging.INFO, "   Нет статистики по протоколам.")
 
 
-    except Exception as e: # Ловим все исключения в main
-        logger.critical("Неожиданная ошибка в main(): %s", e, exc_info=True, stacklevel=2) # Логируем с traceback
+        colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
+
+    except Exception as e:
+        logger.critical(f"Неожиданная ошибка в main(): {e}", exc_info=True)  # Логируем критические ошибки
     finally:
-        logger.info("✅ Загрузка и обработка прокси завершена.", stacklevel=2)
-        print_statistics(start_time, total_channels, channels_processed_successfully, total_proxies_downloaded, all_proxies_saved_count, protocol_counts, channel_status_counts, CONFIG_FILES.OUTPUT_ALL_CONFIG) # Выводим статистику
+        colored_log(logging.INFO, "✅ Загрузка и обработка прокси завершена.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
