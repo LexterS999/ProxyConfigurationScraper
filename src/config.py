@@ -198,7 +198,7 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Option
             resolved_ip = result[0].host
             return resolved_ip if is_valid_ipv4(resolved_ip) else None
     except (asyncio.TimeoutError, aiodns.error.DNSError) as e:
-        logger.warning("Ошибка разрешения DNS для %s: %s", hostname, e, stacklevel=2)
+        logger.debug("Ошибка разрешения DNS для %s: %s", hostname, e, stacklevel=2) # Изменено на DEBUG
         return None
     except Exception as e:
         logger.error("Неожиданная ошибка при разрешении DNS для %s: %s", hostname, e, exc_info=True, stacklevel=2)
