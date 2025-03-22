@@ -17,7 +17,13 @@ import coloredlogs
 
 LOG_FILE = 'proxy_downloader.log'
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Устанавливаем общий уровень на DEBUG
+coloredlogs.install(level='INFO', logger=logger)
+
+try:
+    logger.warning("Test message: %s", "argument") # Correct format
+    # logger.warning(f"Test message: { 'argument' }") # Incorrect format - previously thought to be the issue
+except Exception as e:
+    print(f"Exception: {e}")
 
 # Обработчик файла (уровень WARNING и выше, формат JSON)
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
