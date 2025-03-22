@@ -11,21 +11,16 @@ from urllib.parse import urlparse, parse_qs
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import aiohttp
+from collections import defaultdict
+import base64
 
-# --- Настройка логирования (с использованием coloredlogs) ---
-import coloredlogs
+# --- Настройка логирования (БЕЗ coloredlogs, ручной цветной вывод) ---
 
 LOG_FILE = 'proxy_downloader.log'
 logger = logging.getLogger(__name__)
-coloredlogs.install(level='INFO', logger=logger)
+logger.setLevel(logging.DEBUG)
 
-try:
-    logger.warning("Test message: %s", "argument") # Correct format
-    # logger.warning(f"Test message: { 'argument' }") # Incorrect format - previously thought to be the issue
-except Exception as e:
-    print(f"Exception: {e}")
-
-# Обработчик файла (уровень WARNING и выше, формат JSON)
+# Обработчик файла (уровень WARNING и выше, формат JSON) - оставляем как есть
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 file_handler.setLevel(logging.WARNING)
 
@@ -49,11 +44,37 @@ formatter_file = JsonFormatter()
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
-# Обработчик консоли (уровень INFO, цветной вывод с помощью coloredlogs)
+# Обработчик консоли (уровень INFO, РУЧНОЙ цветной вывод) - ИЗМЕНЕНИЯ ТУТ
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
-coloredlogs.install(level='INFO', logger=logger, stream=console_handler,
-                    fmt='[%(levelname)s] %(message)s')  # Простой формат для coloredlogs
+
+class ColoredFormatter(logging.Formatter):
+    """Форматтер для цветного вывода в консоль (ручная реализация)."""
+
+    RESET = '\033[0m'
+    RED   = '\033[31m'
+    GREEN = '\033[32m'
+    YELLOW = '\033[33m'
+    CYAN  = '\033[36m'
+    BOLD    = '\033[1m'
+
+    FORMATS = {
+        logging.DEBUG:    CYAN + "%(levelname)s" + RESET + ": %(message)s",
+        logging.INFO:     GREEN + "%(levelname)s" + RESET + ": %(message)s",
+        logging.WARNING:  YELLOW + "%(levelname)s" + RESET + ": %(message)s",
+        logging.ERROR:    RED + "%(levelname)s" + RESET + ": %(message)s",
+        logging.CRITICAL: BOLD + RED + "%(levelname)s" + RESET + ": %(message)s",
+    }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
+
+formatter_console = ColoredFormatter() # Используем ColoredFormatter
+console_handler.setFormatter(formatter_console)
+logger.addHandler(console_handler)
+
 
 # --- Константы и перечисления ---
 class Protocols(str, Enum):
@@ -256,7 +277,6 @@ def generate_proxy_profile_name(proxy_config: ProxyParsedConfig) -> str:
         type_ = 'tcp'
     return f"{protocol}_{type_}_{security}"
 
-from collections import defaultdict
 
 async def save_proxies_from_queue(queue: asyncio.Queue, output_file: str) -> int:
     """Сохраняет прокси из очереди в файл (с дедупликацией)."""
@@ -358,12 +378,9 @@ async def main():
             all_proxies_saved_count = await save_task
 
             # Подсчитываем протоколы после обработки всех каналов и сохранения в файл
-
             for proxy in [item for q in channel_results for item in (await parse_and_filter_proxies(await download_proxies_from_channel(q[2], session, channel_proxy_semaphore)[0], resolver)) if item]:
                protocol_counts[proxy.protocol] += 1
-
             channel_status_counts = defaultdict(int, {k: sum(1 for r in channel_results if r[1] == (k == "success")) for k in ["success", "warning", "error", "critical"]})
-
 
 
     except Exception as e:
@@ -406,5 +423,6 @@ async def main():
         logger.info("   Нет статистики по протоколам.", stacklevel=2)
 
     logger.info("======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================", stacklevel=2)
+
 if __name__ == "__main__":
     asyncio.run(main())
