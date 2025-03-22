@@ -10,7 +10,6 @@ from enum import Enum
 from urllib.parse import urlparse, parse_qs
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
-from collections import defaultdict
 import aiohttp
 
 # --- Настройка логирования (с использованием coloredlogs) ---
@@ -114,7 +113,7 @@ class ProxyParsedConfig:
     def from_url(cls, config_string: str) -> Optional["ProxyParsedConfig"]:
         """Разбирает строку конфигурации прокси в объект ProxyParsedConfig."""
         if len(config_string) > 1024: # Ограничиваем максимальную длину config_string
-            logger.warning(f"Пропускаем слишком длинный URL: {config_string[:100]}...")
+            logger.warning("Пропускаем слишком длинный URL: %s...", config_string[:100], stacklevel=2)
             return None
 
         protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p + "://")), None)
@@ -172,10 +171,10 @@ async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Option
             resolved_ip = result[0].host
             return resolved_ip if is_valid_ipv4(resolved_ip) else None
     except (asyncio.TimeoutError, aiodns.error.DNSError) as e:
-        logger.warning(f"Ошибка разрешения DNS для {hostname}: {e}", stacklevel=2)
+        logger.warning("Ошибка разрешения DNS для %s: %s", hostname, e, stacklevel=2)
         return None
     except Exception as e:
-        logger.error(f"Неожиданная ошибка при разрешении DNS для {hostname}: {e}", exc_info=True, stacklevel=2)
+        logger.error("Неожиданная ошибка при разрешении DNS для %s: %s", hostname, e, exc_info=True, stacklevel=2)
         return None
 
 # --- Функции загрузки и обработки ---
@@ -194,7 +193,7 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
                     text = await response.text(encoding='utf-8', errors='ignore')
 
                     if not text.strip():
-                        logger.warning(f"Канал {channel_url} вернул пустой ответ.", stacklevel=2)
+                        logger.warning("Канал %s вернул пустой ответ.", channel_url, stacklevel=2)
                         return [], "warning"
 
                     try:
@@ -204,13 +203,13 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
                         return text.splitlines(), "success"
 
         except aiohttp.ClientResponseError as e:
-            logger.warning(f"Канал {channel_url} вернул HTTP ошибку {e.status}: {e.message}", stacklevel=2)
+            logger.warning("Канал %s вернул HTTP ошибку %s: %s", channel_url, e.status, e.message, stacklevel=2)
             return [], "warning"
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             retry_delay = RETRY.RETRY_DELAY_BASE * (2 ** retries_attempted)
-            logger.warning(f"Ошибка при получении {channel_url} (попытка {retries_attempted+1}/{RETRY.MAX_RETRIES+1}): {e}. Повтор через {retry_delay} сек...", stacklevel=2)
+            logger.warning("Ошибка при получении %s (попытка %s/%s): %s. Повтор через %s сек...", channel_url, retries_attempted+1, RETRY.MAX_RETRIES+1, e, retry_delay, stacklevel=2)
             if retries_attempted == RETRY.MAX_RETRIES:
-                logger.error(f"Достигнуто максимальное количество попыток ({RETRY.MAX_RETRIES+1}) для {channel_url}", stacklevel=2)
+                logger.error("Достигнуто максимальное количество попыток (%s) для %s", RETRY.MAX_RETRIES+1, channel_url, stacklevel=2)
                 return [], "error"
             await asyncio.sleep(retry_delay)
         retries_attempted += 1
@@ -229,7 +228,7 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
 
         parsed_config = ProxyParsedConfig.from_url(line)
         if parsed_config is None:
-            logger.warning(f"Пропускаем неверный прокси URL: {line}", stacklevel=2)  # Логируем
+            logger.warning("Пропускаем неверный прокси URL: %s", line, stacklevel=2)  # Логируем
             continue
 
         if parsed_config.config_string in processed_configs:
@@ -251,6 +250,8 @@ def generate_proxy_profile_name(proxy_config: ProxyParsedConfig) -> str:
         type_ = 'tcp'
     return f"{protocol}_{type_}_{security}"
 
+from collections import defaultdict
+
 async def save_proxies_from_queue(queue: asyncio.Queue, output_file: str) -> int:
     """Сохраняет прокси из очереди в файл (с дедупликацией)."""
     total_proxies_count = 0
@@ -270,7 +271,7 @@ async def save_proxies_from_queue(queue: asyncio.Queue, output_file: str) -> int
                     total_proxies_count += 1
                 queue.task_done()
     except Exception as e:
-        logger.error(f"Ошибка сохранения прокси из очереди в файл: {e}", exc_info=True, stacklevel=2)
+        logger.error("Ошибка сохранения прокси из очереди в файл: %s", e, exc_info=True, stacklevel=2)
     return total_proxies_count
 
 async def load_channel_urls(all_urls_file: str) -> List[str]:
@@ -283,12 +284,12 @@ async def load_channel_urls(all_urls_file: str) -> List[str]:
                 if url and _is_valid_url(url):  # Проверяем URL
                     channel_urls.append(url)
                 elif url:
-                    logger.warning(f"Пропускаем невалидный URL канала: {url}", stacklevel=2)
+                    logger.warning("Пропускаем невалидный URL канала: %s", url, stacklevel=2)
     except FileNotFoundError:
-        logger.warning(f"Файл {all_urls_file} не найден. Создаю пустой файл.", stacklevel=2)
+        logger.warning("Файл %s не найден. Создаю пустой файл.", all_urls_file, stacklevel=2)
         open(all_urls_file, 'w').close()
     except Exception as e:
-        logger.error(f"Ошибка открытия/чтения файла {all_urls_file}: {e}", exc_info=True, stacklevel=2)
+        logger.error("Ошибка открытия/чтения файла %s: %s", all_urls_file, e, exc_info=True, stacklevel=2)
     return channel_urls
 
 def _is_valid_url(url: str) -> bool:
@@ -301,17 +302,17 @@ def _is_valid_url(url: str) -> bool:
 
 async def process_channel(url: str, session: aiohttp.ClientSession, resolver: aiodns.DNSResolver, proxy_queue: asyncio.Queue, channel_proxy_semaphore: asyncio.Semaphore) -> Tuple[int, bool]:
     """Обрабатывает один канал."""
-    logger.info(f"🚀 Обработка канала: {url}", stacklevel=2)
+    logger.info("🚀 Обработка канала: %s", url, stacklevel=2)
     lines, status = await download_proxies_from_channel(url, session, channel_proxy_semaphore)
     if status == "success":
         parsed_proxies = await parse_and_filter_proxies(lines, resolver)
         channel_proxies_count = len(parsed_proxies)
         for proxy in parsed_proxies:
             await proxy_queue.put(proxy)
-        logger.info(f"✅ Канал {url} обработан. Найдено {channel_proxies_count} прокси.", stacklevel=2)
+        logger.info("✅ Канал %s обработан. Найдено %s прокси.", url, channel_proxies_count, stacklevel=2)
         return channel_proxies_count, True
     else:
-        logger.warning(f"⚠️ Канал {url} обработан со статусом: {status}.", stacklevel=2)
+        logger.warning("⚠️ Канал %s обработан со статусом: %s.", url, status, stacklevel=2)
         return 0, False
 
 async def main():
@@ -351,13 +352,16 @@ async def main():
             all_proxies_saved_count = await save_task
 
             # Подсчитываем протоколы после обработки всех каналов и сохранения в файл
+
             for proxy in [item for q in channel_results for item in (await parse_and_filter_proxies(await download_proxies_from_channel(q[2], session, channel_proxy_semaphore)[0], resolver)) if item]:
                protocol_counts[proxy.protocol] += 1
+
             channel_status_counts = defaultdict(int, {k: sum(1 for r in channel_results if r[1] == (k == "success")) for k in ["success", "warning", "error", "critical"]})
 
 
+
     except Exception as e:
-        logger.critical(f"Неожиданная ошибка в main(): {e}", exc_info=True, stacklevel=2)
+        logger.critical("Неожиданная ошибка в main(): %s", e, exc_info=True, stacklevel=2)
     finally:
         logger.info("✅ Загрузка и обработка прокси завершена.", stacklevel=2)
 
@@ -367,9 +371,9 @@ async def main():
 
     # --- Статистика и отчетность ---
     logger.info("==================== 📊 СТАТИСТИКА ЗАГРУЗКИ ПРОКСИ ====================", stacklevel=2)
-    logger.info(f"⏱️  Время выполнения скрипта: {elapsed_time:.2f} сек", stacklevel=2)
-    logger.info(f"🔗 Всего URL-источников: {total_channels}", stacklevel=2)
-    logger.info(f"✅ Успешно обработано каналов: {channels_processed_successfully}/{total_channels}", stacklevel=2)
+    logger.info("⏱️  Время выполнения скрипта: %.2f сек", elapsed_time, stacklevel=2)
+    logger.info("🔗 Всего URL-источников: %s", total_channels, stacklevel=2)
+    logger.info("✅ Успешно обработано каналов: %s/%s", channels_processed_successfully, total_channels, stacklevel=2)
 
     logger.info("\n📊 Статус обработки URL-источников:", stacklevel=2)
     for status_key in ["success", "warning", "error", "critical"]:
@@ -383,15 +387,15 @@ async def main():
                 status_text = "ОШИБКА"
             else:
                 status_text = status_key.upper()
-            logger.info(f"  - {status_text}: {count} каналов", stacklevel=2)
+            logger.info("  - %s: %s каналов", status_text, count, stacklevel=2)
 
-    logger.info(f"\n✨ Всего найдено конфигураций: {total_proxies_downloaded}", stacklevel=2)
-    logger.info(f"📝 Всего прокси (все, без дубликатов) сохранено: {all_proxies_saved_count} (в {CONFIG_FILES.OUTPUT_ALL_CONFIG})", stacklevel=2)
+    logger.info("\n✨ Всего найдено конфигураций: %s", total_proxies_downloaded, stacklevel=2)
+    logger.info("📝 Всего прокси (все, без дубликатов) сохранено: %s (в %s)", all_proxies_saved_count, CONFIG_FILES.OUTPUT_ALL_CONFIG, stacklevel=2)
 
     logger.info("\n🔬 Разбивка по протоколам (найдено):", stacklevel=2)
     if protocol_counts:
         for protocol, count in protocol_counts.items():
-            logger.info(f"   - {protocol.upper()}: {count}", stacklevel=2)
+            logger.info("   - %s: %s", protocol.upper(), count, stacklevel=2)
     else:
         logger.info("   Нет статистики по протоколам.", stacklevel=2)
 
