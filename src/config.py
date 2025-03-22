@@ -8,6 +8,7 @@ import json
 import functools
 import random # Для jitter
 import binascii # Для обработки ошибок base64.decode
+import traceback # Для более полного логирования ошибок в JSON
 from enum import Enum
 from urllib.parse import urlparse, parse_qs
 from typing import Dict, List, Optional, Tuple
@@ -177,7 +178,9 @@ class ProxyParsedConfig:
 
         if not protocol:
             try:
-                decoded_config = base64.b64decode(config_string, validate=True).decode('utf-8', errors='ignore')
+                # Encode config_string to bytes before base64 decoding
+                decoded_config_bytes = base64.b64decode(config_string.strip().encode('utf-8'), validate=True)
+                decoded_config = decoded_config_bytes.decode('utf-8', errors='ignore')
                 protocol = next((p for p in ALLOWED_PROTOCOLS if decoded_config.startswith(p + "://")), None)
                 if protocol:
                     config_string = decoded_config
@@ -188,7 +191,7 @@ class ProxyParsedConfig:
                 logger.debug("Не удалось декодировать Base64: %s для config: %s...", e, config_string[:50], stacklevel=2) # DEBUG уровень для ошибок декодирования
                 return None
             except Exception as e:
-                logger.error("Неожиданная ошибка при Base64 декодировании: %s, config: %s...", e, config_string[:50], exc_info=True, stacklevel=2)
+                logger.error("Неожиданная ошибка при Base64 декодировании: %s, config: %s...", e, config_info=config_string[:50], exc_info=True, stacklevel=2) # config_info for context
                 return None
 
         try:
@@ -291,7 +294,9 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
                         return [], "warning"
 
                     try:
-                        decoded_text = base64.b64decode(text.strip(), validate=True).decode('utf-8', errors='ignore')
+                        # Encode text to bytes before base64 decoding
+                        decoded_text_bytes = base64.b64decode(text.strip().encode('utf-8'), validate=True)
+                        decoded_text = decoded_text_bytes.decode('utf-8', errors='ignore')
                         return decoded_text.splitlines(), "success"
                     except binascii.Error as e: # Ловим конкретную ошибку base64
                         logger.debug("Канал %s вернул base64, но декодирование не удалось: %s. Попытка обработки как есть.", channel_url, e, stacklevel=2) # DEBUG уровень
@@ -586,5 +591,4 @@ async def main():
         print_statistics(start_time, total_channels, channels_processed_successfully, total_proxies_downloaded, all_proxies_saved_count, protocol_counts, channel_status_counts, CONFIG_FILES.OUTPUT_ALL_CONFIG) # Выводим статистику
 
 if __name__ == "__main__":
-    import traceback # Импортируем traceback для более полного логирования ошибок в JSON
     asyncio.run(main())
