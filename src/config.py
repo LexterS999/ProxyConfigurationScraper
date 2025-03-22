@@ -255,7 +255,7 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
 
         parsed_config = ProxyParsedConfig.from_url(line)
         if parsed_config is None:
-            logger.warning("Пропускаем неверный прокси URL: %s", line, stacklevel=2)  # Логируем
+            logger.debug("Пропускаем неверный прокси URL: %s", line, stacklevel=2)  # Логируем как DEBUG
             continue
 
         if parsed_config.config_string in processed_configs:
