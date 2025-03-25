@@ -4,27 +4,24 @@ import re
 import os
 import logging
 import ipaddress
-import io
-import uuid
-import string
-import base64
-import aiohttp
-import time
 import json
 import functools
 import inspect
 import sys
 import argparse
 import dataclasses
+import random  # For jitter
 
 from enum import Enum
-from urllib.parse import urlparse, parse_qs, urlsplit
-from datetime import datetime
+from urllib.parse import urlparse, parse_qs
 from typing import Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass, field
 from collections import defaultdict
+from string import Template  # For flexible profile names
 
-# --- Настройка улучшенного логирования ---
+# --- Constants ---
+LOG_FILE = 'proxy_downloader.log'
+CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
 LOG_FORMAT = {
     "time": "%(asctime)s",
     "level": "%(levelname)s",
@@ -34,9 +31,39 @@ LOG_FORMAT = {
     "funcName": "%(funcName)s",
     "lineno": "%(lineno)d",
 }
-CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
-LOG_FILE = 'proxy_downloader.log'
 
+DNS_TIMEOUT = 15  # seconds
+HTTP_TIMEOUT = 15  # seconds
+MAX_RETRIES = 4
+RETRY_DELAY_BASE = 2
+HEADERS = {'User-Agent': 'ProxyDownloader/1.0'}
+PROTOCOL_REGEX = re.compile(r"^(vless|tuic|hy2|ss|ssr|trojan)://", re.IGNORECASE)
+PROFILE_NAME_TEMPLATE = Template("${protocol}-${type}-${security}")  # Concise profile names
+
+COLOR_MAP = {
+    logging.INFO: '\033[92m',    # GREEN
+    logging.WARNING: '\033[93m', # YELLOW
+    logging.ERROR: '\033[91m',   # RED
+    logging.CRITICAL: '\033[1m\033[91m', # BOLD_RED
+    'RESET': '\033[0m'
+}
+
+QUALITY_SCORE_WEIGHTS = {
+    "protocol": {"vless": 5, "trojan": 5, "tuic": 4, "hy2": 3, "ss": 2, "ssr": 1},
+    "security": {"tls": 3, "none": 0},
+    "transport": {"ws": 2, "websocket": 2, "grpc": 2, "tcp": 1, "udp": 0},
+}
+
+QUALITY_CATEGORIES = {
+    "High": range(8, 15),
+    "Medium": range(4, 8),
+    "Low": range(0, 4),
+}
+
+ALLOWED_PROTOCOLS = [proto.value for proto in Protocols]
+
+
+# --- Logging Setup ---
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -44,6 +71,7 @@ file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 file_handler.setLevel(logging.WARNING)
 
 class JsonFormatter(logging.Formatter):
+    """Formatter for JSON log output."""
     def format(self, record):
         log_record = LOG_FORMAT.copy()
         log_record["message"] = record.getMessage()
@@ -61,57 +89,32 @@ formatter_file = JsonFormatter()
 file_handler.setFormatter(formatter_file)
 logger.addHandler(file_handler)
 
+class ColoredFormatter(logging.Formatter):
+    """Formatter for colored console output."""
+    def __init__(self, fmt=CONSOLE_LOG_FORMAT, use_colors=True):
+        super().__init__(fmt)
+        self.use_colors = use_colors
+
+    def format(self, record):
+        record.color_start = COLOR_MAP.get(record.levelno, COLOR_MAP['RESET']) if self.use_colors else ''
+        record.color_reset = COLOR_MAP['RESET'] if self.use_colors else ''
+        return super().format(record)
+
+console_formatter = ColoredFormatter()
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
-formatter_console = logging.Formatter(CONSOLE_LOG_FORMAT)
-console_handler.setFormatter(formatter_console)
+console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
 
-USE_COLOR_LOGS = True
 
 def colored_log(level: int, message: str, *args, **kwargs):
-    RESET = '\033[0m'
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    BOLD_RED = '\033[1m\033[91m'
+    """Logs a message with color to the console using standard logging."""
+    logger.log(level, message, *args, **kwargs)
 
-    color = RESET
-    if USE_COLOR_LOGS:
-        if level == logging.INFO:
-            color = GREEN
-        elif level == logging.WARNING:
-            color = YELLOW
-        elif level == logging.ERROR:
-            color = RED
-        elif level == logging.CRITICAL:
-            color = BOLD_RED
-    else:
-        color = RESET
 
-    frame = inspect.currentframe().f_back
-    pathname = frame.f_code.co_filename
-    lineno = frame.f_lineno
-    func = frame.f_code.co_name
-
-    formatted_message = f"{color}{message}{RESET}" if USE_COLOR_LOGS else message
-
-    record = logging.LogRecord(
-        name=logger.name,
-        level=level,
-        pathname=pathname,
-        lineno=lineno,
-        msg=formatted_message,
-        args=args,
-        exc_info=kwargs.get('exc_info'),
-        func=func,
-        sinfo=None
-    )
-    logger.handle(record)
-
-# --- Константы и перечисления ---
+# --- Data Structures ---
 class Protocols(Enum):
-    """Перечисление поддерживаемых протоколов."""
+    """Enumeration of supported proxy protocols."""
     VLESS = "vless"
     TUIC = "tuic"
     HY2 = "hy2"
@@ -121,67 +124,30 @@ class Protocols(Enum):
 
 @dataclass(frozen=True)
 class ConfigFiles:
-    """Конфигурационные файлы."""
+    """Configuration file paths."""
     ALL_URLS: str = "channel_urls.txt"
     OUTPUT_ALL_CONFIG: str = "configs/proxy_configs_all.txt"
 
 @dataclass(frozen=True)
 class RetrySettings:
-    """Настройки повторных попыток."""
-    MAX_RETRIES: int = 4
-    RETRY_DELAY_BASE: int = 2
+    """Settings for retry attempts."""
+    MAX_RETRIES: int = MAX_RETRIES
+    RETRY_DELAY_BASE: int = RETRY_DELAY_BASE
 
 @dataclass(frozen=True)
 class ConcurrencyLimits:
-    """Ограничения параллелизма."""
+    """Limits for concurrency."""
     MAX_CHANNELS: int = 60
     MAX_PROXIES_PER_CHANNEL: int = 50
     MAX_PROXIES_GLOBAL: int = 50
 
-ALLOWED_PROTOCOLS = [proto.value for proto in Protocols]
 CONFIG_FILES = ConfigFiles()
 RETRY = RetrySettings()
 CONCURRENCY = ConcurrencyLimits()
 
-# --- Вспомогательные функции ---
-
-@functools.lru_cache(maxsize=1024)
-def is_valid_ipv4(hostname: str) -> bool:
-    """Проверяет, является ли данная строка допустимым IPv4-адресом."""
-    try:
-        ipaddress.IPv4Address(hostname)
-        return True
-    except ipaddress.AddressValueError:
-        return False
-
-async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
-    """Разрешает имя хоста в IPv4-адрес."""
-    if is_valid_ipv4(hostname):
-        return hostname
-
-    try:
-        async with asyncio.timeout(10):
-            result = await resolver.query(hostname, 'A')
-            resolved_ip = result[0].host
-            if is_valid_ipv4(resolved_ip):
-                return resolved_ip
-            else:
-                logger.debug(f"DNS resolved {hostname} to non-IPv4: {resolved_ip}")
-                return None
-    except asyncio.TimeoutError:
-        logger.debug(f"DNS resolution timeout for {hostname}")
-        return None
-    except aiodns.error.DNSError as e:
-        logger.debug(f"DNS resolution error for {hostname}: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error during DNS resolution for {hostname}: {e}", exc_info=True)
-        return None
-
-# --- Структуры данных ---
 
 class ProfileName(Enum):
-    """Перечисление для названий профилей прокси."""
+    """Enumeration for proxy profile names."""
     VLESS = "VLESS"
     TUIC = "TUIC"
     HY2 = "HY2"
@@ -191,16 +157,16 @@ class ProfileName(Enum):
     UNKNOWN = "Unknown Protocol"
 
 class InvalidURLError(ValueError):
-    """Исключение для недопустимых URL-адресов."""
+    """Exception for invalid URLs."""
     pass
 
 class UnsupportedProtocolError(ValueError):
-    """Исключение для неподдерживаемых протоколов."""
+    """Exception for unsupported protocols."""
     pass
 
 @dataclass(frozen=True, eq=True)
 class ProxyParsedConfig:
-    """Представляет разобранную конфигурацию прокси."""
+    """Represents a parsed proxy configuration."""
     config_string: str
     protocol: str
     address: str
@@ -210,44 +176,58 @@ class ProxyParsedConfig:
     quality_score: int = 0
 
     def __hash__(self):
-        """Хеширует конфигурацию для дедупликации."""
+        """Hashes the configuration string for deduplication."""
         return hash((self.config_string))
 
     def __str__(self):
-        """Строковое представление объекта."""
+        """String representation of the ProxyConfig object."""
         return (f"ProxyConfig(protocol={self.protocol}, address={self.address}, "
                 f"port={self.port}, config_string='{self.config_string[:50]}...', quality_score={self.quality_score}")
 
+    @staticmethod
+    def _decode_base64_if_needed(config_string: str) -> Tuple[str, bool]:
+        """Decodes base64 if the string doesn't start with a known protocol."""
+        if PROTOCOL_REGEX.match(config_string):
+            return config_string, False
+
+        try:
+            decoded_config = base64.b64decode(config_string).decode('utf-8')
+            if PROTOCOL_REGEX.match(decoded_config):
+                return decoded_config, True
+            else:
+                return config_string, False
+        except (ValueError, UnicodeDecodeError):
+            return config_string, False
+
     @classmethod
     def from_url(cls, config_string: str) -> Optional["ProxyParsedConfig"]:
-        """Разбирает URL конфигурации прокси."""
-        protocol = next((p for p in ALLOWED_PROTOCOLS if config_string.startswith(p + "://")), None)
-        if not protocol:
-            try:
-                decoded_config = base64.b64decode(config_string).decode('utf-8')
-                protocol = next((p for p in ALLOWED_PROTOCOLS if decoded_config.startswith(p + "://")), None)
-                if protocol:
-                    config_string = decoded_config
-                else:
-                    logger.debug(f"Unsupported protocol after base64 decode: {config_string}")
-                    return None
-            except (ValueError, UnicodeDecodeError) as e:
-                logger.debug(f"Base64 decode error for '{config_string}': {e}")
-                return None
+        """Parses a proxy configuration URL."""
+        config_string, _ = cls._decode_base64_if_needed(config_string)
+
+        protocol_match = PROTOCOL_REGEX.match(config_string)
+        if not protocol_match:
+            logger.debug(f"Unsupported protocol in: {config_string[:100]}...")
+            return None
+        protocol = protocol_match.group(1).lower()
 
         try:
             parsed_url = urlparse(config_string)
+
+            if parsed_url.scheme.lower() != protocol:
+                logger.debug(f"URL scheme '{parsed_url.scheme}' mismatch for protocol '{protocol}': {config_string}")
+                return None
+
             address = parsed_url.hostname
             port = parsed_url.port
             if not address or not port:
-                logger.debug(f"Could not extract address or port from URL: {config_string}")
+                logger.debug(f"Address or port missing in URL: {config_string}")
                 return None
 
             if not 1 <= port <= 65535:
                 logger.debug(f"Invalid port number: {port} in URL: {config_string}")
                 return None
 
-            remark = parsed_url.fragment if parsed_url.fragment else ""
+            remark = parsed_url.fragment or ""
             query_params = {k: v[0] for k, v in parse_qs(parsed_url.query).items()} if parsed_url.query else {}
 
             return cls(
@@ -260,63 +240,95 @@ class ProxyParsedConfig:
             )
 
         except ValueError as e:
-            logger.debug(f"URL parsing error for '{config_string}': {e}")
+            logger.debug(f"URL parsing error for '{config_string[:100]}...': {e}")
             return None
 
-# --- Основная логика ---
 
-QUALITY_SCORE_WEIGHTS = {
-    "protocol": {"vless": 5, "trojan": 5, "tuic": 4, "hy2": 3, "ss": 2, "ssr": 1},
-    "security": {"tls": 3, "none": 0},
-    "transport": {"ws": 2, "websocket": 2, "grpc": 2, "tcp": 1, "udp": 0},
-}
+# --- Helper Functions ---
+@functools.lru_cache(maxsize=1024)
+def is_valid_ipv4(hostname: str) -> bool:
+    """Checks if a string is a valid IPv4 address."""
+    try:
+        ipaddress.IPv4Address(hostname)
+        return True
+    except ipaddress.AddressValueError:
+        return False
 
-QUALITY_CATEGORIES = {
-    "High": range(8, 15),  # Example ranges, adjust as needed
-    "Medium": range(4, 8),
-    "Low": range(0, 4),
-}
+async def resolve_address(hostname: str, resolver: aiodns.DNSResolver) -> Optional[str]:
+    """Resolves a hostname to an IPv4 address with timeout and error handling."""
+    if is_valid_ipv4(hostname):
+        return hostname
+
+    try:
+        async with asyncio.timeout(DNS_TIMEOUT):
+            result = await resolver.query(hostname, 'A')
+            resolved_ip = result[0].host
+            if is_valid_ipv4(resolved_ip):
+                return resolved_ip
+            else:
+                logger.debug(f"DNS resolved {hostname} to non-IPv4: {resolved_ip}")
+                return None
+    except asyncio.TimeoutError:
+        logger.debug(f"DNS resolution timeout for {hostname}")
+        return None
+    except aiodns.error.DNSError as e:
+        error_code = e.args[0] if e.args else "Unknown"
+        logger.debug(f"DNS resolution error for {hostname}: {e}, Code: {error_code}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error during DNS resolution for {hostname}: {e}", exc_info=True)
+        return None
 
 def assess_proxy_quality(proxy_config: ProxyParsedConfig) -> int:
-    """Оценивает качество прокси на основе конфигурации, используя веса."""
+    """Assesses proxy quality based on configuration using weights."""
     score = 0
     protocol = proxy_config.protocol.lower()
     query_params = proxy_config.query_params
 
-    # Protocol score
     score += QUALITY_SCORE_WEIGHTS["protocol"].get(protocol, 0)
-
-    # Security score
     security = query_params.get("security", "none").lower()
     score += QUALITY_SCORE_WEIGHTS["security"].get(security, 0)
-
-    # Transport score
     transport = query_params.get("transport", "tcp").lower()
     score += QUALITY_SCORE_WEIGHTS["transport"].get(transport, 0)
 
     return score
 
 def get_quality_category(score: int) -> str:
-    """Определяет категорию качества на основе балла."""
+    """Determines quality category based on the score."""
     for category, score_range in QUALITY_CATEGORIES.items():
         if score in score_range:
             return category
-    return "Unknown" # Fallback category
+    return "Unknown"
 
+def generate_proxy_profile_name(proxy_config: ProxyParsedConfig) -> str:
+    """Generates a concise proxy profile name using a template."""
+    protocol = proxy_config.protocol.upper()
+    type_ = proxy_config.query_params.get('type', 'tcp').lower()
+    security = proxy_config.query_params.get('security', 'none').lower()
+
+    profile_name_values = {
+        "protocol": protocol,
+        "type": type_,
+        "security": security
+    }
+    return PROFILE_NAME_TEMPLATE.substitute(profile_name_values)
+
+
+# --- Core Logic Functions ---
 async def download_proxies_from_channel(channel_url: str, session: aiohttp.ClientSession) -> Tuple[List[str], str]:
-    """Загружает прокси из URL канала."""
-    headers = {'User-Agent': 'ProxyDownloader/1.0'}
+    """Downloads proxy configurations from a channel URL with retry logic."""
     retries_attempted = 0
-    session_timeout = aiohttp.ClientTimeout(total=15)
+    session_timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT)
 
-    while retries_attempted <= RETRY.MAX_RETRIES:
+    while retries_attempted <= MAX_RETRIES:
         try:
-            async with session.get(channel_url, timeout=session_timeout, headers=headers) as response:
+            async with session.get(channel_url, timeout=session_timeout, headers=HEADERS) as response:
                 response.raise_for_status()
+                logger.debug(f"Successfully downloaded from {channel_url}, status: {response.status}")
                 text = await response.text(encoding='utf-8', errors='ignore')
 
                 if not text.strip():
-                    colored_log(logging.WARNING, f"⚠️ Канал {channel_url} вернул пустой ответ.")
+                    colored_log(logging.WARNING, f"⚠️ Channel {channel_url} returned empty response.")
                     return [], "warning"
 
                 try:
@@ -326,13 +338,15 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
                     return text.splitlines(), "success"
 
         except aiohttp.ClientResponseError as e:
-            colored_log(logging.WARNING, f"⚠️ Канал {channel_url} вернул HTTP ошибку {e.status}: {e.message}")
+            colored_log(logging.WARNING, f"⚠️ Channel {channel_url} returned HTTP error {e.status}: {e.message}")
+            logger.debug(f"Response headers for {channel_url} on error: {response.headers if 'response' in locals() else 'N/A'}")
             return [], "warning"
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            retry_delay = RETRY.RETRY_DELAY_BASE * (2 ** retries_attempted)
-            colored_log(logging.WARNING, f"⚠️ Ошибка при получении {channel_url} (попытка {retries_attempted+1}/{RETRY.MAX_RETRIES+1}): {e}. Повтор через {retry_delay} сек...")
-            if retries_attempted == RETRY.MAX_RETRIES:
-                colored_log(logging.ERROR, f"❌ Достигнуто максимальное количество попыток ({RETRY.MAX_RETRIES+1}) для {channel_url}")
+            retry_delay = RETRY_DELAY_BASE * (2 ** retries_attempted) + random.uniform(-0.5, 0.5)
+            retry_delay = max(0.5, retry_delay)
+            colored_log(logging.WARNING, f"⚠️ Error getting {channel_url} (attempt {retries_attempted+1}/{MAX_RETRIES+1}): {e}. Retry in {retry_delay:.2f}s...")
+            if retries_attempted == MAX_RETRIES:
+                colored_log(logging.ERROR, f"❌ Max retries ({MAX_RETRIES+1}) reached for {channel_url}")
                 return [], "error"
             await asyncio.sleep(retry_delay)
         retries_attempted += 1
@@ -340,25 +354,30 @@ async def download_proxies_from_channel(channel_url: str, session: aiohttp.Clien
     return [], "critical"
 
 async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolver) -> List[ProxyParsedConfig]:
-    """Разбирает и фильтрует конфигурации прокси."""
+    """Parses and filters proxy configurations, logging filter counts."""
     parsed_configs: List[ProxyParsedConfig] = []
     processed_configs: Set[str] = set()
+    invalid_url_count = 0
+    dns_resolution_failed_count = 0
+    duplicate_count = 0
 
     for line in lines:
         line = line.strip()
-        if not line:
+        if not line or line.startswith('#'):
             continue
 
         try:
             parsed_config = ProxyParsedConfig.from_url(line)
             if parsed_config is None:
                 logger.debug(f"Skipping invalid proxy URL: {line}")
+                invalid_url_count += 1
                 continue
 
             resolved_ip = await resolve_address(parsed_config.address, resolver)
 
             if parsed_config.config_string in processed_configs:
                 logger.debug(f"Skipping duplicate proxy: {parsed_config.config_string}")
+                duplicate_count += 1
                 continue
             processed_configs.add(parsed_config.config_string)
 
@@ -366,26 +385,20 @@ async def parse_and_filter_proxies(lines: List[str], resolver: aiodns.DNSResolve
                 quality_score = assess_proxy_quality(parsed_config)
                 parsed_config_with_score = dataclasses.replace(parsed_config, quality_score=quality_score)
                 parsed_configs.append(parsed_config_with_score)
+            else:
+                dns_resolution_failed_count += 1
+                logger.debug(f"DNS resolution failed for proxy address: {parsed_config.address} from URL: {line}")
 
         except Exception as e:
             logger.error(f"Unexpected error parsing proxy URL '{line}': {e}", exc_info=True)
             continue
 
+    logger.info(f"Parsed {len(parsed_configs)} proxies, skipped {invalid_url_count} invalid URLs, "
+                f"{duplicate_count} duplicates, {dns_resolution_failed_count} DNS resolution failures.")
     return parsed_configs
 
-def generate_proxy_profile_name(proxy_config: ProxyParsedConfig) -> str:
-    """Генерирует имя профиля прокси."""
-    protocol = proxy_config.protocol.upper()
-    type_ = proxy_config.query_params.get('type', 'unknown').lower()
-    security = proxy_config.query_params.get('security', 'none').lower()
-
-    if protocol == 'SS' and type_ == 'unknown':
-        type_ = 'tcp'
-
-    return f"{protocol}_{type_}_{security}"
-
 def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: str) -> int:
-    """Сохраняет прокси в файл."""
+    """Saves proxies to a file, handling file system errors and buffering writes."""
     total_proxies_count = 0
     unique_proxies: List[ProxyParsedConfig] = []
     seen_config_strings: Set[str] = set()
@@ -399,53 +412,62 @@ def save_all_proxies_to_file(all_proxies: List[ProxyParsedConfig], output_file: 
                 seen_config_strings.add(proxy_conf.config_string)
 
         with open(output_file, 'w', encoding='utf-8') as f:
+            lines_to_write = []
             for proxy_conf in unique_proxies:
                 profile_name = generate_proxy_profile_name(proxy_conf)
-                quality_category = get_quality_category(proxy_conf.quality_score) # Get quality category
-                config_line = f"{proxy_conf.config_string}#PROFILE={profile_name};QUALITY_SCORE={proxy_conf.quality_score};QUALITY_CATEGORY={quality_category}" # Include category
-                f.write(config_line + "\n")
+                quality_category = get_quality_category(proxy_conf.quality_score)
+                config_line = (f"{proxy_conf.config_string}#PROFILE={profile_name};"
+                               f"QUALITY_SCORE={proxy_conf.quality_score};QUALITY_CATEGORY={quality_category}\n")
+                lines_to_write.append(config_line)
                 total_proxies_count += 1
+            f.writelines(lines_to_write)
 
+    except IOError as e:
+        logger.error(f"IOError saving proxies to file '{output_file}': {e}", exc_info=True)
     except Exception as e:
-        logger.error(f"Error saving proxies to file '{output_file}': {e}", exc_info=True)
+        logger.error(f"Unexpected error saving proxies to file '{output_file}': {e}", exc_info=True)
     return total_proxies_count
 
 async def load_channel_urls(all_urls_file: str) -> List[str]:
-    """Загружает URL каналов из файла."""
+    """Loads channel URLs from a file, handling BOM, encoding, and comments."""
     channel_urls: List[str] = []
     try:
-        with open(all_urls_file, 'r', encoding='utf-8') as f:
+        with open(all_urls_file, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 url = line.strip()
-                if url:
+                if url and not url.startswith('#'):
                     channel_urls.append(url)
     except FileNotFoundError:
-        colored_log(logging.WARNING, f"⚠️ Файл {all_urls_file} не найден. Создаю пустой файл.")
+        colored_log(logging.WARNING, f"⚠️ File {all_urls_file} not found. Creating an empty file.")
         try:
             open(all_urls_file, 'w').close()
         except Exception as e:
-            logger.error(f"Ошибка создания файла {all_urls_file}: {e}", exc_info=True)
+            logger.error(f"Error creating file {all_urls_file}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Error opening/reading file {all_urls_file}: {e}", exc_info=True)
     return channel_urls
 
-async def process_channel_task(channel_url: str, session: aiohttp.ClientSession, resolver: aiodns.DNSResolver, protocol_counts: defaultdict[str, int]) -> Tuple[int, str, List[ProxyParsedConfig]]:
-    """Обрабатывает один URL канала."""
-    colored_log(logging.INFO, f"🚀 Обработка канала: {channel_url}")
+async def process_channel_task(channel_url: str, session: aiohttp.ClientSession,
+                              resolver: aiodns.DNSResolver, protocol_counts: defaultdict[str, int]
+                              ) -> Tuple[int, str, List[ProxyParsedConfig]]:
+    """Processes a single channel URL."""
+    colored_log(logging.INFO, f"🚀 Processing channel: {channel_url}")
     lines, status = await download_proxies_from_channel(channel_url, session)
     if status == "success":
         parsed_proxies = await parse_and_filter_proxies(lines, resolver)
-        channel_proxies_count_channel = len(parsed_proxies)
+        channel_proxies_count = len(parsed_proxies)
         for proxy in parsed_proxies:
             protocol_counts[proxy.protocol] += 1
-        colored_log(logging.INFO, f"✅ Канал {channel_url} обработан. Найдено {channel_proxies_count_channel} прокси.")
-        return channel_proxies_count_channel, status, parsed_proxies
+        colored_log(logging.INFO, f"✅ Channel {channel_url} processed. Found {channel_proxies_count} proxies.")
+        return channel_proxies_count, status, parsed_proxies
     else:
-        colored_log(logging.WARNING, f"⚠️ Канал {channel_url} обработан со статусом: {status}.")
+        colored_log(logging.WARNING, f"⚠️ Channel {channel_url} processed with status: {status}.")
         return 0, status, []
 
-async def load_and_process_channels(channel_urls: List[str], session: aiohttp.ClientSession, resolver: aiodns.DNSResolver) -> Tuple[int, int, defaultdict[str, int], List[ProxyParsedConfig], defaultdict[str, int]]:
-    """Загружает и обрабатывает все URL каналы."""
+async def load_and_process_channels(channel_urls: List[str], session: aiohttp.ClientSession,
+                                     resolver: aiodns.DNSResolver
+                                     ) -> Tuple[int, int, defaultdict[str, int], List[ProxyParsedConfig], defaultdict[str, int]]:
+    """Loads and processes all channel URLs concurrently."""
     channels_processed_successfully = 0
     total_proxies_downloaded = 0
     protocol_counts: defaultdict[str, int] = defaultdict(int)
@@ -463,99 +485,109 @@ async def load_and_process_channels(channel_urls: List[str], session: aiohttp.Cl
         task = asyncio.create_task(task_wrapper(channel_url))
         channel_tasks.append(task)
 
-    channel_results = await asyncio.gather(*channel_tasks)
+    channel_results = await asyncio.gather(*channel_tasks, return_exceptions=True)
 
-    for proxies_count, status, proxies_list in channel_results:
-        total_proxies_downloaded += proxies_count
-        if status == "success":
-            channels_processed_successfully += 1
-        channel_status_counts[status] += 1
-        all_proxies.extend(proxies_list)
+    for result in channel_results:
+        if isinstance(result, Exception):
+            logger.error(f"Task raised an exception: {result}", exc_info=result)
+            channel_status_counts["error"] += 1
+        else:
+            proxies_count, status, proxies_list = result
+            total_proxies_downloaded += proxies_count
+            if status == "success":
+                channels_processed_successfully += 1
+            channel_status_counts[status] += 1
+            all_proxies.extend(proxies_list)
 
     return total_proxies_downloaded, channels_processed_successfully, protocol_counts, all_proxies, channel_status_counts
 
-def output_statistics(start_time: float, total_channels: int, channels_processed_successfully: int, channel_status_counts: defaultdict[str, int], total_proxies_downloaded: int, all_proxies_saved_count: int, protocol_counts: defaultdict[str, int], output_file: str, all_proxies: List[ProxyParsedConfig]):
-    """Выводит статистику загрузки и обработки прокси."""
+def output_statistics(start_time: float, total_channels: int, channels_processed_successfully: int,
+                      channel_status_counts: defaultdict[str, int], total_proxies_downloaded: int,
+                      all_proxies_saved_count: int, protocol_counts: defaultdict[str, int],
+                      output_file: str, all_proxies: List[ProxyParsedConfig]):
+    """Outputs download and processing statistics."""
     end_time = time.time()
     elapsed_time = end_time - start_time
 
-    colored_log(logging.INFO, "==================== 📊 СТАТИСТИКА ЗАГРУЗКИ ПРОКСИ ====================")
-    colored_log(logging.INFO, f"⏱️  Время выполнения скрипта: {elapsed_time:.2f} сек")
-    colored_log(logging.INFO, f"🔗 Всего URL-источников: {total_channels}")
-    colored_log(logging.INFO, f"✅ Успешно обработано каналов: {channels_processed_successfully}/{total_channels}")
+    colored_log(logging.INFO, "==================== 📊 PROXY DOWNLOAD STATISTICS ====================")
+    colored_log(logging.INFO, f"⏱️  Script runtime: {elapsed_time:.2f} seconds")
+    colored_log(logging.INFO, f"🔗 Total channel URLs: {total_channels}")
+    colored_log(logging.INFO, f"✅ Successfully processed channels: {channels_processed_successfully}/{total_channels}")
 
-    colored_log(logging.INFO, "\n📊 Статус обработки URL-источников:")
+    colored_log(logging.INFO, "\n📊 Channel Processing Status:")
     for status_key in ["success", "warning", "error", "critical"]:
         count = channel_status_counts.get(status_key, 0)
         if count > 0:
-            status_text, color = "", ""
+            status_text, color_start = "", ""
             if status_key == "success":
-                status_text, color = "УСПЕШНО", '\033[92m'
+                status_text, color_start = "SUCCESS", '\033[92m'
             elif status_key == "warning":
-                status_text, color = "ПРЕДУПРЕЖДЕНИЕ", '\033[93m'
+                status_text, color_start = "WARNING", '\033[93m'
             elif status_key in ["error", "critical"]:
-                status_text, color = "ОШИБКА", '\033[91m'
+                status_text, color_start = "ERROR", '\033[91m'
             else:
-                status_text, color = status_key.upper(), '\033[0m'
+                status_text, color_start = status_key.upper(), '\033[0m'
 
-            colored_log(logging.INFO, f"  - {status_text}: {count} каналов")
+            colored_log(logging.INFO, f"  - {status_text}: {count} channels")
 
-    colored_log(logging.INFO, f"\n✨ Всего найдено конфигураций: {total_proxies_downloaded}")
-    colored_log(logging.INFO, f"📝 Всего прокси (все, без дубликатов) сохранено: {all_proxies_saved_count} (в {output_file})")
+    colored_log(logging.INFO, f"\n✨ Total configurations found: {total_proxies_downloaded}")
+    colored_log(logging.INFO, f"📝 Total unique proxies saved: {all_proxies_saved_count} (to {output_file})")
 
-    colored_log(logging.INFO, "\n🔬 Разбивка по протоколам (найдено):")
+    colored_log(logging.INFO, "\n🔬 Protocol Breakdown (found):")
     if protocol_counts:
         for protocol, count in protocol_counts.items():
             colored_log(logging.INFO, f"   - {protocol.upper()}: {count}")
     else:
-        colored_log(logging.INFO, "   Нет статистики по протоколам.")
+        colored_log(logging.INFO, "   No protocol statistics available.")
 
-    # --- Статистика по категориям качества ---
     quality_category_counts = defaultdict(int)
     for proxy in all_proxies:
         quality_category = get_quality_category(proxy.quality_score)
         quality_category_counts[quality_category] += 1
 
-    colored_log(logging.INFO, "\n⭐️ Распределение прокси по категориям качества:")
+    colored_log(logging.INFO, "\n⭐️ Proxy Quality Category Distribution:")
     if quality_category_counts:
         for category, count in quality_category_counts.items():
-            colored_log(logging.INFO, f"   - {category}: {count} прокси")
+            colored_log(logging.INFO, f"   - {category}: {count} proxies")
     else:
-        colored_log(logging.INFO, "   Нет статистики по категориям качества.")
+        colored_log(logging.INFO, "   No quality category statistics available.")
 
+    colored_log(logging.INFO, "======================== 🏁 STATISTICS END =========================")
 
-    colored_log(logging.INFO, "======================== 🏁 КОНЕЦ СТАТИСТИКИ =========================")
 
 async def main() -> None:
-    """Основная функция запуска скрипта."""
+    """Main function to run the proxy downloader script."""
     parser = argparse.ArgumentParser(description="Proxy Downloader Script")
     parser.add_argument('--nocolorlogs', action='store_true', help='Disable colored console logs')
     args = parser.parse_args()
 
-    global USE_COLOR_LOGS
-    if args.nocolorlogs:
-        USE_COLOR_LOGS = False
+    console_formatter.use_colors = not args.nocolorlogs
 
     try:
         start_time = time.time()
         channel_urls = await load_channel_urls(CONFIG_FILES.ALL_URLS)
         if not channel_urls:
-            colored_log(logging.WARNING, "Нет URL-адресов каналов для обработки.")
+            colored_log(logging.WARNING, "No channel URLs to process.")
             return
 
         resolver = aiodns.DNSResolver(loop=asyncio.get_event_loop())
         async with aiohttp.ClientSession() as session:
-            total_proxies_downloaded, channels_processed_successfully, protocol_counts, all_proxies, channel_status_counts = await load_and_process_channels(channel_urls, session, resolver)
+            total_proxies_downloaded, channels_processed_successfully, protocol_counts, \
+            all_proxies, channel_status_counts = await load_and_process_channels(
+                channel_urls, session, resolver)
 
         all_proxies_saved_count = save_all_proxies_to_file(all_proxies, CONFIG_FILES.OUTPUT_ALL_CONFIG)
 
-        output_statistics(start_time, len(channel_urls), channels_processed_successfully, channel_status_counts, total_proxies_downloaded, all_proxies_saved_count, protocol_counts, CONFIG_FILES.OUTPUT_ALL_CONFIG, all_proxies)
+        output_statistics(start_time, len(channel_urls), channels_processed_successfully,
+                          channel_status_counts, total_proxies_downloaded, all_proxies_saved_count,
+                          protocol_counts, CONFIG_FILES.OUTPUT_ALL_CONFIG, all_proxies)
 
     except Exception as e:
         logger.critical(f"Unexpected error in main(): {e}", exc_info=True)
         sys.exit(1)
     finally:
-        colored_log(logging.INFO, "✅ Загрузка и обработка прокси завершена.")
+        colored_log(logging.INFO, "✅ Proxy download and processing completed.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
