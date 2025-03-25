@@ -60,6 +60,16 @@ QUALITY_CATEGORIES = {
     "Low": range(0, 4),
 }
 
+# --- Data Structures ---
+class Protocols(Enum):
+    """Enumeration of supported proxy protocols."""
+    VLESS = "vless"
+    TUIC = "tuic"
+    HY2 = "hy2"
+    SS = "ss"
+    SSR = "ssr"
+    TROJAN = "trojan"
+
 ALLOWED_PROTOCOLS = [proto.value for proto in Protocols]
 
 
@@ -113,15 +123,6 @@ def colored_log(level: int, message: str, *args, **kwargs):
 
 
 # --- Data Structures ---
-class Protocols(Enum):
-    """Enumeration of supported proxy protocols."""
-    VLESS = "vless"
-    TUIC = "tuic"
-    HY2 = "hy2"
-    SS = "ss"
-    SSR = "ssr"
-    TROJAN = "trojan"
-
 @dataclass(frozen=True)
 class ConfigFiles:
     """Configuration file paths."""
