@@ -13,6 +13,7 @@ import dataclasses
 import random  # For jitter
 import aiohttp  # Импортируем aiohttp
 import base64  # Импортируем base64
+import time  # Импортируем time - FIX: Добавлен импорт для time module
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs
@@ -567,7 +568,7 @@ async def main() -> None:
     console_formatter.use_colors = not args.nocolorlogs
 
     try:
-        start_time = time.time()
+        start_time = time.time() # FIX: time.time() теперь работает, так как time импортирован
         channel_urls = await load_channel_urls(CONFIG_FILES.ALL_URLS)
         if not channel_urls:
             colored_log(logging.WARNING, "No channel URLs to process.")
