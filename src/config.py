@@ -11,6 +11,8 @@ import sys
 import argparse
 import dataclasses
 import random  # For jitter
+import aiohttp  # Импортируем aiohttp
+import base64  # Импортируем base64
 
 from enum import Enum
 from urllib.parse import urlparse, parse_qs
