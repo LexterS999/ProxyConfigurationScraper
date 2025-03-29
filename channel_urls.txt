@@ -7,9 +7,6 @@ https://raw.githubusercontent.com/lagzian/SS-Collector/main/reality.txt
 https://raw.githubusercontent.com/lagzian/SS-Collector/refs/heads/main/VLESS/VL100.txt
 https://raw.githubusercontent.com/lagzian/SS-Collector/main/SS/Trinity.txt
 https://raw.githubusercontent.com/MrMohebi/xray-proxy-grabber-telegram/master/collected-proxies/row-url/all.txt
-https://raw.githubusercontent.com/LalatinaHub/Mineral/refs/heads/master/result/nodes
-https://raw.githubusercontent.com/sevcator/5ubscrpt10n/refs/heads/main/protocols/vl.txt
-https://raw.githubusercontent.com/sevcator/5ubscrpt10n/refs/heads/main/protocols/ss.txt
 https://raw.githubusercontent.com/Surfboardv2ray/Proxy-sorter/main/output/converted.txt
 https://raw.githubusercontent.com/Surfboardv2ray/Proxy-sorter/main/selector/random
 https://raw.githubusercontent.com/Surfboardv2ray/Proxy-sorter/main/ws_tls/proxies/wstls
@@ -29,7 +26,6 @@ https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mtn3.txt
 https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/mtn4.txt
 https://raw.githubusercontent.com/40OIL/domain.club/refs/heads/main/07pr4n27.txt
 https://raw.githubusercontent.com/Surfboardv2ray/v2ray-worker-sub/refs/heads/master/Eternity.txt
-https://raw.githubusercontent.com/Surfboardv2ray/v2ray-worker-sub/refs/heads/master/providers/providers
 https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/one_file_vpn.txt
 https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/two_file_vpn.txt
 https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/three_file_vpn.txt
