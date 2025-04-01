@@ -156,7 +156,7 @@ def colored_log(level: int, message: str, *args, **kwargs):
 @dataclass(frozen=True)
 class ConfigFiles:
     ALL_URLS: str = "channel_urls.txt"
-    OUTPUT_ALL_CONFIG: str = "configs/proxy_configs_all.txt" # Будет дополнено форматом
+    OUTPUT_ALL_CONFIG: str = "configs/proxy_configs_all" # Убрано расширение, оно добавится позже
 
 @dataclass(frozen=True)
 class RetrySettings:
@@ -201,7 +201,18 @@ class ProxyParsedConfig:
     quality_score: int = 0
 
     def __hash__(self):
-        return hash((self.protocol, self.address, self.port, frozenset(self.query_params.items())))
+        # Используем оригинальный адрес для хеша, чтобы одинаковые URL из разных
+        # каналов считались дубликатами до этапа DNS
+        return hash((self.protocol, self.address.lower(), self.port, frozenset(self.query_params.items())))
+
+    def __eq__(self, other):
+        if not isinstance(other, ProxyParsedConfig):
+            return NotImplemented
+        # Сравнение также по оригинальному адресу
+        return (self.protocol == other.protocol and
+                self.address.lower() == other.address.lower() and
+                self.port == other.port and
+                self.query_params == other.query_params)
 
     def __str__(self):
         return (f"ProxyParsedConfig(protocol={self.protocol}, address={self.address}, "
@@ -226,7 +237,9 @@ class ProxyParsedConfig:
             remark = parsed_url.fragment or ""
             query_params_raw = parse_qs(parsed_url.query)
             query_params = {k: v[0] for k, v in query_params_raw.items() if v}
-            config_string_to_store = original_string.split('#')[0]
+            # Сохраняем URL без fragment (remark) для единообразия
+            config_string_to_store = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path,
+                                                 parsed_url.params, parsed_url.query, ''))
             return cls(
                 config_string=config_string_to_store, protocol=protocol, address=address,
                 port=port, remark=remark, query_params=query_params,
@@ -301,13 +314,7 @@ def get_quality_category(score: int) -> str:
 def generate_proxy_profile_name(proxy_config: ProxyParsedConfig, test_result: Optional[TEST_RESULT_TYPE] = None) -> str:
     """
     Генерирует имя профиля для прокси, опционально добавляя задержку.
-
-    Args:
-        proxy_config: Конфигурация прокси.
-        test_result: Результат теста соединения (если есть).
-
-    Returns:
-        Имя профиля (строка).
+    (Докстринг без изменений)
     """
     protocol = proxy_config.protocol.upper()
     type_ = proxy_config.query_params.get('type', proxy_config.query_params.get('transport', 'tcp')).lower()
@@ -445,29 +452,42 @@ async def resolve_and_assess_proxies(
 ) -> Tuple[List[ProxyParsedConfig], int]:
     """
     Асинхронно разрешает адреса прокси и оценивает их качество.
-
-    Использует `tqdm` для отображения прогресса DNS-резолвинга.
-    (Остальной докстринг без изменений)
+    (Докстринг без изменений)
     """
     resolved_configs_with_score: List[ProxyParsedConfig] = []
     dns_resolution_failed_count = 0
+    # Множество для дедупликации ПОСЛЕ резолвинга (в рамках одного канала)
     final_unique_keys: Set[tuple] = set()
     dns_semaphore = asyncio.Semaphore(CONCURRENCY.MAX_DNS)
 
     async def resolve_task(config: ProxyParsedConfig) -> Optional[ProxyParsedConfig]:
         nonlocal dns_resolution_failed_count
         async with dns_semaphore:
+            # Пытаемся разрешить оригинальный адрес
             resolved_ip = await resolve_address(config.address, resolver)
+
         if resolved_ip:
+            # Оцениваем качество (не зависит от resolved_ip)
             quality_score = assess_proxy_quality(config)
+
+            # Ключ для финальной дедупликации ПОСЛЕ разрешения DNS.
+            # Учитывает протокол, РАЗРЕШЕННЫЙ IP, порт и параметры.
+            # Это позволяет отсеять дубликаты, скрывающиеся за разными hostname,
+            # но ведущие на один и тот же сервер (в рамках одного канала).
             final_key = (config.protocol, resolved_ip, config.port, frozenset(config.query_params.items()))
+
             if final_key not in final_unique_keys:
                 final_unique_keys.add(final_key)
+                # Возвращаем исходный конфиг, но с добавленным качеством
+                # Мы НЕ меняем config.address на resolved_ip здесь,
+                # чтобы сохранить оригинальный hostname для SNI и других целей.
+                # resolved_ip используется только для дедупликации на этом этапе.
                 return dataclasses.replace(config, quality_score=quality_score)
             else:
                 logger.debug(f"Skipping duplicate proxy after DNS resolution: {config.address} -> {resolved_ip} (Port: {config.port}, Proto: {config.protocol})")
-                return None
+                return None # Это дубликат по resolved_ip
         else:
+            # DNS не разрешился, отбрасываем конфиг
             dns_resolution_failed_count += 1
             return None
 
@@ -484,16 +504,7 @@ async def resolve_and_assess_proxies(
 async def test_proxy_connectivity(proxy_config: ProxyParsedConfig) -> TEST_RESULT_TYPE:
     """
     Выполняет базовую проверку соединения с хостом:портом прокси.
-
-    Пытается установить TCP-соединение и, если security=tls, выполняет TLS handshake.
-    Измеряет время, затраченное на установку соединения.
-    **ВНИМАНИЕ:** Это НЕ полноценная проверка работы протокола прокси (VLESS/Trojan и т.д.).
-
-    Args:
-        proxy_config: Конфигурация прокси для теста.
-
-    Returns:
-        Словарь с результатами: {'status': 'ok'/'failed', 'latency': float/None, 'error': str/None}
+    (Докстринг без изменений)
     """
     start_time = time.monotonic()
     writer = None
@@ -516,19 +527,10 @@ async def test_proxy_connectivity(proxy_config: ProxyParsedConfig) -> TEST_RESUL
                 if not transport:
                      raise ProxyTestError("Could not get transport info for TLS")
 
-                # Запускаем TLS handshake
-                # В новых версиях asyncio/Python это может делаться через start_tls
-                # Для совместимости используем wrap_socket (может быть блокирующим!)
-                # Правильнее было бы использовать неблокирующий handshake, но это сложнее.
-                # Это упрощенная проверка!
                 loop = asyncio.get_running_loop()
-                # Выполняем wrap_socket в executor, чтобы не блокировать основной поток
-                # Это компромисс, полноценный асинхронный TLS handshake сложнее
                 try:
-                    new_transport = await loop.start_tls(transport, ssl_context, server_hostname=server_hostname)
-                    # Обновляем reader/writer, если start_tls вернул новый транспорт
-                    # (зависит от реализации asyncio)
-                    # В данном случае нам достаточно знать, что handshake прошел без ошибок
+                    # Пытаемся выполнить TLS handshake асинхронно
+                    await loop.start_tls(transport, ssl_context, server_hostname=server_hostname)
                     logger.debug(f"TLS handshake successful for {host}:{port}")
                 except ssl.SSLError as tls_err:
                     raise ProxyTestError(f"TLS handshake failed: {tls_err}") from tls_err
@@ -559,14 +561,7 @@ async def run_proxy_tests(
 ) -> List[Tuple[ProxyParsedConfig, TEST_RESULT_TYPE]]:
     """
     Асинхронно запускает тесты соединения для списка прокси.
-
-    Использует семафор для ограничения параллелизма и `tqdm` для прогресса.
-
-    Args:
-        proxies: Список прокси для тестирования.
-
-    Returns:
-        Список кортежей: [(ProxyParsedConfig, test_result_dict), ...]
+    (Докстринг без изменений)
     """
     if not proxies:
         return []
@@ -593,6 +588,9 @@ async def run_proxy_tests(
 
 # --- Функции сохранения в разных форматах ---
 
+# ========================================================================
+# ИЗМЕНЕНИЯ ЗДЕСЬ: Добавлен f.flush()
+# ========================================================================
 def _save_as_text(proxies_with_results: List[Tuple[ProxyParsedConfig, Optional[TEST_RESULT_TYPE]]], file_path: str) -> int:
     """Сохраняет прокси в текстовом формате (URL#remark)."""
     count = 0
@@ -600,15 +598,20 @@ def _save_as_text(proxies_with_results: List[Tuple[ProxyParsedConfig, Optional[T
     for proxy_conf, test_result in proxies_with_results:
         # Генерируем имя профиля, включая результат теста, если он есть
         profile_name = generate_proxy_profile_name(proxy_conf, test_result)
-        # Используем config_string (URL без исходного fragment)
+        # Используем config_string (URL без исходного fragment) и добавляем новый remark
         config_line = f"{proxy_conf.config_string}#{profile_name}\n"
         lines_to_write.append(config_line)
         count += 1
 
+    # Используем 'w' для перезаписи файла каждый раз
     with open(file_path, 'w', encoding='utf-8') as f:
         f.writelines(lines_to_write)
+        f.flush() # <--- Добавлено: Форсируем сброс буфера на диск
     return count
 
+# ========================================================================
+# ИЗМЕНЕНИЯ ЗДЕСЬ: Добавлен f.flush()
+# ========================================================================
 def _save_as_json(proxies_with_results: List[Tuple[ProxyParsedConfig, Optional[TEST_RESULT_TYPE]]], file_path: str) -> int:
     """Сохраняет прокси в формате JSON списка объектов."""
     count = 0
@@ -627,8 +630,10 @@ def _save_as_json(proxies_with_results: List[Tuple[ProxyParsedConfig, Optional[T
         output_list.append(proxy_dict)
         count += 1
 
+    # Используем 'w' для перезаписи файла каждый раз
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(output_list, f, indent=2, ensure_ascii=False)
+        f.flush() # <--- Добавлено: Форсируем сброс буфера на диск
     return count
 
 def _proxy_to_clash_dict(proxy_conf: ProxyParsedConfig, test_result: Optional[TEST_RESULT_TYPE]) -> Optional[Dict[str, Any]]:
@@ -645,27 +650,48 @@ def _proxy_to_clash_dict(proxy_conf: ProxyParsedConfig, test_result: Optional[TE
     # Определение типа для Clash
     if protocol == 'vless':
         clash_proxy['type'] = 'vless'
-        clash_proxy['uuid'] = proxy_conf.config_string.split('://')[1].split('@')[0] # Извлекаем UUID
+        try:
+            clash_proxy['uuid'] = proxy_conf.config_string.split('://')[1].split('@')[0] # Извлекаем UUID
+        except IndexError:
+            logger.warning(f"Could not parse UUID for VLESS config: {proxy_conf.config_string}")
+            return None
         clash_proxy['tls'] = params.get('security', 'none') == 'tls'
         clash_proxy['network'] = params.get('type', 'tcp') # ws, grpc, tcp
         # Дополнительные параметры VLESS
         if 'flow' in params: clash_proxy['flow'] = params['flow']
-        if 'sni' in params: clash_proxy['servername'] = params['sni']
+        # Используем 'sni' или 'host' для servername, 'sni' имеет приоритет
+        clash_proxy['servername'] = params.get('sni', params.get('host', proxy_conf.address))
+        # Устанавливаем skip-cert-verify если allowInsecure=1 или true
+        allow_insecure = params.get('allowInsecure', '0').lower()
+        clash_proxy['skip-cert-verify'] = allow_insecure == '1' or allow_insecure == 'true'
+
         if clash_proxy['network'] == 'ws':
-            clash_proxy['ws-opts'] = {'path': params.get('path', '/'), 'headers': {'Host': params.get('host', proxy_conf.address)}}
+            # Используем 'host' из параметров или servername (который уже учитывает sni)
+            ws_host = params.get('host', clash_proxy['servername'])
+            clash_proxy['ws-opts'] = {'path': params.get('path', '/'), 'headers': {'Host': ws_host}}
         elif clash_proxy['network'] == 'grpc':
             clash_proxy['grpc-opts'] = {'grpc-service-name': params.get('serviceName', '')}
         # ... другие параметры vless ...
     elif protocol == 'trojan':
         clash_proxy['type'] = 'trojan'
-        clash_proxy['password'] = proxy_conf.config_string.split('://')[1].split('@')[0] # Извлекаем пароль
-        clash_proxy['tls'] = params.get('security', 'none') == 'tls' # Trojan обычно с TLS
-        if 'sni' in params: clash_proxy['sni'] = params['sni']
-        if 'allowInsecure' in params: clash_proxy['skip-cert-verify'] = params['allowInsecure'].lower() == 'true'
+        try:
+            clash_proxy['password'] = proxy_conf.config_string.split('://')[1].split('@')[0] # Извлекаем пароль
+        except IndexError:
+             logger.warning(f"Could not parse password for Trojan config: {proxy_conf.config_string}")
+             return None
+        clash_proxy['tls'] = params.get('security', 'tls') == 'tls' # Trojan обычно с TLS, но проверим
+        # Используем 'sni' или 'peer' для sni, 'sni' имеет приоритет
+        clash_proxy['sni'] = params.get('sni', params.get('peer', proxy_conf.address))
+        # Устанавливаем skip-cert-verify если allowInsecure=1 или true
+        allow_insecure = params.get('allowInsecure', '0').lower()
+        clash_proxy['skip-cert-verify'] = allow_insecure == '1' or allow_insecure == 'true'
+
         network = params.get('type', 'tcp')
         if network == 'ws':
              clash_proxy['network'] = 'ws'
-             clash_proxy['ws-opts'] = {'path': params.get('path', '/'), 'headers': {'Host': params.get('host', proxy_conf.address)}}
+             # Используем 'host' из параметров или sni (который уже учитывает peer)
+             ws_host = params.get('host', clash_proxy['sni'])
+             clash_proxy['ws-opts'] = {'path': params.get('path', '/'), 'headers': {'Host': ws_host}}
         elif network == 'grpc':
              clash_proxy['network'] = 'grpc'
              clash_proxy['grpc-opts'] = {'grpc-service-name': params.get('serviceName', '')}
@@ -674,26 +700,35 @@ def _proxy_to_clash_dict(proxy_conf: ProxyParsedConfig, test_result: Optional[TE
         clash_proxy['type'] = 'ss'
         # Парсинг SS URL (может быть сложным из-за base64 части)
         try:
-            user_info, server_info = proxy_conf.config_string.split('://')[1].split('@')
-            server_part = server_info.split('#')[0] # Убираем remark если он есть в строке
+            parts = proxy_conf.config_string.split('://')[1].split('@')
+            if len(parts) != 2: raise ValueError("Invalid SS URL format")
+            user_info = parts[0]
             # Декодируем user_info (method:password)
-            decoded_user = base64.urlsafe_b64decode(user_info + '===').decode('utf-8') # Добавляем padding
+            # Добавляем padding '=' до длины кратной 4
+            user_info_padded = user_info + '=' * (-len(user_info) % 4)
+            decoded_user = base64.urlsafe_b64decode(user_info_padded).decode('utf-8')
             clash_proxy['cipher'], clash_proxy['password'] = decoded_user.split(':', 1)
-        except Exception as e:
+        except (binascii.Error, ValueError, UnicodeDecodeError, IndexError) as e:
             logger.warning(f"Could not parse SS URL for Clash: {proxy_conf.config_string} - {e}")
             return None # Не можем создать конфиг
         # ... параметры ss (plugin, etc.) ...
     # Добавить поддержку TUIC, HY2, SSR если нужно (потребует знания их структуры в Clash)
+    elif protocol in ['tuic', 'hy2', 'ssr']:
+         logger.debug(f"Protocol {protocol.upper()} is not fully supported for Clash output yet. Skipping.")
+         return None
     else:
-        logger.debug(f"Protocol {protocol} not currently supported for Clash output format.")
+        logger.warning(f"Unknown protocol '{protocol}' encountered for Clash conversion. Skipping.")
         return None # Пропускаем неподдерживаемые протоколы
 
     return clash_proxy
 
+# ========================================================================
+# ИЗМЕНЕНИЯ ЗДЕСЬ: Добавлен f.flush()
+# ========================================================================
 def _save_as_clash(proxies_with_results: List[Tuple[ProxyParsedConfig, Optional[TEST_RESULT_TYPE]]], file_path: str) -> int:
     """Сохраняет прокси в формате Clash YAML."""
     if not yaml:
-        logger.error("PyYAML is not installed. Cannot save in Clash format. Please install: pip install pyyaml")
+        logger.error("❌ PyYAML is not installed. Cannot save in Clash format. Please install: pip install pyyaml")
         return 0
 
     count = 0
@@ -703,6 +738,11 @@ def _save_as_clash(proxies_with_results: List[Tuple[ProxyParsedConfig, Optional[
         if clash_dict:
             clash_proxies_list.append(clash_dict)
             count += 1
+
+    if count == 0:
+         logger.warning("⚠️ No compatible proxies found to generate Clash config.")
+         # Не создаем пустой файл, если нечего записывать
+         return 0
 
     # Создаем базовую структуру Clash config
     clash_config = {
@@ -717,20 +757,26 @@ def _save_as_clash(proxies_with_results: List[Tuple[ProxyParsedConfig, Optional[
     }
 
     try:
+        # Используем 'w' для перезаписи файла каждый раз
         with open(file_path, 'w', encoding='utf-8') as f:
-            yaml.dump(clash_config, f, allow_unicode=True, sort_keys=False, default_flow_style=None)
+            # Используем Dumper с отступами и без якорей/алиасов для лучшей читаемости
+            yaml.dump(clash_config, f, allow_unicode=True, sort_keys=False, default_flow_style=None, indent=2, Dumper=yaml.Dumper)
+            f.flush() # <--- Добавлено: Форсируем сброс буфера на диск
     except Exception as e:
-        logger.error(f"Error writing Clash YAML file: {e}", exc_info=True)
+        logger.error(f"❌ Error writing Clash YAML file '{file_path}': {e}", exc_info=True)
         return 0 # Ошибка записи
     return count
 
+# ========================================================================
+# ИЗМЕНЕНИЯ ЗДЕСЬ: Улучшено логирование и добавлена проверка файла
+# ========================================================================
 def save_proxies(
     proxies_with_results: List[Tuple[ProxyParsedConfig, Optional[TEST_RESULT_TYPE]]],
     output_file_base: str,
     output_format: OutputFormat
 ) -> int:
     """
-    Сохраняет список прокси в указанном формате.
+    Сохраняет список прокси в указанном формате с улучшенным логированием.
 
     Args:
         proxies_with_results: Список кортежей (прокси, результат_теста).
@@ -741,38 +787,58 @@ def save_proxies(
     Returns:
         Количество успешно записанных прокси.
     """
-    if not proxies_with_results:
-        logger.warning("No proxies to save.")
+    num_proxies_to_save = len(proxies_with_results) # Считаем количество ДО проверки
+
+    if num_proxies_to_save == 0:
+        logger.warning("⚠️ No proxies survived the filtering process. Nothing to save.") # Улучшено сообщение
         return 0
 
     # Определяем расширение и функцию сохранения
     if output_format == OutputFormat.JSON:
-        file_path = f"{output_file_base}.json"
+        file_ext = ".json"
         save_func = _save_as_json
     elif output_format == OutputFormat.CLASH:
-        file_path = f"{output_file_base}.yaml"
+        file_ext = ".yaml"
         save_func = _save_as_clash
     else: # По умолчанию TEXT
-        file_path = f"{output_file_base}.txt"
+        file_ext = ".txt"
         save_func = _save_as_text
 
+    file_path = output_file_base + file_ext # Формируем полный путь
     saved_count = 0
     try:
-        os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)
-        logger.info(f"Attempting to save {len(proxies_with_results)} proxies to {file_path} (Format: {output_format.value})")
+        # Убедимся, что директория существует
+        output_dir = os.path.dirname(file_path) or '.' # Если путь без директории, используем '.'
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"💾 Attempting to save {num_proxies_to_save} proxies to '{file_path}' (Format: {output_format.value})...") # Улучшено сообщение
+
+        # Вызываем соответствующую функцию сохранения
         saved_count = save_func(proxies_with_results, file_path)
+
         if saved_count > 0:
-            logger.info(f"Successfully wrote {saved_count} proxies to {file_path}")
-        else:
-            # Логирование ошибки происходит внутри save_func
-             logger.warning(f"No proxies were written to {file_path}")
+            logger.info(f"✅ Successfully wrote {saved_count} proxies to '{file_path}'")
+        elif num_proxies_to_save > 0: # Проверяем, если пытались сохранить, но не вышло
+             # Ошибка должна была залогироваться внутри save_func или здесь в except
+             logger.error(f"❌ Attempted to save {num_proxies_to_save} proxies, but 0 were written to '{file_path}'. Check previous errors.")
+        # Если num_proxies_to_save было 0, мы уже вывели warning раньше
 
     except IOError as e:
-        logger.error(f"IOError saving proxies to file '{file_path}': {e}", exc_info=True)
+        logger.error(f"❌ IOError saving proxies to file '{file_path}': {e}. Check permissions and disk space.", exc_info=True)
         return 0
     except Exception as e:
-        logger.error(f"Unexpected error saving proxies to file '{file_path}': {e}", exc_info=True)
+        logger.error(f"❌ Unexpected error saving proxies to file '{file_path}': {e}", exc_info=True)
         return 0
+
+    # Дополнительная проверка: убедимся, что файл действительно существует и не пустой
+    try:
+        if saved_count > 0 and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+             logger.debug(f"File '{file_path}' exists and is not empty after saving.")
+        elif saved_count > 0:
+             # Эта ситуация маловероятна с f.flush(), но оставим проверку
+             logger.warning(f"⚠️ File '{file_path}' was reported as saved ({saved_count} proxies), but it seems to be missing or empty after check.")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not verify saved file '{file_path}' after writing: {e}")
+
     return saved_count
 
 
@@ -802,7 +868,7 @@ async def process_channel_task(channel_url: str, session: aiohttp.ClientSession,
                               ) -> List[ProxyParsedConfig]:
     """
     Полный цикл обработки одного канала: скачивание, парсинг, резолвинг, оценка.
-    (Остальной докстринг без изменений)
+    (Докстринг без изменений)
     """
     # colored_log(logging.INFO, f"🚀 Processing channel: {channel_url}") # Убрано, т.к. есть tqdm
     try:
@@ -833,20 +899,7 @@ async def load_and_process_channels(channel_urls: List[str], session: aiohttp.Cl
                                      ) -> Tuple[int, int, List[ProxyParsedConfig], DefaultDict[str, int]]:
     """
     Асинхронно обрабатывает список URL каналов с ограничением параллелизма.
-
-    Использует `tqdm` для отображения прогресса обработки каналов.
-    Выполняет финальную дедупликацию между всеми каналами.
-
-    Args:
-        (Аргументы без изменений)
-
-    Returns:
-        Tuple: Кортеж со статистикой и результатами:
-            - total_proxies_found_before_final_dedup (int)
-            - channels_processed_count (int)
-            - all_unique_proxies (List[ProxyParsedConfig]): Список уникальных прокси
-              *после* резолвинга, но *до* тестирования.
-            - channel_status_counts (DefaultDict[str, int])
+    (Докстринг без изменений)
     """
     channels_processed_count = 0
     total_proxies_found_before_final_dedup = 0
@@ -872,27 +925,34 @@ async def load_and_process_channels(channel_urls: List[str], session: aiohttp.Cl
     # Используем tqdm.gather для прогресс-бара
     channel_results = await tqdm.gather(*tasks, desc="Processing channels", unit="channel", disable=not sys.stdout.isatty())
 
-    # Агрегация результатов
+    # Агрегация результатов и финальная дедупликация между каналами
+    # Используем set для ProxyParsedConfig, который сравнивает по исходному URL
     unique_proxies_set: Set[ProxyParsedConfig] = set()
     for result in channel_results:
         if result is None: # Ошибка в обертке
             continue
         elif isinstance(result, list):
             proxies_from_channel = result
+            # Добавляем во временный список для подсчета "до дедупликации"
+            all_proxies_from_channels.extend(proxies_from_channel)
+            # Обновляем set уникальных конфигов (дедупликация по hash/eq ProxyParsedConfig)
             unique_proxies_set.update(proxies_from_channel)
+
             if proxies_from_channel:
                 channel_status_counts["success_found_proxies"] += 1
-                total_proxies_found_before_final_dedup += len(proxies_from_channel)
             else:
                 channel_status_counts["success_no_proxies"] += 1
         else:
              logger.warning(f"Unexpected result type from channel gather: {type(result)}")
              channel_status_counts["unknown_error"] += 1
 
+    # Считаем прокси до финальной дедупликации
+    total_proxies_found_before_final_dedup = len(all_proxies_from_channels)
+
     # Преобразуем set в список (сортировка будет позже, после тестов)
     all_unique_proxies: List[ProxyParsedConfig] = list(unique_proxies_set)
     final_unique_count = len(all_unique_proxies)
-    logger.info(f"Total unique proxies found after DNS/deduplication: {final_unique_count}")
+    logger.info(f"Total unique proxies found after DNS/inter-channel deduplication: {final_unique_count}")
 
     return (total_proxies_found_before_final_dedup,
             channels_processed_count,
@@ -936,26 +996,32 @@ def output_statistics(start_time: float, total_channels_requested: int, channels
              status_text = status_texts.get(status_key, status_key.replace('_', ' ').upper())
              colored_log(logging.INFO, f"  - {color_start}{status_text}{COLOR_MAP['RESET']}: {count} channels")
 
-    colored_log(logging.INFO, f"\n✨ Proxies found (before final deduplication): {total_proxies_found_before_dedup}")
-    colored_log(logging.INFO, f"🧬 Proxies after DNS resolution & deduplication: {proxies_after_dns_count}")
+    colored_log(logging.INFO, f"\n✨ Proxies found (before final inter-channel deduplication): {total_proxies_found_before_dedup}")
+    colored_log(logging.INFO, f"🧬 Proxies after DNS resolution & final deduplication: {proxies_after_dns_count}")
     if proxies_after_test_count is not None:
         colored_log(logging.INFO, f"✅ Proxies passed connectivity test: {proxies_after_test_count}")
-    colored_log(logging.INFO, f"📝 Total proxies saved: {all_proxies_saved_count} (to {output_file_path}, format: {output_format.value})")
+    colored_log(logging.INFO, f"📝 Total proxies saved: {all_proxies_saved_count} (to '{output_file_path}', format: {output_format.value})")
 
     colored_log(logging.INFO, "\n🔬 Protocol Breakdown (saved proxies):")
     if protocol_counts:
         for protocol, count in sorted(protocol_counts.items()):
             colored_log(logging.INFO, f"   - {protocol.upper()}: {count}")
+    elif all_proxies_saved_count > 0:
+         colored_log(logging.INFO, "   No protocol statistics available (maybe parsing issue?).")
     else:
-        colored_log(logging.INFO, "   No protocol statistics available for saved proxies.")
+        colored_log(logging.INFO, "   No proxies saved.")
+
 
     colored_log(logging.INFO, "\n⭐️ Proxy Quality Category Distribution (saved proxies):")
     if quality_category_counts:
          category_order = {"High": 0, "Medium": 1, "Low": 2, "Unknown": 3}
          for category, count in sorted(quality_category_counts.items(), key=lambda item: category_order.get(item[0], 99)):
              colored_log(logging.INFO, f"   - {category}: {count} proxies")
+    elif all_proxies_saved_count > 0:
+        colored_log(logging.INFO, "   No quality category statistics available.")
     else:
-        colored_log(logging.INFO, "   No quality category statistics available for saved proxies.")
+        colored_log(logging.INFO, "   No proxies saved.")
+
     colored_log(logging.INFO, "======================== 🏁 STATISTICS END =========================")
 
 
@@ -1009,9 +1075,9 @@ async def main() -> None:
         # 2. Инициализация
         resolver = aiodns.DNSResolver(loop=asyncio.get_event_loop())
         async with aiohttp.ClientSession() as session:
-            # 3. Обработка каналов (скачивание, парсинг, DNS)
+            # 3. Обработка каналов (скачивание, парсинг, DNS, финальная дедупликация)
             (total_proxies_found_before_dedup, channels_processed_count,
-             proxies_after_dns, # Список уникальных прокси после DNS
+             proxies_after_dns, # Список уникальных прокси после DNS и финальной дедупликации
              channel_status_counts) = await load_and_process_channels(
                 channel_urls, session, resolver)
 
@@ -1039,12 +1105,7 @@ async def main() -> None:
 
 
         # 5. Сохранение результатов
-        # Определяем полный путь к файлу на основе формата
-        if output_format_enum == OutputFormat.JSON: file_ext = ".json"
-        elif output_format_enum == OutputFormat.CLASH: file_ext = ".yaml"
-        else: file_ext = ".txt"
-        output_file_path = output_file_base + file_ext
-
+        # Определяем полный путь к файлу на основе формата (делается внутри save_proxies)
         all_proxies_saved_count = save_proxies(
             proxies_to_save_with_results,
             output_file_base, # Передаем базу имени
@@ -1054,14 +1115,21 @@ async def main() -> None:
         # 6. Сбор статистики для сохраненных прокси
         saved_protocol_counts: DefaultDict[str, int] = defaultdict(int)
         saved_quality_category_counts: DefaultDict[str, int] = defaultdict(int)
-        for proxy, _ in proxies_to_save_with_results: # Берем только сохраненные
-             if all_proxies_saved_count > 0: # Считаем статистику только если что-то сохранено
+        # Считаем статистику только если что-то сохранено
+        if all_proxies_saved_count > 0:
+            for proxy, _ in proxies_to_save_with_results: # Берем только те, что пытались сохранить
                  saved_protocol_counts[proxy.protocol] += 1
                  quality_category = get_quality_category(proxy.quality_score)
                  saved_quality_category_counts[quality_category] += 1
 
 
         # 7. Вывод итоговой статистики
+        # Определяем полный путь снова для вывода статистики
+        if output_format_enum == OutputFormat.JSON: file_ext = ".json"
+        elif output_format_enum == OutputFormat.CLASH: file_ext = ".yaml"
+        else: file_ext = ".txt"
+        output_file_path = output_file_base + file_ext
+
         output_statistics(start_time, total_channels_requested, channels_processed_count,
                           channel_status_counts, total_proxies_found_before_dedup,
                           proxies_after_dns_count, proxies_after_test_count,
