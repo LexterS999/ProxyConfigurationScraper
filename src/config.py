@@ -16,7 +16,7 @@ import binascii
 import ssl
 from enum import Enum
 from urllib.parse import urlparse, parse_qs, urlunparse, unquote # Добавлен unquote
-from typing import Dict, List, Optional, Tuple, Set, DefaultDict, Any, Union, NamedTuple, Sequence
+from typing import Dict, List, Optional, Tuple, Set, DefaultDict, Any, Union, NamedTuple, Sequence, AsyncIterator # Добавлен AsyncIterator
 from dataclasses import dataclass, field, asdict
 from collections import defaultdict
 from string import Template
@@ -1200,6 +1200,16 @@ async def create_clients(user_agent: str) -> AsyncIterator[Tuple[aiohttp.ClientS
         # Создаем DNS резолвер
         resolver = aiodns.DNSResolver() # Можно передать nameservers=['8.8.8.8', '1.1.1.1']
         logger.debug("Initialized aiohttp.ClientSession and aiodns.DNSResolver.")
+        yield session, resolver
+    except Exception as e:
+         logger.critical(f"Failed to initialize HTTP/DNS clients: {e}", exc_info=True)
+         # Перевыбрасываем, чтобы прервать выполнение
+         raise ConfigError(f"Client initialization failed: {e}") from e
+    finally:
+        # Гарантированно закрываем сессию
+        if session:
+            await session.close()
+            logger.debug("Closed aiohttp.ClientSession.")
         yield session, resolver
     except Exception as e:
          logger.critical(f"Failed to initialize HTTP/DNS clients: {e}", exc_info=True)
