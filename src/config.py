@@ -582,66 +582,45 @@ async def download_proxies_from_channel(
         try:
             logger.debug(f"Attempting download from {channel_url} (Attempt {retries_attempted + 1}/{max_retries + 1})")
             async with session.get(channel_url, timeout=session_timeout, headers=headers, allow_redirects=True) as response:
-                # Логируем Content-Type, если есть
                 content_type = response.headers.get('Content-Type', 'N/A')
                 logger.debug(f"Received response from {channel_url}: Status={response.status}, Content-Type='{content_type}'")
-
-                response.raise_for_status() # Проверяем на HTTP ошибки (4xx, 5xx)
-
+                response.raise_for_status()
                 content_bytes = await response.read()
                 if not content_bytes or content_bytes.isspace():
                     logger.warning(f"Channel {channel_url} returned empty or whitespace-only response.")
-                    # Считаем это ошибкой канала, не повторяем
                     raise EmptyChannelError(f"Channel {channel_url} returned empty response.")
 
-                # --- Попытка декодирования ---
                 decoded_text: Optional[str] = None
                 decode_method: str = "Unknown"
-
-                # 1. Попытка Base64
                 try:
-                    # Удаляем пробельные символы перед декодированием
                     base64_bytes_stripped = bytes("".join(content_bytes.decode('latin-1').split()), 'latin-1')
-                    # Добавляем padding, если нужен
                     missing_padding = len(base64_bytes_stripped) % 4
                     if missing_padding:
                         base64_bytes_padded = base64_bytes_stripped + b'=' * (4 - missing_padding)
                     else:
                         base64_bytes_padded = base64_bytes_stripped
-
-                    # Декодируем Base64
                     b64_decoded_bytes = base64.b64decode(base64_bytes_padded, validate=True)
-
-                    # Пытаемся декодировать результат как UTF-8
                     decoded_text_from_b64 = b64_decoded_bytes.decode('utf-8')
-
-                    # Проверяем, похож ли результат на список прокси
                     if PROTOCOL_REGEX.search(decoded_text_from_b64):
                         logger.debug(f"Content from {channel_url} successfully decoded as Base64 -> UTF-8.")
                         decoded_text = decoded_text_from_b64
                         decode_method = "Base64 -> UTF-8"
                     else:
                         logger.debug(f"Content from {channel_url} decoded from Base64, but no protocol found. Assuming plain text.")
-                        # Не устанавливаем decoded_text, переходим к попытке Plain Text
                 except (binascii.Error, ValueError) as e:
                     logger.debug(f"Content from {channel_url} is not valid Base64 ({type(e).__name__}). Assuming plain text.")
                 except UnicodeDecodeError as e:
                     logger.warning(f"Content from {channel_url} decoded from Base64, but result is not valid UTF-8: {e}. Assuming plain text.")
                 except Exception as e:
-                    # Ловим другие ошибки при обработке Base64
                     logger.error(f"Unexpected error during Base64 processing for {channel_url}: {e}", exc_info=True)
 
-                # 2. Попытка Plain Text (если Base64 не удался или не содержал прокси)
                 if decoded_text is None:
                     try:
                         logger.debug(f"Attempting to decode content from {channel_url} as plain UTF-8 text.")
                         decoded_text = content_bytes.decode('utf-8')
                         decode_method = "Plain UTF-8"
-                        # Дополнительная проверка: если текст был успешно декодирован из Base64, но не содержал прокси,
-                        # и теперь он успешно декодирован как UTF-8, но все еще не содержит прокси - это странно.
                         if decode_method == "Base64 -> UTF-8" and not PROTOCOL_REGEX.search(decoded_text):
                              logger.warning(f"Content from {channel_url} decoded as UTF-8, but still no protocol found.")
-
                     except UnicodeDecodeError:
                         logger.warning(f"UTF-8 decoding failed for {channel_url} (plain text). Attempting with 'replace' errors.")
                         try:
@@ -649,60 +628,52 @@ async def download_proxies_from_channel(
                             decode_method = "Plain UTF-8 (with replace)"
                         except Exception as e:
                              logger.error(f"Failed to decode content from {channel_url} even with errors='replace': {e}", exc_info=True)
-                             # Считаем это ошибкой канала
                              raise DownloadError(f"Failed to decode content from {channel_url}") from e
 
-                # --- Результат ---
                 if decoded_text is not None:
                     logger.info(f"Successfully decoded content from {channel_url} using method: {decode_method}")
-                    # Разделяем на строки, убираем пустые строки
                     lines = [line for line in decoded_text.splitlines() if line.strip()]
                     if not lines:
                          logger.warning(f"Channel {channel_url} decoded successfully but contains no non-empty lines.")
                          raise EmptyChannelError(f"Channel {channel_url} has no non-empty lines after decoding.")
                     return lines
                 else:
-                    # Сюда не должны попасть, если decode с replace не вызвал исключение
                     logger.error(f"Failed to decode content from {channel_url} using any method.")
                     raise DownloadError(f"Failed to decode content from {channel_url}")
 
         except (aiohttp.ClientResponseError, aiohttp.ClientHttpProxyError, aiohttp.ClientProxyConnectionError) as e:
-            # Ошибки HTTP (4xx, 5xx) или ошибки прокси при соединении
             status = e.status if hasattr(e, 'status') else 'N/A'
             logger.warning(f"HTTP/Proxy error getting {channel_url}: Status={status}, Error='{e}'")
-            # Не повторяем попытки при явных ошибках клиента/сервера
-            last_exception = DownloadError(f"HTTP/Proxy error {status} for {channel_url}") from e
-            break # Выходим из цикла ретраев
+            # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+            # Убираем 'from e' из присваивания. Связь сохранится для последующего raise.
+            last_exception = DownloadError(f"HTTP/Proxy error {status} for {channel_url}")
+            # -------------------------
+            break
         except (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError, asyncio.TimeoutError) as e:
-            # Ошибки соединения, чтения или таймауты - можно повторить
             logger.warning(f"Connection/Timeout error getting {channel_url} (attempt {retries_attempted+1}/{max_retries+1}): {type(e).__name__}. Retrying...")
             last_exception = e
-            # Расчет задержки с джиттером
             retry_delay = retry_delay_base * (2 ** retries_attempted) + random.uniform(-0.5 * retry_delay_base, 0.5 * retry_delay_base)
-            retry_delay = max(0.5, retry_delay) # Минимум 0.5 сек
+            retry_delay = max(0.5, retry_delay)
             await asyncio.sleep(retry_delay)
         except EmptyChannelError as e:
-            # Канал пуст, нет смысла повторять
             last_exception = e
             break
         except Exception as e:
-             # Неожиданные ошибки - логируем и не повторяем
              logger.error(f"Unexpected error downloading/processing {channel_url}: {e}", exc_info=True)
-             last_exception = DownloadError(f"Unexpected error for {channel_url}") from e
+             last_exception = DownloadError(f"Unexpected error for {channel_url}") from e # Здесь 'from e' уместен, т.к. это новая ошибка
              break
         retries_attempted += 1
 
-    # Если цикл завершился без успешного скачивания
     if last_exception:
         if retries_attempted > max_retries:
              logger.error(f"Max retries ({max_retries+1}) reached for {channel_url}. Last error: {type(last_exception).__name__}")
+             # Здесь цепочка устанавливается корректно при raise
              raise DownloadError(f"Max retries reached for {channel_url}") from last_exception
         else:
-             # Вышли из цикла из-за не-ретрайбл ошибки
              logger.error(f"Failed to download {channel_url} due to non-retriable error: {type(last_exception).__name__}")
-             raise last_exception # Перевыбрасываем исходную ошибку (или обертку DownloadError)
+             # Перевыбрасываем сохраненное исключение (которое может быть DownloadError или исходным)
+             raise last_exception
     else:
-        # Сюда не должны попасть, если цикл завершился нормально (т.е. был return)
         logger.critical(f"Download loop finished unexpectedly without error/success for {channel_url}")
         raise DownloadError(f"Download failed unexpectedly for {channel_url}")
 
