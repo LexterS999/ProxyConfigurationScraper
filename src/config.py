@@ -644,10 +644,7 @@ async def download_proxies_from_channel(
         except (aiohttp.ClientResponseError, aiohttp.ClientHttpProxyError, aiohttp.ClientProxyConnectionError) as e:
             status = e.status if hasattr(e, 'status') else 'N/A'
             logger.warning(f"HTTP/Proxy error getting {channel_url}: Status={status}, Error='{e}'")
-            # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-            # Убираем 'from e' из присваивания. Связь сохранится для последующего raise.
-            last_exception = DownloadError(f"HTTP/Proxy error {status} for {channel_url}")
-            # -------------------------
+            last_exception = DownloadError(f"HTTP/Proxy error {status} for {channel_url}") # from e убрано
             break
         except (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError, asyncio.TimeoutError) as e:
             logger.warning(f"Connection/Timeout error getting {channel_url} (attempt {retries_attempted+1}/{max_retries+1}): {type(e).__name__}. Retrying...")
@@ -660,18 +657,18 @@ async def download_proxies_from_channel(
             break
         except Exception as e:
              logger.error(f"Unexpected error downloading/processing {channel_url}: {e}", exc_info=True)
-             last_exception = DownloadError(f"Unexpected error for {channel_url}") from e # Здесь 'from e' уместен, т.к. это новая ошибка
+             # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+             last_exception = DownloadError(f"Unexpected error for {channel_url}") # from e убрано
+             # -------------------------
              break
         retries_attempted += 1
 
     if last_exception:
         if retries_attempted > max_retries:
              logger.error(f"Max retries ({max_retries+1}) reached for {channel_url}. Last error: {type(last_exception).__name__}")
-             # Здесь цепочка устанавливается корректно при raise
              raise DownloadError(f"Max retries reached for {channel_url}") from last_exception
         else:
              logger.error(f"Failed to download {channel_url} due to non-retriable error: {type(last_exception).__name__}")
-             # Перевыбрасываем сохраненное исключение (которое может быть DownloadError или исходным)
              raise last_exception
     else:
         logger.critical(f"Download loop finished unexpectedly without error/success for {channel_url}")
