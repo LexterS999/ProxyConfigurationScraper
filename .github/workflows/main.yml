@@ -2,11 +2,11 @@ name: Update Proxy Configs
 
 on:
   schedule:
-    - cron: '0 */9 * * *' # Каждые 9 часов
-  workflow_dispatch: # Ручной запуск
+    - cron: '0 */9 * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write # Разрешение на запись в репозиторий
+  contents: write
 
 jobs:
   update-configs:
@@ -15,6 +15,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.SECRET_TOKEN }}
 
     - name: Set up Python 3.11
       uses: actions/setup-python@v4
@@ -32,33 +34,30 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then
-          pip install -r requirements.txt
-        else
-          echo "requirements.txt not found, skipping pip install -r."
-        fi
+        pip install -r requirements.txt
 
-    - name: Create directories if they dont exist
+    - name: Create directories
       run: |
+        mkdir -p assets
         mkdir -p configs
-        # mkdir -p assets # Если директория assets используется
 
-    - name: Check/Create channel_urls.txt
+    - name: Check channel_urls.txt exists
       run: |
         if [ ! -f channel_urls.txt ]; then
-          echo "channel_urls.txt not found. Creating empty file."
+          echo "channel_urls.txt не найден. Будет создан пустой файл."
           touch channel_urls.txt
         else
-          echo "channel_urls.txt found."
+          echo "channel_urls.txt найден."
         fi
 
     - name: Run config fetcher script
-      id: run_script
       run: python src/config.py
-      
+      continue-on-error: true
+
     - name: Script execution status
-      if: success() && steps.run_script.outcome == 'success'
-      run: echo "Python script src/config.py executed successfully."
+      if: always()
+      run: |
+        echo "Python script src/config.py executed."
 
     - name: Setup Git user
       run: |
@@ -66,34 +65,16 @@ jobs:
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
     - name: Commit and push changes
-      if: success() && steps.run_script.outcome == 'success'
+      id: git_push
       run: |
-        # Попытка обновить локальную копию перед коммитом
-        git pull --rebase origin main || echo "Pull/Rebase failed, continuing with commit attempt..."
-
-        # Добавляем ВСЕ возможные выходные файлы из директории configs и input файл
-        # Используем wildcard для .txt, .json, .yaml, .diff.txt в директории configs
-        # Убедитесь, что OUTPUT_BASE в скрипте указывает на файлы внутри 'configs/'
-        git add configs/*.* channel_urls.txt
-
-        # Проверяем, есть ли изменения для коммита
+        git pull --rebase origin main || true
+        git add configs/proxy_configs_all.txt channel_urls.txt
         if ! git diff --staged --quiet; then
-          echo "Changes detected. Committing and pushing..."
-          # Можно сделать commit message более динамичным, если нужно
-          git commit -m "Update proxy configs and reports"
-
-          # Повторная попытка пуша, если первая не удалась (на случай конфликтов после pull)
-          if ! git push origin HEAD:main; then
-             echo "First push attempt failed, retrying after potential conflict resolution (if any)..."
-             # Здесь можно добавить более сложную логику разрешения конфликтов,
-             # но для простого обновления файлов часто достаточно повторной попытки
-             git push origin HEAD:main
-          fi
-
-          # Используем новый синтаксис для установки output
-          echo "pushed=true" >> $GITHUB_OUTPUT
+          git commit -m "Update proxy configs (all), stats and reports"
+          git push origin HEAD:main
+          echo "::set-output name=pushed::true"
           echo "Changes committed and pushed."
         else
           echo "No changes to commit."
-          echo "pushed=false" >> $GITHUB_OUTPUT
+          echo "::set-output name=pushed::false"
         fi
