@@ -78,7 +78,7 @@ DEFAULT_HTTP_TIMEOUT = 15
 DEFAULT_TEST_TIMEOUT = 10
 DEFAULT_MAX_RETRIES = 4
 DEFAULT_RETRY_DELAY_BASE = 2.0 # Используем float
-DEFAULT_USER_AGENT = 'ProxyDownloader/1.1' # Версия обновлена
+DEFAULT_USER_AGENT = 'ProxyDownloader/1.2' # Версия обновлена
 DEFAULT_TEST_URL_SNI = "www.google.com" # Используется только для SNI в TLS тесте
 DEFAULT_TEST_PORT = 443
 DEFAULT_MAX_CHANNELS_CONCURRENT = 60
@@ -88,14 +88,22 @@ DEFAULT_INPUT_FILE = "channel_urls.txt"
 DEFAULT_OUTPUT_BASE = "configs/proxy_configs_all"
 
 # --- Регулярные выражения ---
-PROTOCOL_REGEX = re.compile(r"^(vless|tuic|hy2|ss|ssr|trojan)://", re.IGNORECASE)
+# Расширяем для поддержки hysteria, hysteria2, shadowtls (можно добавить и другие по аналогии)
+# ПРИМЕЧАНИЕ: Точные схемы URL могут отличаться, адаптируйте по необходимости
+PROTOCOL_REGEX = re.compile(
+    r"^(vless|tuic|hy2|hysteria|hysteria2|ss|ssr|trojan|shadowtls)://",
+    re.IGNORECASE
+)
 
 # --- Шаблоны и Веса ---
 PROFILE_NAME_TEMPLATE = Template("${protocol}-${type}-${security}") # Базовый шаблон
 QUALITY_SCORE_WEIGHTS = {
-    "protocol": {"vless": 5, "trojan": 5, "tuic": 4, "hy2": 3, "ss": 2, "ssr": 1},
-    "security": {"tls": 3, "none": 0},
-    "transport": {"ws": 2, "websocket": 2, "grpc": 2, "tcp": 1, "udp": 0}, # udp добавлен с весом 0
+    "protocol": {
+        "vless": 5, "trojan": 5, "tuic": 4, "hy2": 3, "ss": 2, "ssr": 1,
+        "hysteria": 4, "hysteria2": 4, "shadowtls": 3 # Примерные веса, можно настроить
+    },
+    "security": {"tls": 3, "none": 0, "reality": 4, "shadowtls": 3}, # Добавим 'reality', 'shadowtls' как типы безопасности
+    "transport": {"ws": 2, "websocket": 2, "grpc": 2, "tcp": 1, "udp": 1, "quic": 3}, # Добавим udp/quic с весами
 }
 QUALITY_CATEGORIES = {
     "High": range(8, 15), # Верхняя граница не включается, но для простоты оставим так
@@ -141,11 +149,15 @@ class Statistics(NamedTuple):
 class Protocols(Enum):
     VLESS = "vless"
     TUIC = "tuic"
-    HY2 = "hy2"
+    HY2 = "hy2" # Предполагаем, что hy2 - это отдельный протокол (возможно, старая Hysteria?)
+    HYSTERIA = "hysteria" # Первая версия Hysteria
+    HYSTERIA2 = "hysteria2" # Вторая версия Hysteria
     SS = "ss"
     SSR = "ssr"
     TROJAN = "trojan"
+    SHADOWTLS = "shadowtls" # Протокол ShadowTLS
 
+# Обновляем список разрешенных протоколов автоматически из Enum
 ALLOWED_PROTOCOLS = [proto.value for proto in Protocols]
 
 # --- Исключения ---
@@ -165,6 +177,7 @@ class ProxyParsedConfig:
     address: str # Оригинальный адрес (может быть hostname или IP)
     port: int
     remark: str = ""
+    # query_params будет содержать ВСЕ параметры из URL (?key=value&...)
     query_params: Dict[str, str] = field(default_factory=dict)
     quality_score: int = 0 # Рассчитывается позже
 
@@ -191,12 +204,17 @@ class ProxyParsedConfig:
         if not original_string:
             return None
 
-        # Проверяем наличие схемы в начале
+        # Проверяем наличие схемы в начале (используем обновленный PROTOCOL_REGEX)
         protocol_match = PROTOCOL_REGEX.match(original_string)
         if not protocol_match:
             # logger.debug(f"Skipping line: No valid protocol prefix found in '{original_string[:100]}...'")
             return None
         protocol = protocol_match.group(1).lower()
+
+        # Проверяем, что распознанный протокол есть в нашем Enum (дополнительная валидация)
+        if protocol not in ALLOWED_PROTOCOLS:
+             logger.debug(f"Skipping line: Protocol '{protocol}' matched regex but is not in ALLOWED_PROTOCOLS.")
+             return None
 
         try:
             # Используем urlparse для основного разбора
@@ -204,7 +222,8 @@ class ProxyParsedConfig:
 
             # Дополнительная проверка схемы (urlparse может быть нестрогим)
             if parsed_url.scheme.lower() != protocol:
-                logger.debug(f"Skipping line: Parsed scheme '{parsed_url.scheme}' mismatch protocol '{protocol}' in '{original_string[:100]}...'")
+                # Это может случиться, если regex слишком широкий или URL странный
+                logger.debug(f"Skipping line: Parsed scheme '{parsed_url.scheme}' mismatch matched protocol '{protocol}' in '{original_string[:100]}...'")
                 return None
 
             address = parsed_url.hostname
@@ -227,9 +246,10 @@ class ProxyParsedConfig:
             # Извлекаем remark из fragment, декодируем URL-encoded символы
             remark = unquote(parsed_url.fragment) if parsed_url.fragment else ""
 
-            # Извлекаем параметры запроса
+            # Извлекаем параметры запроса ИЗ query string (?...)
             query_params_raw = parse_qs(parsed_url.query)
-            query_params = {k: v[0] for k, v in query_params_raw.items() if v} # Берем первое значение
+            # Сохраняем ВСЕ параметры, берем первое значение для каждого ключа
+            query_params = {k: v[0] for k, v in query_params_raw.items() if v}
 
             # Сохраняем URL без fragment (remark) для единообразия при сохранении
             config_string_to_store = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path,
@@ -241,7 +261,7 @@ class ProxyParsedConfig:
                 address=address, # Сохраняем оригинальный hostname/IP
                 port=port,
                 remark=remark,
-                query_params=query_params,
+                query_params=query_params, # Здесь будут ВСЕ параметры из ?...=...
                 # quality_score будет рассчитан позже
             )
         except ValueError as e:
@@ -544,20 +564,35 @@ def assess_proxy_quality(proxy_config: ProxyParsedConfig) -> int:
     protocol = proxy_config.protocol.lower()
     query_params = proxy_config.query_params
 
-    # Оценка по протоколу
+    # Оценка по протоколу (используем обновленные веса)
     score += QUALITY_SCORE_WEIGHTS["protocol"].get(protocol, 0)
 
-    # Оценка по шифрованию (security=tls/none)
+    # Оценка по шифрованию (security=tls/none/reality/shadowtls)
+    # Ищем 'security', потом смотрим на сам протокол если security не указан
     security = query_params.get("security", "none").lower()
+    if protocol == 'shadowtls' and security == 'none': # Если протокол shadowtls, считаем его security=shadowtls
+        security = 'shadowtls'
+    elif protocol == 'trojan' and security == 'none': # Trojan по умолчанию TLS
+        security = 'tls'
+    # Можно добавить больше логики по умолчанию для других протоколов
+
     score += QUALITY_SCORE_WEIGHTS["security"].get(security, 0)
 
-    # Оценка по транспорту (type=ws/grpc/tcp/udp или transport=...)
-    # Ищем 'type', потом 'transport', по умолчанию 'tcp'
+    # Оценка по транспорту (type=ws/grpc/tcp/udp/quic или transport=...)
+    # Ищем 'type', потом 'transport', потом смотрим на протокол
     transport = query_params.get("type", query_params.get("transport", "tcp")).lower()
+    # Протоколы, которые обычно используют QUIC по умолчанию
+    if protocol in ['tuic', 'hysteria', 'hysteria2'] and transport == 'tcp': # Если не указан явно, предполагаем QUIC
+        transport = 'quic'
     # Нормализуем 'websocket' к 'ws' для оценки
     if transport == "websocket":
         transport = "ws"
     score += QUALITY_SCORE_WEIGHTS["transport"].get(transport, 0)
+
+    # Можно добавить оценку по другим параметрам из query_params, если нужно
+    # Например, наличие 'alpn', 'congestion control' и т.д.
+    # if 'alpn' in query_params: score += 1
+    # if query_params.get('congestion_control') == 'bbr': score +=1
 
     return score
 
@@ -581,8 +616,13 @@ def generate_proxy_profile_name(proxy_config: ProxyParsedConfig, test_result: Op
     # Определяем транспорт
     transport = proxy_config.query_params.get('type', proxy_config.query_params.get('transport', 'tcp')).lower()
     if transport == "websocket": transport = "ws" # Нормализация
+    if protocol in ['TUIC', 'HYSTERIA', 'HYSTERIA2'] and transport == 'tcp': transport = 'quic' # Уточнение для QUIC-протоколов
+
     # Определяем шифрование
     security = proxy_config.query_params.get('security', 'none').lower()
+    if protocol == 'SHADOWTLS' and security == 'none': security = 'shadowtls'
+    elif protocol == 'TROJAN' and security == 'none': security = 'tls'
+
     # Получаем категорию качества
     quality_category = get_quality_category(proxy_config.quality_score)
 
@@ -919,14 +959,19 @@ async def test_proxy_connectivity(
     host = proxy_config.address
     # Используем порт из конфига прокси для соединения
     connect_port = proxy_config.port
-    # Определяем, нужно ли TLS на основе параметра 'security'
-    use_tls = proxy_config.query_params.get('security', 'none').lower() == 'tls'
-    # Определяем SNI: используем параметр 'sni', 'host', или test_sni (если адрес - IP)
-    sni_host = proxy_config.query_params.get('sni', proxy_config.query_params.get('host'))
+    # Определяем, нужно ли TLS на основе параметра 'security' или 'tls'
+    # Добавляем проверку 'reality' - для reality TLS не используется в тесте
+    security_param = proxy_config.query_params.get('security', 'none').lower()
+    use_tls = (security_param == 'tls') or (proxy_config.query_params.get('tls', '0').lower() in ['1', 'true'])
+    if security_param == 'reality':
+        use_tls = False # Не тестируем TLS для REALITY
+
+    # Определяем SNI: используем параметр 'sni', 'host', 'peer' или test_sni (если адрес - IP)
+    sni_host = proxy_config.query_params.get('sni', proxy_config.query_params.get('host', proxy_config.query_params.get('peer')))
     if not sni_host and not is_valid_ipv4(host):
         sni_host = host # Используем сам хост, если он не IP
     elif not sni_host and is_valid_ipv4(host):
-        sni_host = test_sni # Используем глобальный test_sni, если адрес - IP и нет явного sni/host
+        sni_host = test_sni # Используем глобальный test_sni, если адрес - IP и нет явного sni/host/peer
 
     result: TEST_RESULT_TYPE = {'status': 'failed', 'latency': None, 'error': 'Unknown error'}
 
@@ -954,6 +999,14 @@ async def test_proxy_connectivity(
                 loop = asyncio.get_running_loop()
                 # Выполняем TLS handshake асинхронно
                 # Передаем server_hostname=sni_host, если он определен
+                # Добавляем ALPN, если он есть в параметрах
+                alpn_protocols_str = proxy_config.query_params.get('alpn')
+                alpn_protocols_list: Optional[List[str]] = None
+                if alpn_protocols_str:
+                    alpn_protocols_list = [p.strip() for p in alpn_protocols_str.split(',')]
+                    ssl_context.set_alpn_protocols(alpn_protocols_list)
+                    logger.debug(f"Setting ALPN protocols for TLS handshake: {alpn_protocols_list}")
+
                 await loop.start_tls(transport, ssl_context, server_hostname=sni_host if sni_host else None)
                 logger.debug(f"TLS handshake successful for {host}:{connect_port}")
 
@@ -1053,20 +1106,27 @@ async def run_proxy_tests(
 def _proxy_to_clash_dict(proxy_conf: ProxyParsedConfig, test_result: Optional[TEST_RESULT_TYPE]) -> Optional[Dict[str, Any]]:
     """
     Преобразует ProxyParsedConfig в словарь для Clash YAML.
-    Улучшен парсинг URL с использованием urlparse.
+    Улучшен парсинг URL и добавлены новые параметры/протоколы (частично).
     """
     clash_proxy: Dict[str, Any] = {}
-    params = proxy_conf.query_params
+    params = proxy_conf.query_params # Все параметры query string здесь
     protocol = proxy_conf.protocol.lower()
 
-    # Используем urlparse для надежного извлечения компонентов
     try:
-        # Парсим исходную строку еще раз, т.к. нам нужны user/pass части
         parsed_original_url = urlparse(proxy_conf.config_string)
-        # username может содержать UUID, пароль или base64(user:pass)
         url_username = unquote(parsed_original_url.username) if parsed_original_url.username else None
-        # password обычно None, если не используется формат user:pass@host
-        # url_password = unquote(parsed_original_url.password) if parsed_original_url.password else None # Не используется в текущей логике
+        # Пароль из URL (для user:pass@host) или userinfo для SS
+        url_password_or_userinfo = unquote(parsed_original_url.password) if parsed_original_url.password else None
+        # Для SS: userinfo = base64(method:password)
+        if protocol == 'ss' and url_username and not url_password_or_userinfo:
+             # Если userinfo в username (ss://BASE64@host...)
+             url_password_or_userinfo = url_username
+             url_username = None # Очищаем username для SS в этом случае
+        elif protocol != 'ss' and url_password_or_userinfo:
+             # Если user:pass@host для других протоколов (нестандартно, но возможно)
+             # url_username будет user, url_password_or_userinfo будет pass
+             pass # Оставляем как есть
+
     except Exception as e:
         logger.warning(f"Could not re-parse original URL for Clash conversion: {proxy_conf.config_string} - {e}")
         return None
@@ -1075,7 +1135,8 @@ def _proxy_to_clash_dict(proxy_conf: ProxyParsedConfig, test_result: Optional[TE
     clash_proxy['name'] = generate_proxy_profile_name(proxy_conf, test_result)
     clash_proxy['server'] = proxy_conf.address # Используем оригинальный адрес
     clash_proxy['port'] = proxy_conf.port
-    clash_proxy['udp'] = True # Включаем UDP по умолчанию для большинства протоколов в Clash
+    # UDP включаем по умолчанию для поддерживающих протоколов
+    clash_proxy['udp'] = protocol in ['vless', 'trojan', 'ss', 'ssr', 'tuic', 'hysteria', 'hysteria2']
 
     # --- Специфичные для протокола поля ---
     try:
@@ -1084,41 +1145,77 @@ def _proxy_to_clash_dict(proxy_conf: ProxyParsedConfig, test_result: Optional[TE
             if not url_username: raise ValueError("Missing UUID in VLESS URL")
             clash_proxy['uuid'] = url_username
             clash_proxy['tls'] = params.get('security', 'none').lower() == 'tls'
+            # Добавляем поддержку REALITY
+            if params.get('security', '').lower() == 'reality':
+                 clash_proxy['reality-opts'] = {
+                     'public-key': params.get('pbk', ''),
+                     # 'short-id': params.get('sid', '') # Если используется short-id
+                 }
+                 # Если REALITY, то TLS должен быть false в Clash
+                 clash_proxy['tls'] = False
+                 # Добавляем servername для REALITY, если он есть в sni/host
+                 clash_proxy['servername'] = params.get('sni', params.get('host'))
+                 if not clash_proxy['servername'] and not is_valid_ipv4(proxy_conf.address):
+                    clash_proxy['servername'] = proxy_conf.address
+
+
             clash_proxy['network'] = params.get('type', 'tcp').lower() # ws, grpc, tcp
-            # Дополнительные параметры VLESS
             if 'flow' in params: clash_proxy['flow'] = params['flow']
             # SNI: используем 'sni', 'host', или оригинальный адрес (если не IP)
-            clash_proxy['servername'] = params.get('sni', params.get('host'))
-            if not clash_proxy['servername'] and not is_valid_ipv4(proxy_conf.address):
-                clash_proxy['servername'] = proxy_conf.address
-            # Проверка сертификата
+            # Устанавливаем только если не REALITY
+            if not clash_proxy.get('reality-opts'):
+                clash_proxy['servername'] = params.get('sni', params.get('host'))
+                if not clash_proxy['servername'] and not is_valid_ipv4(proxy_conf.address):
+                    clash_proxy['servername'] = proxy_conf.address
+
+            # Fingerprint для TLS (uTLS)
+            if 'fp' in params:
+                 clash_proxy['client-fingerprint'] = params['fp']
+            # ALPN для TLS
+            if 'alpn' in params and clash_proxy['tls']: # ALPN имеет смысл только с TLS
+                 # Clash ожидает список строк
+                 clash_proxy['alpn'] = [p.strip() for p in params['alpn'].split(',')]
+
             allow_insecure = params.get('allowInsecure', '0').lower()
             clash_proxy['skip-cert-verify'] = allow_insecure == '1' or allow_insecure == 'true'
 
-            # Опции транспорта
             if clash_proxy['network'] == 'ws':
-                # Host для WS заголовка: 'host' параметр, или servername, или адрес
                 ws_host = params.get('host', clash_proxy.get('servername', proxy_conf.address))
                 ws_path = params.get('path', '/')
                 clash_proxy['ws-opts'] = {'path': ws_path, 'headers': {'Host': ws_host}}
+                # Early data для WS
+                if params.get('earlydata', '0') == '1' or params.get('ed', '0') == '1':
+                     clash_proxy['ws-opts']['early-data-header-name'] = 'Sec-WebSocket-Protocol' # Пример
+                     clash_proxy['ws-opts']['max-early-data'] = 2048 # Пример
+
             elif clash_proxy['network'] == 'grpc':
-                grpc_service_name = params.get('serviceName', '') # Имя сервиса gRPC
+                grpc_service_name = params.get('serviceName', '')
                 clash_proxy['grpc-opts'] = {'grpc-service-name': grpc_service_name}
+                # Режим gRPC (multi?)
+                if 'mode' in params and params['mode'] == 'multi':
+                    clash_proxy['grpc-opts']['grpc-mode'] = 'multi'
+
 
         elif protocol == 'trojan':
             clash_proxy['type'] = 'trojan'
-            if not url_username: raise ValueError("Missing password in Trojan URL")
-            clash_proxy['password'] = url_username
-            # Trojan почти всегда TLS, но проверим параметр 'security'
+            # Пароль может быть в username или password части URL
+            trojan_password = url_username or url_password_or_userinfo
+            if not trojan_password: raise ValueError("Missing password in Trojan URL")
+            clash_proxy['password'] = trojan_password
+
+            # Trojan почти всегда TLS, но проверим параметр 'security' (может быть 'tls' или отсутствовать)
             clash_proxy['tls'] = params.get('security', 'tls').lower() == 'tls'
             # SNI: используем 'sni', 'peer', или оригинальный адрес (если не IP)
             clash_proxy['sni'] = params.get('sni', params.get('peer'))
             if not clash_proxy['sni'] and not is_valid_ipv4(proxy_conf.address):
                 clash_proxy['sni'] = proxy_conf.address
-            # Проверка сертификата
+            # ALPN для TLS
+            if 'alpn' in params and clash_proxy['tls']:
+                 clash_proxy['alpn'] = [p.strip() for p in params['alpn'].split(',')]
+
             allow_insecure = params.get('allowInsecure', '0').lower()
             clash_proxy['skip-cert-verify'] = allow_insecure == '1' or allow_insecure == 'true'
-            # Опции транспорта
+
             network = params.get('type', 'tcp').lower()
             if network == 'ws':
                  clash_proxy['network'] = 'ws'
@@ -1134,46 +1231,156 @@ def _proxy_to_clash_dict(proxy_conf: ProxyParsedConfig, test_result: Optional[TE
         elif protocol == 'ss':
             clash_proxy['type'] = 'ss'
             # Парсинг SS URL: userinfo = base64(method:password)
-            if not url_username: raise ValueError("Missing user info in SS URL")
-            # Декодируем user_info (method:password) из Base64
+            ss_userinfo = url_password_or_userinfo # Должен быть здесь из логики выше
+            if not ss_userinfo: raise ValueError("Missing user info (base64) in SS URL")
             try:
-                # Добавляем padding '=' до длины кратной 4
-                user_info_padded = url_username + '=' * (-len(url_username) % 4)
+                user_info_padded = ss_userinfo + '=' * (-len(ss_userinfo) % 4)
+                # Используем urlsafe_b64decode, т.к. в URL может быть Base64 URL safe
                 decoded_user = base64.urlsafe_b64decode(user_info_padded).decode('utf-8')
                 if ':' not in decoded_user: raise ValueError("Invalid format in decoded SS user info (expected method:password)")
                 clash_proxy['cipher'], clash_proxy['password'] = decoded_user.split(':', 1)
             except (binascii.Error, ValueError, UnicodeDecodeError) as e:
                  raise ValueError(f"Failed to decode SS user info: {e}") from e
 
-            # Параметры плагинов (obfs, v2ray-plugin) - требуют доп. парсинга params
+            # Плагины (obfs, v2ray-plugin)
             plugin = params.get('plugin', '').lower()
             if plugin.startswith('obfs'):
+                # ... (логика obfs как была)
                 clash_proxy['plugin'] = 'obfs'
-                # Значения по умолчанию для obfs, если не указаны в params
-                obfs_mode = params.get('obfs', 'http') # http или tls
+                obfs_mode = params.get('obfs', 'http')
                 obfs_host = params.get('obfs-host', 'www.bing.com')
                 clash_proxy['plugin-opts'] = {'mode': obfs_mode, 'host': obfs_host}
             elif plugin.startswith('v2ray-plugin'):
-                 clash_proxy['plugin'] = 'v2ray-plugin'
-                 plugin_opts: Dict[str, Any] = {'mode': 'websocket'} # По умолчанию websocket
-                 if params.get('tls', 'false') == 'true':
+                # ... (логика v2ray-plugin как была)
+                clash_proxy['plugin'] = 'v2ray-plugin'
+                plugin_opts: Dict[str, Any] = {'mode': 'websocket'}
+                if params.get('tls', 'false') == 'true':
                      plugin_opts['tls'] = True
-                     plugin_opts['host'] = params.get('host', proxy_conf.address) # SNI для v2ray-plugin
+                     # SNI для v2ray-plugin берем из 'host' параметра query, потом из server address
+                     plugin_opts['host'] = params.get('host', proxy_conf.address)
                      plugin_opts['skip-cert-verify'] = params.get('allowInsecure', 'false') == 'true'
-                 plugin_opts['path'] = params.get('path', '/')
-                 # v2ray-plugin может использовать 'host' в заголовках WS, берем из params или server address
-                 ws_host_header = params.get('host', proxy_conf.address)
-                 plugin_opts['headers'] = {'Host': ws_host_header}
-                 # Другие опции v2ray-plugin (mux, etc.) можно добавить из params
-                 clash_proxy['plugin-opts'] = plugin_opts
+                plugin_opts['path'] = params.get('path', '/')
+                ws_host_header = params.get('host', proxy_conf.address)
+                plugin_opts['headers'] = {'Host': ws_host_header}
+                clash_proxy['plugin-opts'] = plugin_opts
+            # Можно добавить поддержку других плагинов (simple-obfs, cloak, etc.)
 
-        # Поддержка TUIC, HY2, SSR для Clash требует знания их точной структуры в YAML
-        elif protocol in ['tuic', 'hy2', 'ssr']:
-             logger.debug(f"Protocol {protocol.upper()} is not fully supported for Clash output yet. Skipping {proxy_conf.address}:{proxy_conf.port}")
+        # --- НОВЫЕ ПРОТОКОЛЫ (ПРИМЕРЫ/ПЛЕЙСХОЛДЕРЫ) ---
+
+        elif protocol == 'hysteria':
+            # ПРИМЕР! Точные поля зависят от версии Clash и стандарта Hysteria URL
+            clash_proxy['type'] = 'hysteria'
+            # Пароль/Auth обычно в username части URL
+            if not url_username: raise ValueError("Missing auth password in Hysteria URL")
+            clash_proxy['auth_str'] = url_username # Или 'auth-str' или 'password' - уточнить!
+            # Пропуск проверки сертификата
+            allow_insecure = params.get('insecure', '0').lower()
+            clash_proxy['skip-cert-verify'] = allow_insecure == '1' or allow_insecure == 'true'
+            # SNI
+            clash_proxy['sni'] = params.get('peer', params.get('sni'))
+            if not clash_proxy['sni'] and not is_valid_ipv4(proxy_conf.address):
+                clash_proxy['sni'] = proxy_conf.address
+            # Скорость (up/down mbps)
+            if 'upmbps' in params: clash_proxy['up'] = int(params['upmbps'])
+            if 'downmbps' in params: clash_proxy['down'] = int(params['downmbps'])
+            # Протокол (udp, wechat-video, faketcp)
+            if 'protocol' in params: clash_proxy['protocol'] = params['protocol']
+            # ALPN
+            if 'alpn' in params:
+                 clash_proxy['alpn'] = [p.strip() for p in params['alpn'].split(',')]
+            # Другие параметры Hysteria v1...
+            logger.debug(f"Generated basic Clash config for Hysteria v1. Verify fields against Clash spec!")
+
+        elif protocol == 'hysteria2' or protocol == 'hy2': # Объединим hy2 и hysteria2 здесь
+            # ПРИМЕР! Точные поля зависят от версии Clash и стандарта Hysteria2 URL
+            clash_proxy['type'] = 'hysteria2'
+            # Пароль обычно в username части URL
+            if not url_username: raise ValueError("Missing auth password in Hysteria2 URL")
+            clash_proxy['password'] = url_username # В Hysteria2 обычно 'password'
+            # Пропуск проверки сертификата
+            allow_insecure = params.get('insecure', '0').lower()
+            clash_proxy['skip-cert-verify'] = allow_insecure == '1' or allow_insecure == 'true'
+            # SNI
+            clash_proxy['sni'] = params.get('sni')
+            if not clash_proxy['sni'] and not is_valid_ipv4(proxy_conf.address):
+                clash_proxy['sni'] = proxy_conf.address
+            # Скорость (up/down) - формат может быть "100mbps" или "100 m"
+            if 'up' in params: clash_proxy['up'] = params['up'] # Clash разберется с форматом
+            if 'down' in params: clash_proxy['down'] = params['down']
+            # Obfs
+            if 'obfs' in params:
+                clash_proxy['obfs'] = params['obfs']
+                if 'obfs-password' in params: # Пароль для obfs
+                    clash_proxy['obfs-password'] = params['obfs-password']
+            # ALPN
+            if 'alpn' in params:
+                 clash_proxy['alpn'] = [p.strip() for p in params['alpn'].split(',')]
+            # TODO: Добавить другие параметры Hysteria2 из query_params (congestion control, etc.)
+            # if 'congestion_control' in params: clash_proxy['congestion-control'] = params['congestion_control'] # Уточнить имя поля в Clash
+            logger.debug(f"Generated basic Clash config for Hysteria2. Verify fields against Clash spec!")
+
+        elif protocol == 'shadowtls':
+             # ПРИМЕР! Зависит от того, как Clash поддерживает ShadowTLS (отдельный тип или плагин?)
+             # Вариант 1: Отдельный тип (маловероятно?)
+             # clash_proxy['type'] = 'shadowtls'
+             # clash_proxy['password'] = params.get('password', url_username) # Пароль ShadowTLS
+             # clash_proxy['version'] = int(params.get('version', '3')) # Версия ShadowTLS (2 или 3)
+             # clash_proxy['sni'] = params.get('sni', params.get('host'))
+             # if not clash_proxy['sni'] and not is_valid_ipv4(proxy_conf.address):
+             #     clash_proxy['sni'] = proxy_conf.address
+
+             # Вариант 2: Как плагин для другого протокола (например, Trojan)
+             # Нужно определить, какой протокол "под" ShadowTLS. Это сложно извлечь из одного URL.
+             # Пока пропускаем.
+             logger.warning(f"ShadowTLS conversion to Clash is complex and not fully implemented. Skipping {proxy_conf.address}:{proxy_conf.port}")
              return None
+
+        elif protocol == 'tuic':
+             # ПРИМЕР! Зависит от версии Clash и стандарта TUIC URL
+             clash_proxy['type'] = 'tuic'
+             if not url_username: raise ValueError("Missing UUID/Token in TUIC URL")
+             # В TUIC v5 UUID и пароль, в v4 только токен
+             # Пытаемся определить версию по параметрам или формату username
+             tuic_version = int(params.get('version', '5')) # По умолчанию v5
+             if tuic_version == 5:
+                 clash_proxy['uuid'] = url_username
+                 clash_proxy['password'] = params.get('password', '') # Пароль для v5
+             else: # v4
+                 clash_proxy['token'] = url_username # Токен для v4
+
+             clash_proxy['sni'] = params.get('sni')
+             if not clash_proxy['sni'] and not is_valid_ipv4(proxy_conf.address):
+                 clash_proxy['sni'] = proxy_conf.address
+             allow_insecure = params.get('allow_insecure', params.get('skip_cert_verify', '0')).lower()
+             clash_proxy['skip-cert-verify'] = allow_insecure == '1' or allow_insecure == 'true'
+             # ALPN
+             if 'alpn' in params:
+                  clash_proxy['alpn'] = [p.strip() for p in params['alpn'].split(',')]
+             # Congestion Control
+             if 'congestion_control' in params:
+                  clash_proxy['congestion-controller'] = params['congestion_control'] # Имя поля в Clash?
+             # UDP Relay Mode (native, quic)
+             if 'udp_relay_mode' in params:
+                  clash_proxy['udp-relay-mode'] = params['udp_relay_mode']
+             # Heartbeat interval
+             if 'heartbeat' in params:
+                 try:
+                     clash_proxy['heartbeat-interval'] = int(params['heartbeat'])
+                 except ValueError: pass # Игнорируем если не число
+             # Другие параметры TUIC...
+             logger.debug(f"Generated basic Clash config for TUIC v{tuic_version}. Verify fields against Clash spec!")
+
+
+        elif protocol == 'ssr':
+             # SSR имеет сложную структуру URL, которую urlparse плохо разбирает.
+             # ssr://base64_host:port:proto:method:obfs:base64_pass/?params...
+             # Требуется отдельный парсер для SSR. Пока пропускаем.
+             logger.warning(f"SSR protocol parsing is complex and not implemented. Skipping {proxy_conf.address}:{proxy_conf.port}")
+             return None
+
         else:
-            # Неизвестный протокол (не должен сюда попасть из-за PROTOCOL_REGEX, но на всякий случай)
-            logger.warning(f"Unknown protocol '{protocol}' encountered for Clash conversion. Skipping {proxy_conf.address}:{proxy_conf.port}")
+            # Неизвестный протокол (не должен сюда попасть из-за ALLOWED_PROTOCOLS, но на всякий случай)
+            logger.warning(f"Unknown protocol '{protocol}' encountered during Clash conversion logic. Skipping {proxy_conf.address}:{proxy_conf.port}")
             return None
 
     except (binascii.Error, ValueError, UnicodeDecodeError, IndexError, KeyError, AttributeError) as e:
